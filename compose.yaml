@@ -1,0 +1,6 @@
+name: agentloom
+
+# Services are added incrementally. PostgreSQL is introduced in step 3,
+# followed by the backend and frontend production containers.
+services: {}
+
