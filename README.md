@@ -1,6 +1,6 @@
 # AgentLoom
 
-AgentLoom is a lightweight multi-agent collaboration project. The repository is organized as a separated React frontend and FastAPI backend; PostgreSQL persistence is introduced in the next implementation step.
+AgentLoom is a lightweight multi-agent collaboration project. The repository is organized as a separated React frontend and FastAPI backend with PostgreSQL persistence.
 
 ## Prerequisites
 
@@ -26,6 +26,28 @@ uv run uvicorn agentloom.main:app --reload
 ```
 
 The health endpoint is available at <http://localhost:8000/health>.
+
+## Run PostgreSQL
+
+Copy the development environment template if you do not already have a local
+`.env` file, then start PostgreSQL:
+
+```bash
+cp .env.example .env
+docker compose up -d postgres
+docker compose ps
+```
+
+The database is exposed on `localhost:5432` by default. Its data is stored in
+the `postgres_data` named volume and survives ordinary container recreation.
+The values in `.env.example` are development defaults and must not be used as
+production credentials.
+
+To stop the database without deleting its data:
+
+```bash
+docker compose stop postgres
+```
 
 ## Run backend checks
 
