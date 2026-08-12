@@ -15,11 +15,15 @@ class Settings(BaseSettings):
         validation_alias="AGENTLOOM_ENV",
     )
     log_level: str = Field(default="INFO", validation_alias="AGENTLOOM_LOG_LEVEL")
+    database_url: str = Field(
+        default="postgresql+asyncpg://agentloom:agentloom@localhost:15432/agentloom",
+        validation_alias="AGENTLOOM_DATABASE_URL",
+    )
     app_name: str = "AgentLoom API"
     app_version: str = "0.1.0"
 
     model_config = SettingsConfigDict(
-        env_file=("../.env", ".env"),
+        env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
         populate_by_name=True,

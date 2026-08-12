@@ -1,18 +1,28 @@
+import { NavLink, Outlet } from "react-router-dom";
+
 function App() {
   return (
-    <main className="app-shell">
-      <section className="hero" aria-labelledby="page-title">
-        <span className="eyebrow">Multi-agent collaboration</span>
-        <h1 id="page-title">AgentLoom</h1>
-        <p>
-          The frontend workspace is ready. Task planning, DAG execution, and live run views
-          will be added in the next implementation steps.
-        </p>
-        <a className="health-link" href="http://localhost:8000/health">
-          Check backend health
-        </a>
-      </section>
-    </main>
+    <div className="app-shell">
+      <header className="app-header">
+        <NavLink className="brand" to="/tasks">
+          <span className="brand-mark" aria-hidden="true">
+            AL
+          </span>
+          <span>
+            <strong>AgentLoom</strong>
+            <small>Multi-agent workspace</small>
+          </span>
+        </NavLink>
+        <nav aria-label="Primary navigation">
+          <NavLink className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")} to="/tasks">
+            Tasks
+          </NavLink>
+        </nav>
+      </header>
+      <main className="page-container">
+        <Outlet />
+      </main>
+    </div>
   );
 }
 

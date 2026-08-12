@@ -1,26 +1,50 @@
 # AgentLoom
 
-AgentLoom is a lightweight multi-agent collaboration project. The repository is organized as a separated React frontend and FastAPI backend with PostgreSQL persistence.
+AgentLoom is a lightweight multi-agent collaboration project. The repository root is
+the FastAPI backend project, while `frontend/` is a separate React package.
 
 ## Prerequisites
 
 - Python 3.11 managed by uv
 - Node.js 22 and npm 10
 - Docker Engine with Docker Compose v2
+- GNU Make
 
 ## Repository layout
 
 ```text
-frontend/  React and TypeScript application
-backend/   FastAPI application
+src/       FastAPI backend package
+tests/     Backend tests
+frontend/  Independent React and TypeScript package
 examples/  Example task and workflow inputs
 tmp/       Local planning documents (not committed)
+```
+
+## Run the development environment
+
+Start PostgreSQL, FastAPI with reload, and Vite from the repository root:
+
+```bash
+make dev
+```
+
+The command installs frontend dependencies with `npm ci` when they are missing.
+Press `Ctrl+C` to stop FastAPI and Vite. PostgreSQL remains available so its
+persistent development data is preserved; stop it separately with:
+
+```bash
+make dev-stop
+```
+
+If GNU Make is unavailable, the equivalent command is:
+
+```bash
+uv run --locked python scripts/dev.py
 ```
 
 ## Run the backend
 
 ```bash
-cd backend
 uv sync
 uv run uvicorn agentloom.main:app --reload
 ```
@@ -38,7 +62,8 @@ docker compose up -d postgres
 docker compose ps
 ```
 
-The database is exposed on `localhost:5432` by default. Its data is stored in
+The database is exposed on `localhost:15432` by default, avoiding conflicts
+with locally installed PostgreSQL instances. Its data is stored in
 the `postgres_data` named volume and survives ordinary container recreation.
 The values in `.env.example` are development defaults and must not be used as
 production credentials.
@@ -52,7 +77,6 @@ docker compose stop postgres
 ## Run backend checks
 
 ```bash
-cd backend
 uv run ruff format --check .
 uv run ruff check .
 uv run pyright
@@ -63,9 +87,10 @@ uv run pytest
 
 ```bash
 cd frontend
-npm install
+npm ci
 npm run dev
 ```
 
-The frontend is available at <http://localhost:5173>.
+The task list is available at <http://localhost:5173/tasks>. The page checks
+the backend health endpoint through the Vite development proxy.
 
