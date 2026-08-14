@@ -5,17 +5,11 @@ from contextlib import asynccontextmanager
 
 import structlog
 from fastapi import FastAPI
-from pydantic import BaseModel
 
+from agentloom.api.schemas import HealthResponse
 from agentloom.config import Settings, get_settings
 from agentloom.db.session import DatabaseSessionManager
 from agentloom.logging import configure_logging
-
-
-class HealthResponse(BaseModel):
-    """Response returned by the health endpoint."""
-
-    status: str
 
 
 async def health() -> HealthResponse:
