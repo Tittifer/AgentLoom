@@ -74,6 +74,29 @@ To stop the database without deleting its data:
 docker compose stop postgres
 ```
 
+## Manage database migrations
+
+Apply all committed migrations after PostgreSQL is healthy:
+
+```bash
+uv run --locked alembic upgrade head
+uv run --locked alembic current
+```
+
+After changing ORM models, generate and inspect a migration before applying it:
+
+```bash
+uv run --locked alembic revision --autogenerate -m "describe schema change"
+uv run --locked alembic upgrade head
+uv run --locked alembic check
+```
+
+Revert the latest migration during development with:
+
+```bash
+uv run --locked alembic downgrade -1
+```
+
 ## Run backend checks
 
 ```bash

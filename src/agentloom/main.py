@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 import structlog
 from fastapi import FastAPI
 
+from agentloom.api.routes import task_router
 from agentloom.api.schemas import HealthResponse
 from agentloom.config import Settings, get_settings
 from agentloom.db.session import DatabaseSessionManager
@@ -53,6 +54,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     application.state.database = database
+    application.include_router(task_router, prefix="/api")
     application.add_api_route(
         "/health",
         health,
