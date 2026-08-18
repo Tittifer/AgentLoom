@@ -6,8 +6,9 @@ from contextlib import asynccontextmanager
 import structlog
 from fastapi import FastAPI
 
-from agentloom.api.routes import task_router
+from agentloom.api.routes import run_router, task_router
 from agentloom.api.schemas import HealthResponse
+from agentloom.bootstrap import create_run_scheduler
 from agentloom.config import Settings, get_settings
 from agentloom.db.session import DatabaseSessionManager
 from agentloom.logging import configure_logging
@@ -26,6 +27,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     configure_logging(app_settings.log_level)
     logger = structlog.get_logger(__name__)
     database = DatabaseSessionManager(app_settings.database_url)
+    scheduler = create_run_scheduler(database)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncGenerator[None, None]:
@@ -43,10 +45,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             version=app_settings.app_version,
         )
         try:
+            await scheduler.start()
             yield
         finally:
-            await database.dispose()
-            logger.info("application_stopped")
+            try:
+                await scheduler.stop()
+            finally:
+                await database.dispose()
+                logger.info("application_stopped")
 
     application = FastAPI(
         title=app_settings.app_name,
@@ -54,7 +60,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     application.state.database = database
+    application.state.run_scheduler = scheduler
     application.include_router(task_router, prefix="/api")
+    application.include_router(run_router, prefix="/api")
     application.add_api_route(
         "/health",
         health,
