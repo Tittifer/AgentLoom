@@ -1,0 +1,74 @@
+{
+  "nodes": [
+    {
+      "key": "research_apple",
+      "name": "Research Apple",
+      "role": "researcher",
+      "description": "Research Apple's current product offering and market position.",
+      "system_prompt": "Collect concise, sourced facts about Apple for a product comparison.",
+      "depends_on": [],
+      "tools": ["web_search"],
+      "output_schema": {
+        "type": "object",
+        "required": ["summary", "sources"],
+        "properties": {
+          "summary": {"type": "string"},
+          "sources": {"type": "array", "items": {"type": "string"}}
+        }
+      },
+      "review_criteria": "The summary is factual and every major claim has a source."
+    },
+    {
+      "key": "research_huawei",
+      "name": "Research Huawei",
+      "role": "researcher",
+      "description": "Research Huawei's current product offering and market position.",
+      "system_prompt": "Collect concise, sourced facts about Huawei for a product comparison.",
+      "depends_on": [],
+      "tools": ["web_search"],
+      "output_schema": {
+        "type": "object",
+        "required": ["summary", "sources"],
+        "properties": {
+          "summary": {"type": "string"},
+          "sources": {"type": "array", "items": {"type": "string"}}
+        }
+      },
+      "review_criteria": "The summary is factual and every major claim has a source."
+    },
+    {
+      "key": "research_xiaomi",
+      "name": "Research Xiaomi",
+      "role": "researcher",
+      "description": "Research Xiaomi's current product offering and market position.",
+      "system_prompt": "Collect concise, sourced facts about Xiaomi for a product comparison.",
+      "depends_on": [],
+      "tools": ["web_search"],
+      "output_schema": {
+        "type": "object",
+        "required": ["summary", "sources"],
+        "properties": {
+          "summary": {"type": "string"},
+          "sources": {"type": "array", "items": {"type": "string"}}
+        }
+      },
+      "review_criteria": "The summary is factual and every major claim has a source."
+    },
+    {
+      "key": "write_report",
+      "name": "Write comparison report",
+      "role": "writer",
+      "description": "Combine the three research results into one comparison report.",
+      "system_prompt": "Synthesize upstream research into a balanced, sourced comparison report.",
+      "depends_on": ["research_apple", "research_huawei", "research_xiaomi"],
+      "tools": [],
+      "output_schema": {
+        "type": "object",
+        "required": ["report"],
+        "properties": {"report": {"type": "string"}}
+      },
+      "review_criteria": "The report compares all three products and preserves source attribution."
+    }
+  ],
+  "final_node": "write_report"
+}

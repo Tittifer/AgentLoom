@@ -99,9 +99,11 @@ class WorkflowNodeModel(Base):
     node_key: Mapped[str] = mapped_column(String(100))
     name: Mapped[str] = mapped_column(String(200))
     role: Mapped[str] = mapped_column(String(100))
+    description: Mapped[str] = mapped_column(Text)
     prompt: Mapped[str] = mapped_column(Text)
     tools: Mapped[list[str]] = mapped_column(JSONB, default=list)
     output_schema: Mapped[JsonObject] = mapped_column(JSONB, default=dict)
+    review_criteria: Mapped[str | None] = mapped_column(Text, nullable=True)
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
 
     workflow: Mapped[WorkflowModel] = relationship("WorkflowModel", back_populates="nodes")
