@@ -1,5 +1,6 @@
-"""Run, node-attempt, and scheduler snapshot DTOs."""
+"""Run, node-attempt, event, and scheduler snapshot DTOs."""
 
+from typing import Literal
 from uuid import UUID
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, JsonValue
@@ -8,6 +9,16 @@ from agentloom.runtime.states import NodeRunStatus, RunStatus
 from agentloom.runtime.workflow import WorkflowRead
 
 JsonPayload = dict[str, JsonValue]
+RunEventType = Literal[
+    "run.started",
+    "run.completed",
+    "run.failed",
+    "node.started",
+    "node.reviewed",
+    "node.retrying",
+    "node.completed",
+    "node.failed",
+]
 
 
 class RunDto(BaseModel):
@@ -60,6 +71,18 @@ class AgentMessageRead(RunDto):
     created_at: AwareDatetime
 
 
+class RunEventRead(RunDto):
+    """One ordered event emitted while a workflow run advances."""
+
+    id: UUID
+    run_id: UUID
+    sequence: int = Field(ge=1)
+    type: RunEventType
+    node_key: str | None
+    payload: JsonPayload
+    created_at: AwareDatetime
+
+
 class RunSnapshot(RunDto):
     """Complete scheduler and run-detail view loaded through one repository call."""
 
@@ -83,4 +106,12 @@ class RunSnapshot(RunDto):
         return self.current_running_nodes > 0
 
 
-__all__ = ["AgentMessageRead", "JsonPayload", "NodeRunRead", "RunRead", "RunSnapshot"]
+__all__ = [
+    "AgentMessageRead",
+    "JsonPayload",
+    "NodeRunRead",
+    "RunEventRead",
+    "RunEventType",
+    "RunRead",
+    "RunSnapshot",
+]

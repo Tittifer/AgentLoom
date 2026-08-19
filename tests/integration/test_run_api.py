@@ -20,10 +20,12 @@ from agentloom.db.models.workflow import (
 )
 from agentloom.db.session import DatabaseSessionManager
 from agentloom.main import create_app
+from agentloom.repositories.events import RunEventRepository
 from agentloom.repositories.tasks import TaskRepository
 from agentloom.repositories.workflows import WorkflowRepository
 from agentloom.runtime.run import RunRead, RunSnapshot
 from agentloom.runtime.states import NodeRunStatus, RunStatus, TaskStatus
+from agentloom.services.event_service import EventService
 from tests.fixtures.product_research import (
     PRODUCT_RESEARCH_TOOLS,
     load_product_research_plan,
@@ -139,6 +141,15 @@ async def test_run_api_executes_static_workflow_to_completion() -> None:
                         "result": "Mock output for research_xiaomi",
                     },
                 }
+
+                async with database.session_factory() as session:
+                    events = await EventService(RunEventRepository(session)).list_after(run.id, 0)
+                assert [event.sequence for event in events] == list(range(1, 15))
+                assert events[0].type == "run.started"
+                assert events[-1].type == "run.completed"
+                assert [event.type for event in events].count("node.started") == 4
+                assert [event.type for event in events].count("node.reviewed") == 4
+                assert [event.type for event in events].count("node.completed") == 4
 
                 task_response = await client.get(f"/api/tasks/{task.id}")
                 assert task_response.status_code == 200

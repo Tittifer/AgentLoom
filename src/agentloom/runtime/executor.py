@@ -9,7 +9,9 @@ import structlog
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from agentloom.db.base import JsonObject
+from agentloom.repositories.events import RunEventRepository
 from agentloom.repositories.runs import RunRepository
+from agentloom.services.event_service import EventService, RunEventNotifier
 
 
 class NodeExecutionStore(Protocol):
@@ -37,16 +39,43 @@ class NodeExecutionStore(Protocol):
 class DatabaseNodeExecutionStore:
     """Persist every executor transition in its own database transaction."""
 
-    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+    def __init__(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        event_notifier: RunEventNotifier,
+    ) -> None:
         self._session_factory = session_factory
+        self._event_notifier = event_notifier
 
     async def mark_running(self, run_id: UUID, node_key: str) -> bool:
+        transitioned = False
         async with self._session_factory.begin() as session:
-            return await RunRepository(session).mark_node_running(run_id, node_key)
+            transitioned = await RunRepository(session).mark_node_running(run_id, node_key)
+            if transitioned:
+                await EventService(RunEventRepository(session)).append(
+                    run_id,
+                    "node.started",
+                    node_key=node_key,
+                    payload={"status": "running"},
+                )
+        if transitioned:
+            await self._event_notifier.notify(run_id)
+        return transitioned
 
     async def mark_reviewing(self, run_id: UUID, node_key: str) -> bool:
+        transitioned = False
         async with self._session_factory.begin() as session:
-            return await RunRepository(session).mark_node_reviewing(run_id, node_key)
+            transitioned = await RunRepository(session).mark_node_reviewing(run_id, node_key)
+            if transitioned:
+                await EventService(RunEventRepository(session)).append(
+                    run_id,
+                    "node.reviewed",
+                    node_key=node_key,
+                    payload={"status": "reviewing"},
+                )
+        if transitioned:
+            await self._event_notifier.notify(run_id)
+        return transitioned
 
     async def complete(
         self,
@@ -54,8 +83,19 @@ class DatabaseNodeExecutionStore:
         node_key: str,
         output: JsonObject,
     ) -> bool:
+        transitioned = False
         async with self._session_factory.begin() as session:
-            return await RunRepository(session).complete_node(run_id, node_key, output)
+            transitioned = await RunRepository(session).complete_node(run_id, node_key, output)
+            if transitioned:
+                await EventService(RunEventRepository(session)).append(
+                    run_id,
+                    "node.completed",
+                    node_key=node_key,
+                    payload={"status": "completed"},
+                )
+        if transitioned:
+            await self._event_notifier.notify(run_id)
+        return transitioned
 
     async def fail(
         self,
@@ -63,8 +103,22 @@ class DatabaseNodeExecutionStore:
         node_key: str,
         error: JsonObject,
     ) -> bool:
+        transitioned = False
         async with self._session_factory.begin() as session:
-            return await RunRepository(session).fail_node(run_id, node_key, error)
+            transitioned = await RunRepository(session).fail_node(run_id, node_key, error)
+            if transitioned:
+                payload: JsonObject = {"status": "failed"}
+                if "code" in error:
+                    payload["code"] = error["code"]
+                await EventService(RunEventRepository(session)).append(
+                    run_id,
+                    "node.failed",
+                    node_key=node_key,
+                    payload=payload,
+                )
+        if transitioned:
+            await self._event_notifier.notify(run_id)
+        return transitioned
 
 
 class MockNodeExecutor:

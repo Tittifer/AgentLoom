@@ -12,6 +12,7 @@ from agentloom.bootstrap import create_run_scheduler
 from agentloom.config import Settings, get_settings
 from agentloom.db.session import DatabaseSessionManager
 from agentloom.logging import configure_logging
+from agentloom.services.event_service import RunEventNotifier
 
 
 async def health() -> HealthResponse:
@@ -27,7 +28,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     configure_logging(app_settings.log_level)
     logger = structlog.get_logger(__name__)
     database = DatabaseSessionManager(app_settings.database_url)
-    scheduler = create_run_scheduler(database)
+    event_notifier = RunEventNotifier()
+    scheduler = create_run_scheduler(database, event_notifier)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncGenerator[None, None]:
@@ -60,6 +62,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     application.state.database = database
+    application.state.run_event_notifier = event_notifier
     application.state.run_scheduler = scheduler
     application.include_router(task_router, prefix="/api")
     application.include_router(run_router, prefix="/api")

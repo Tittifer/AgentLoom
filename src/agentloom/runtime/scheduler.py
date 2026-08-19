@@ -8,10 +8,12 @@ import structlog
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from agentloom.db.base import JsonObject
+from agentloom.repositories.events import RunEventRepository
 from agentloom.repositories.runs import RunRepository
 from agentloom.runtime.run import NodeRunRead, RunSnapshot
 from agentloom.runtime.states import NodeRunStatus, RunStatus
 from agentloom.runtime.workflow import WorkflowNodeRead
+from agentloom.services.event_service import EventService, RunEventNotifier
 
 
 class NodeExecutor(Protocol):
@@ -53,11 +55,13 @@ class RunScheduler:
         self,
         session_factory: async_sessionmaker[AsyncSession],
         executor: NodeExecutor,
+        event_notifier: RunEventNotifier,
         poll_interval: float = 0.5,
         max_global_concurrency: int = 10,
     ) -> None:
         self._session_factory = session_factory
         self._executor = executor
+        self._event_notifier = event_notifier
         self._poll_interval = poll_interval
         self._semaphore = asyncio.Semaphore(max_global_concurrency)
         self._stop_event = asyncio.Event()
@@ -122,14 +126,25 @@ class RunScheduler:
 
     async def _advance_run(self, run_id: UUID) -> None:
         while True:
+            run_started = False
             async with self._session_factory.begin() as session:
                 repository = RunRepository(session)
                 snapshot = await repository.get_snapshot(run_id)
                 if snapshot is None or snapshot.is_terminal:
                     return
                 if snapshot.run.status is RunStatus.QUEUED:
-                    await repository.mark_run_running(run_id)
-                    continue
+                    run_started = await repository.mark_run_running(run_id)
+                    if run_started:
+                        await EventService(RunEventRepository(session)).append(
+                            run_id,
+                            "run.started",
+                            payload={"status": "running"},
+                        )
+
+            if snapshot.run.status is RunStatus.QUEUED:
+                if run_started:
+                    await self._event_notifier.notify(run_id)
+                continue
 
             ready_nodes = find_ready_nodes(snapshot)
             if ready_nodes:
@@ -157,30 +172,48 @@ class RunScheduler:
         all_completed = all(
             node_run.status is NodeRunStatus.COMPLETED for node_run in node_runs.values()
         )
+        event_written = False
         async with self._session_factory.begin() as session:
             repository = RunRepository(session)
+            events = EventService(RunEventRepository(session))
             if all_completed:
                 result = node_runs[snapshot.workflow.final_node].output or {}
-                await repository.complete_run(snapshot.run.id, result)
-                return
-
-            failed_nodes = sorted(
-                key
-                for key, node_run in node_runs.items()
-                if node_run.status is NodeRunStatus.FAILED
-            )
-            error: JsonObject
-            if failed_nodes:
-                error = {
-                    "code": "NODE_EXECUTION_FAILED",
-                    "failed_nodes": failed_nodes,
-                }
+                event_written = await repository.complete_run(snapshot.run.id, result)
+                if event_written:
+                    await events.append(
+                        snapshot.run.id,
+                        "run.completed",
+                        payload={"status": "completed"},
+                    )
             else:
-                error = {
-                    "code": "RUN_DEADLOCKED",
-                    "message": "No nodes are running or ready",
-                }
-            await repository.fail_run(snapshot.run.id, error)
+                failed_nodes = sorted(
+                    key
+                    for key, node_run in node_runs.items()
+                    if node_run.status is NodeRunStatus.FAILED
+                )
+                error: JsonObject
+                if failed_nodes:
+                    error = {
+                        "code": "NODE_EXECUTION_FAILED",
+                        "failed_nodes": failed_nodes,
+                    }
+                else:
+                    error = {
+                        "code": "RUN_DEADLOCKED",
+                        "message": "No nodes are running or ready",
+                    }
+                event_written = await repository.fail_run(snapshot.run.id, error)
+                if event_written:
+                    await events.append(
+                        snapshot.run.id,
+                        "run.failed",
+                        payload={
+                            "status": "failed",
+                            "code": error["code"],
+                        },
+                    )
+        if event_written:
+            await self._event_notifier.notify(snapshot.run.id)
 
 
 __all__ = ["NodeExecutor", "RunScheduler", "find_ready_nodes"]
