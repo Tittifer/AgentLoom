@@ -7,7 +7,8 @@ the FastAPI backend project, while `frontend/` is a separate React package.
 
 - Python 3.11 managed by uv
 - Node.js 22 and npm 10
-- Docker Engine with Docker Compose v2
+- A PostgreSQL database configured through `.env`
+- Docker Engine with Docker Compose v2 (optional)
 - GNU Make
 
 ## Repository layout
@@ -22,15 +23,24 @@ tmp/       Local planning documents (not committed)
 
 ## Run the development environment
 
-Start PostgreSQL, FastAPI with reload, and Vite from the repository root:
+Start FastAPI with reload and Vite from the repository root. This uses the
+database configured by `AGENTLOOM_DATABASE_URL` in `.env`:
 
 ```bash
 make dev
 ```
 
 The command installs frontend dependencies with `npm ci` when they are missing.
-Press `Ctrl+C` to stop FastAPI and Vite. PostgreSQL remains available so its
-persistent development data is preserved; stop it separately with:
+Press `Ctrl+C` to stop FastAPI and Vite.
+
+To start the Docker PostgreSQL service before the backend and frontend, use:
+
+```bash
+make dev-docker
+```
+
+The Docker database remains available after FastAPI and Vite stop so its
+persistent development data is preserved. Stop it separately with:
 
 ```bash
 make dev-stop
@@ -41,6 +51,8 @@ If GNU Make is unavailable, the equivalent command is:
 ```bash
 uv run --locked python scripts/dev.py
 ```
+
+Add `--with-docker` to that command to start the Docker database as well.
 
 ## Run the backend
 
@@ -103,8 +115,11 @@ uv run --locked alembic downgrade -1
 uv run ruff format --check .
 uv run ruff check .
 uv run pyright
-uv run pytest
+uv run pytest --cov=agentloom --cov-report=term-missing
 ```
+
+The coverage configuration fails the test command when total backend coverage
+falls below 80%.
 
 ## Run the frontend
 

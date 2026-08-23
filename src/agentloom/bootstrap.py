@@ -1,20 +1,43 @@
 """Application runtime assembly."""
 
+from agentloom.agents.reviewer import DeterministicReviewer
+from agentloom.agents.worker import DatabaseWorkerStore, Worker
+from agentloom.config import Settings
 from agentloom.db.session import DatabaseSessionManager
-from agentloom.runtime.executor import DatabaseNodeExecutionStore, MockNodeExecutor
+from agentloom.llm.base import LLMProvider
+from agentloom.llm.litellm_provider import LiteLLMProvider
+from agentloom.llm.mock import SchemaMockLLMProvider
 from agentloom.runtime.scheduler import RunScheduler
 from agentloom.services.event_service import RunEventNotifier
+from agentloom.tools.registry import create_builtin_tool_registry
 
 
 def create_run_scheduler(
     database: DatabaseSessionManager,
     event_notifier: RunEventNotifier,
+    settings: Settings,
 ) -> RunScheduler:
-    """Build the scheduler with deterministic execution and run events."""
+    """Build the scheduler with the configured worker provider and tools."""
 
-    store = DatabaseNodeExecutionStore(database.session_factory, event_notifier)
-    executor = MockNodeExecutor(store)
-    return RunScheduler(database.session_factory, executor, event_notifier)
+    store = DatabaseWorkerStore(database.session_factory, event_notifier)
+    worker = Worker(
+        store,
+        create_llm_provider(settings),
+        DeterministicReviewer(),
+        create_builtin_tool_registry(),
+        model=settings.llm_model,
+        max_turns=settings.worker_max_turns,
+        timeout_seconds=settings.llm_timeout_seconds,
+    )
+    return RunScheduler(database.session_factory, worker, event_notifier)
 
 
-__all__ = ["create_run_scheduler"]
+def create_llm_provider(settings: Settings) -> LLMProvider:
+    """Select mock or LiteLLM without changing worker runtime code."""
+
+    if settings.llm_provider == "mock":
+        return SchemaMockLLMProvider(settings.llm_model)
+    return LiteLLMProvider()
+
+
+__all__ = ["create_llm_provider", "create_run_scheduler"]

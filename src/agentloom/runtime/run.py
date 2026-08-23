@@ -6,7 +6,7 @@ from uuid import UUID
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, JsonValue
 
 from agentloom.runtime.states import NodeRunStatus, RunStatus
-from agentloom.runtime.workflow import WorkflowRead
+from agentloom.runtime.workflow import WorkflowNodeRead, WorkflowRead
 
 JsonPayload = dict[str, JsonValue]
 RunEventType = Literal[
@@ -18,6 +18,7 @@ RunEventType = Literal[
     "node.retrying",
     "node.completed",
     "node.failed",
+    "llm.usage_recorded",
 ]
 
 
@@ -83,6 +84,21 @@ class RunEventRead(RunDto):
     created_at: AwareDatetime
 
 
+class NodeExecutionContext(RunDto):
+    """Persisted inputs and limits required for one worker attempt."""
+
+    run_id: UUID
+    node_run_id: UUID
+    node_key: str = Field(min_length=1)
+    attempt: int = Field(ge=1)
+    task_goal: str = Field(min_length=1)
+    task_context: JsonPayload
+    node: WorkflowNodeRead
+    upstream_outputs: dict[str, JsonPayload]
+    previous_feedback: str | None = None
+    max_retries: int = Field(ge=0)
+
+
 class RunSnapshot(RunDto):
     """Complete scheduler and run-detail view loaded through one repository call."""
 
@@ -109,6 +125,7 @@ class RunSnapshot(RunDto):
 __all__ = [
     "AgentMessageRead",
     "JsonPayload",
+    "NodeExecutionContext",
     "NodeRunRead",
     "RunEventRead",
     "RunEventType",

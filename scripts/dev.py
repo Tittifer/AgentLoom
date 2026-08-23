@@ -1,4 +1,4 @@
-"""Start the AgentLoom development services from one command."""
+"""Start the AgentLoom backend and frontend from one command."""
 
 from __future__ import annotations
 
@@ -75,14 +75,25 @@ def ensure_frontend_dependencies(npm: str) -> None:
         run_checked([npm, "ci"], cwd=FRONTEND)
 
 
-def main() -> int:
-    """Start PostgreSQL, FastAPI, and Vite until interrupted."""
+def should_start_postgres(arguments: list[str]) -> bool:
+    """Parse the single optional Docker flag without adding a CLI dependency."""
 
-    docker = require_command("docker")
+    if not arguments:
+        return False
+    if arguments == ["--with-docker"]:
+        return True
+    raise RuntimeError("Usage: scripts/dev.py [--with-docker]")
+
+
+def main(*, start_postgres: bool = False) -> int:
+    """Start FastAPI and Vite, optionally starting PostgreSQL first."""
+
     npm = require_command("npm")
 
-    print("Starting PostgreSQL...", flush=True)
-    run_checked([docker, "compose", "up", "-d", "postgres"], cwd=ROOT)
+    if start_postgres:
+        docker = require_command("docker")
+        print("Starting PostgreSQL...", flush=True)
+        run_checked([docker, "compose", "up", "-d", "postgres"], cwd=ROOT)
     ensure_frontend_dependencies(npm)
 
     backend_command = [
@@ -133,7 +144,7 @@ def main() -> int:
 
 if __name__ == "__main__":
     try:
-        raise SystemExit(main())
+        raise SystemExit(main(start_postgres=should_start_postgres(sys.argv[1:])))
     except (OSError, RuntimeError, subprocess.CalledProcessError) as error:
         print(f"Unable to start development environment: {error}", file=sys.stderr)
         raise SystemExit(1) from error

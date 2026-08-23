@@ -29,7 +29,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     logger = structlog.get_logger(__name__)
     database = DatabaseSessionManager(app_settings.database_url)
     event_notifier = RunEventNotifier()
-    scheduler = create_run_scheduler(database, event_notifier)
+    scheduler = create_run_scheduler(database, event_notifier, app_settings)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncGenerator[None, None]:

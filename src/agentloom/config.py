@@ -19,6 +19,27 @@ class Settings(BaseSettings):
         default="postgresql+asyncpg://agentloom:agentloom@localhost:15432/agentloom",
         validation_alias="AGENTLOOM_DATABASE_URL",
     )
+    llm_provider: Literal["mock", "litellm"] = Field(
+        default="mock",
+        validation_alias="AGENTLOOM_LLM_PROVIDER",
+    )
+    llm_model: str = Field(
+        default="mock/schema",
+        min_length=1,
+        validation_alias="AGENTLOOM_LLM_MODEL",
+    )
+    llm_timeout_seconds: float = Field(
+        default=60,
+        gt=0,
+        le=600,
+        validation_alias="AGENTLOOM_LLM_TIMEOUT_SECONDS",
+    )
+    worker_max_turns: int = Field(
+        default=6,
+        ge=1,
+        le=20,
+        validation_alias="AGENTLOOM_WORKER_MAX_TURNS",
+    )
     app_name: str = "AgentLoom API"
     app_version: str = "0.1.0"
 

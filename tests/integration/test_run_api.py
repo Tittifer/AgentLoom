@@ -23,7 +23,7 @@ from agentloom.main import create_app
 from agentloom.repositories.events import RunEventRepository
 from agentloom.repositories.tasks import TaskRepository
 from agentloom.repositories.workflows import WorkflowRepository
-from agentloom.runtime.run import RunRead, RunSnapshot
+from agentloom.runtime.run import AgentMessageRead, RunRead, RunSnapshot
 from agentloom.runtime.states import NodeRunStatus, RunStatus, TaskStatus
 from agentloom.services.event_service import EventService
 from tests.fixtures.product_research import (
@@ -120,34 +120,32 @@ async def test_run_api_executes_static_workflow_to_completion() -> None:
                 snapshot = await poll_until_terminal(client, run.id)
 
                 assert snapshot.run.status is RunStatus.COMPLETED
-                assert snapshot.run.result == {
-                    "node_key": "write_report",
-                    "result": "Mock output for write_report",
-                }
+                assert snapshot.run.result == {"report": "Mock report"}
                 assert all(
                     node_run.status is NodeRunStatus.COMPLETED for node_run in snapshot.node_runs
                 )
                 assert snapshot.upstream_outputs["write_report"] == {
                     "research_apple": {
-                        "node_key": "research_apple",
-                        "result": "Mock output for research_apple",
+                        "summary": "Mock summary",
+                        "sources": ["Mock sources"],
                     },
                     "research_huawei": {
-                        "node_key": "research_huawei",
-                        "result": "Mock output for research_huawei",
+                        "summary": "Mock summary",
+                        "sources": ["Mock sources"],
                     },
                     "research_xiaomi": {
-                        "node_key": "research_xiaomi",
-                        "result": "Mock output for research_xiaomi",
+                        "summary": "Mock summary",
+                        "sources": ["Mock sources"],
                     },
                 }
 
                 async with database.session_factory() as session:
                     events = await EventService(RunEventRepository(session)).list_after(run.id, 0)
-                assert [event.sequence for event in events] == list(range(1, 15))
+                assert [event.sequence for event in events] == list(range(1, 19))
                 assert events[0].type == "run.started"
                 assert events[-1].type == "run.completed"
                 assert [event.type for event in events].count("node.started") == 4
+                assert [event.type for event in events].count("llm.usage_recorded") == 4
                 assert [event.type for event in events].count("node.reviewed") == 4
                 assert [event.type for event in events].count("node.completed") == 4
 
@@ -166,7 +164,15 @@ async def test_run_api_executes_static_workflow_to_completion() -> None:
                     f"/api/node-runs/{snapshot.node_runs[0].id}/messages"
                 )
                 assert message_response.status_code == 200
-                assert message_response.json() == []
+                messages = [
+                    AgentMessageRead.model_validate(message) for message in message_response.json()
+                ]
+                assert [message.role for message in messages] == [
+                    "system",
+                    "user",
+                    "assistant",
+                    "reviewer",
+                ]
 
                 missing_response = await client.get(f"/api/runs/{uuid4()}")
                 assert missing_response.status_code == 404

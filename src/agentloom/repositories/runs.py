@@ -13,7 +13,13 @@ from agentloom.db.base import utc_now
 from agentloom.db.models.message import AgentMessageModel
 from agentloom.db.models.run import NodeRunModel, RunModel
 from agentloom.db.models.task import TaskModel
-from agentloom.runtime.run import AgentMessageRead, NodeRunRead, RunRead, RunSnapshot
+from agentloom.runtime.run import (
+    AgentMessageRead,
+    NodeExecutionContext,
+    NodeRunRead,
+    RunRead,
+    RunSnapshot,
+)
 from agentloom.runtime.states import NodeRunStatus, RunStatus, TaskStatus
 from agentloom.runtime.workflow import WorkflowRead
 
@@ -120,6 +126,67 @@ class RunRepository:
         )
         return list((await self._session.scalars(statement)).all())
 
+    async def get_node_execution_context(
+        self,
+        run_id: UUID,
+        node_key: str,
+    ) -> NodeExecutionContext | None:
+        """Load the latest attempt and bounded inputs required by a worker."""
+
+        snapshot = await self.get_snapshot(run_id)
+        if snapshot is None:
+            return None
+        node = next((item for item in snapshot.workflow.nodes if item.key == node_key), None)
+        node_run = next((item for item in snapshot.node_runs if item.node_key == node_key), None)
+        if node is None or node_run is None:
+            return None
+
+        settings_value = await self._session.scalar(
+            select(TaskModel.settings)
+            .join(RunModel, RunModel.task_id == TaskModel.id)
+            .where(RunModel.id == run_id)
+        )
+        if settings_value is None:
+            raise RuntimeError(f"Run {run_id} references a missing task")
+        settings = TaskSettings.model_validate(settings_value)
+
+        goal = snapshot.run.input.get("goal")
+        context = snapshot.run.input.get("context", {})
+        if not isinstance(goal, str) or not goal.strip():
+            raise RuntimeError(f"Run {run_id} has no valid task goal")
+        task_context = JSON_OBJECT_ADAPTER.validate_python(context)
+
+        previous_review = await self._session.scalar(
+            select(NodeRunModel.review)
+            .where(
+                NodeRunModel.run_id == run_id,
+                NodeRunModel.node_key == node_key,
+                NodeRunModel.attempt < node_run.attempt,
+                NodeRunModel.review.is_not(None),
+            )
+            .order_by(NodeRunModel.attempt.desc())
+            .limit(1)
+        )
+        previous_feedback: str | None = None
+        if previous_review is not None:
+            validated_review = JSON_OBJECT_ADAPTER.validate_python(previous_review)
+            feedback = validated_review.get("feedback")
+            if isinstance(feedback, str):
+                previous_feedback = feedback
+
+        return NodeExecutionContext(
+            run_id=run_id,
+            node_run_id=node_run.id,
+            node_key=node_key,
+            attempt=node_run.attempt,
+            task_goal=goal,
+            task_context=task_context,
+            node=node,
+            upstream_outputs=snapshot.upstream_outputs[node_key],
+            previous_feedback=previous_feedback,
+            max_retries=settings.max_retries,
+        )
+
     async def mark_run_running(self, run_id: UUID) -> bool:
         """Move a queued run and its task into running state."""
 
@@ -138,25 +205,45 @@ class RunRepository:
         )
         return True
 
-    async def mark_node_running(self, run_id: UUID, node_key: str) -> bool:
+    async def mark_node_running(
+        self,
+        run_id: UUID,
+        node_key: str,
+        node_input: Mapping[str, object] | None = None,
+    ) -> bool:
         """Move the latest pending or retrying attempt into running state."""
 
+        values: dict[str, object] = {"started_at": utc_now()}
+        if node_input is not None:
+            values["input"] = dict(node_input)
         return await self._transition_latest_node(
             run_id,
             node_key,
             {NodeRunStatus.PENDING, NodeRunStatus.RETRYING},
             NodeRunStatus.RUNNING,
-            started_at=utc_now(),
+            **values,
         )
 
-    async def mark_node_reviewing(self, run_id: UUID, node_key: str) -> bool:
+    async def mark_node_reviewing(
+        self,
+        run_id: UUID,
+        node_key: str,
+        output: Mapping[str, object] | None = None,
+        usage: Mapping[str, object] | None = None,
+    ) -> bool:
         """Move the latest running attempt into reviewing state."""
 
+        values: dict[str, object] = {}
+        if output is not None:
+            values["output"] = dict(output)
+        if usage is not None:
+            values["usage"] = dict(usage)
         return await self._transition_latest_node(
             run_id,
             node_key,
             {NodeRunStatus.RUNNING},
             NodeRunStatus.REVIEWING,
+            **values,
         )
 
     async def complete_node(
@@ -164,16 +251,22 @@ class RunRepository:
         run_id: UUID,
         node_key: str,
         output: Mapping[str, object],
+        review: Mapping[str, object] | None = None,
     ) -> bool:
         """Persist a reviewed node output and mark the attempt completed."""
 
+        values: dict[str, object] = {
+            "output": dict(output),
+            "ended_at": utc_now(),
+        }
+        if review is not None:
+            values["review"] = dict(review)
         return await self._transition_latest_node(
             run_id,
             node_key,
             {NodeRunStatus.REVIEWING},
             NodeRunStatus.COMPLETED,
-            output=dict(output),
-            ended_at=utc_now(),
+            **values,
         )
 
     async def fail_node(
@@ -181,9 +274,19 @@ class RunRepository:
         run_id: UUID,
         node_key: str,
         error: Mapping[str, object],
+        review: Mapping[str, object] | None = None,
+        usage: Mapping[str, object] | None = None,
     ) -> bool:
         """Persist an execution error and terminate the latest node attempt."""
 
+        values: dict[str, object] = {
+            "error": dict(error),
+            "ended_at": utc_now(),
+        }
+        if review is not None:
+            values["review"] = dict(review)
+        if usage is not None:
+            values["usage"] = dict(usage)
         return await self._transition_latest_node(
             run_id,
             node_key,
@@ -194,9 +297,41 @@ class RunRepository:
                 NodeRunStatus.RETRYING,
             },
             NodeRunStatus.FAILED,
-            error=dict(error),
-            ended_at=utc_now(),
+            **values,
         )
+
+    async def retry_node(
+        self,
+        run_id: UUID,
+        node_key: str,
+        review: Mapping[str, object],
+    ) -> bool:
+        """Finish the reviewed attempt and create its next pending attempt."""
+
+        statement = (
+            select(NodeRunModel)
+            .where(NodeRunModel.run_id == run_id, NodeRunModel.node_key == node_key)
+            .order_by(NodeRunModel.attempt.desc())
+            .limit(1)
+            .with_for_update()
+        )
+        current = (await self._session.scalars(statement)).one_or_none()
+        if current is None or current.status is not NodeRunStatus.REVIEWING:
+            return False
+        current.status = NodeRunStatus.RETRYING
+        current.review = dict(review)
+        current.ended_at = utc_now()
+        self._session.add(
+            NodeRunModel(
+                run_id=run_id,
+                node_key=node_key,
+                status=NodeRunStatus.PENDING,
+                attempt=current.attempt + 1,
+                input={},
+            )
+        )
+        await self._session.flush()
+        return True
 
     async def complete_run(self, run_id: UUID, result: Mapping[str, object]) -> bool:
         """Complete a run and its owning task with the final-node result."""
