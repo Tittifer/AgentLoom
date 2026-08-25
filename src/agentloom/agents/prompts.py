@@ -1,11 +1,50 @@
-"""Bounded, deterministic message construction for workers."""
+"""Bounded, deterministic message construction for AgentLoom agents."""
 
 import json
+from collections.abc import Sequence
 
-from agentloom.llm.base import LLMMessage
+from pydantic import JsonValue
+
+from agentloom.llm.base import LLMMessage, ToolDefinition
 from agentloom.runtime.run import NodeExecutionContext
 
 MAX_PROMPT_SECTION_CHARS = 20_000
+
+
+def build_planner_messages(
+    goal: str,
+    context: dict[str, JsonValue],
+    agent_roles: Sequence[str],
+    tools: Sequence[ToolDefinition],
+    *,
+    max_nodes: int,
+    max_parallel_nodes: int,
+    max_retries: int,
+) -> list[LLMMessage]:
+    """Build the fixed planner context without executing any task work."""
+
+    system_sections = [
+        "You are the AgentLoom planner. Decompose the task into a valid executable DAG.",
+        "Plan only: do not execute the task and do not call tools.",
+        "Use only the listed agent roles and tools.",
+        "Every dependency must reference a node key in the same plan.",
+        "The final node must exist and have no downstream nodes.",
+        f"Maximum nodes: {max_nodes}",
+        f"Runtime parallel-node limit: {max_parallel_nodes}",
+        f"Runtime retries per node: {max_retries}",
+        f"Available agent roles: {_bounded_json(list(agent_roles))}",
+        "Available read-only tools: "
+        + _bounded_json([tool.model_dump(mode="json") for tool in tools]),
+    ]
+    user_sections = [
+        f"Task goal: {goal}",
+        f"Task context: {_bounded_json(context)}",
+        "Return only a WorkflowPlan matching the required JSON Schema.",
+    ]
+    return [
+        LLMMessage(role="system", content="\n".join(system_sections)),
+        LLMMessage(role="user", content="\n".join(user_sections)),
+    ]
 
 
 def build_worker_messages(context: NodeExecutionContext) -> list[LLMMessage]:
@@ -41,4 +80,8 @@ def _bounded_json(value: object) -> str:
     return serialized[:MAX_PROMPT_SECTION_CHARS] + "[TRUNCATED]"
 
 
-__all__ = ["MAX_PROMPT_SECTION_CHARS", "build_worker_messages"]
+__all__ = [
+    "MAX_PROMPT_SECTION_CHARS",
+    "build_planner_messages",
+    "build_worker_messages",
+]

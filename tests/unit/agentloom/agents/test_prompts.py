@@ -2,7 +2,12 @@
 
 from uuid import uuid4
 
-from agentloom.agents.prompts import MAX_PROMPT_SECTION_CHARS, build_worker_messages
+from agentloom.agents.prompts import (
+    MAX_PROMPT_SECTION_CHARS,
+    build_planner_messages,
+    build_worker_messages,
+)
+from agentloom.llm.base import ToolDefinition
 from agentloom.runtime.run import NodeExecutionContext
 from agentloom.runtime.workflow import WorkflowNodeRead
 
@@ -52,6 +57,31 @@ def test_worker_prompt_truncates_large_json_sections() -> None:
     messages = build_worker_messages(context)
 
     assert "[TRUNCATED]" in messages[1].content
+
+
+def test_planner_prompt_contains_roles_tools_and_runtime_limits() -> None:
+    messages = build_planner_messages(
+        "Compare products",
+        {"language": "zh-CN"},
+        ["researcher", "writer"],
+        [
+            ToolDefinition(
+                name="web_search",
+                description="Search mock sources",
+                parameters={"type": "object"},
+            )
+        ],
+        max_nodes=20,
+        max_parallel_nodes=3,
+        max_retries=2,
+    )
+
+    assert [message.role for message in messages] == ["system", "user"]
+    assert "researcher" in messages[0].content
+    assert "web_search" in messages[0].content
+    assert "Maximum nodes: 20" in messages[0].content
+    assert "Runtime parallel-node limit: 3" in messages[0].content
+    assert "Compare products" in messages[1].content
 
 
 def _context_payload() -> dict[str, object]:

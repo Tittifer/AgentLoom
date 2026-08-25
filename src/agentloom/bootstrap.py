@@ -1,5 +1,6 @@
 """Application runtime assembly."""
 
+from agentloom.agents.planner import Planner
 from agentloom.agents.reviewer import DeterministicReviewer
 from agentloom.agents.worker import DatabaseWorkerStore, Worker
 from agentloom.config import Settings
@@ -32,6 +33,18 @@ def create_run_scheduler(
     return RunScheduler(database.session_factory, worker, event_notifier)
 
 
+def create_planner(settings: Settings) -> Planner:
+    """Build the planner with the same provider selection as the worker runtime."""
+
+    tools = create_builtin_tool_registry()
+    return Planner(
+        create_llm_provider(settings),
+        tools.definitions(),
+        model=settings.llm_model,
+        timeout_seconds=settings.llm_timeout_seconds,
+    )
+
+
 def create_llm_provider(settings: Settings) -> LLMProvider:
     """Select mock or LiteLLM without changing worker runtime code."""
 
@@ -40,4 +53,4 @@ def create_llm_provider(settings: Settings) -> LLMProvider:
     return LiteLLMProvider()
 
 
-__all__ = ["create_llm_provider", "create_run_scheduler"]
+__all__ = ["create_llm_provider", "create_planner", "create_run_scheduler"]

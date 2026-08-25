@@ -68,6 +68,9 @@ def _mock_object(schema: dict[str, JsonValue]) -> dict[str, JsonValue]:
 def _mock_value(schema: dict[str, JsonValue], name: str) -> JsonValue:
     if "const" in schema:
         return deepcopy(schema["const"])
+    examples = schema.get("examples")
+    if isinstance(examples, list) and examples:
+        return deepcopy(examples[0])
     enum_values = schema.get("enum")
     if isinstance(enum_values, list) and enum_values:
         return deepcopy(enum_values[0])

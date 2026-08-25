@@ -81,3 +81,18 @@ async def test_schema_mock_rejects_non_object_response_schema() -> None:
 
     with pytest.raises(LLMProviderError, match="JSON object"):
         await provider.complete(request({"type": "string"}))
+
+
+async def test_schema_mock_prefers_a_schema_example() -> None:
+    provider = SchemaMockLLMProvider()
+
+    response = await provider.complete(
+        request(
+            {
+                "type": "object",
+                "examples": [{"answer": "example"}],
+            }
+        )
+    )
+
+    assert response.structured_output == {"answer": "example"}

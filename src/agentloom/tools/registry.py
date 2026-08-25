@@ -43,10 +43,13 @@ class ToolRegistry:
             raise ValueError(f"Tool {name} is already registered")
         self._tools[name] = tool
 
-    def definitions(self, allowed_tools: Collection[str]) -> list[ToolDefinition]:
-        """Return definitions for registered tools in the node whitelist."""
+    def definitions(
+        self,
+        allowed_tools: Collection[str] | None = None,
+    ) -> list[ToolDefinition]:
+        """Return all definitions, or only those in a node whitelist."""
 
-        allowed = set(allowed_tools)
+        allowed = set(allowed_tools) if allowed_tools is not None else set(self._tools)
         return [tool.definition for name, tool in self._tools.items() if name in allowed]
 
     async def execute(

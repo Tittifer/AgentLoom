@@ -8,7 +8,7 @@ from fastapi import FastAPI
 
 from agentloom.api.routes import run_router, task_router
 from agentloom.api.schemas import HealthResponse
-from agentloom.bootstrap import create_run_scheduler
+from agentloom.bootstrap import create_planner, create_run_scheduler
 from agentloom.config import Settings, get_settings
 from agentloom.db.session import DatabaseSessionManager
 from agentloom.logging import configure_logging
@@ -30,6 +30,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     database = DatabaseSessionManager(app_settings.database_url)
     event_notifier = RunEventNotifier()
     scheduler = create_run_scheduler(database, event_notifier, app_settings)
+    planner = create_planner(app_settings)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncGenerator[None, None]:
@@ -64,6 +65,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.state.database = database
     application.state.run_event_notifier = event_notifier
     application.state.run_scheduler = scheduler
+    application.state.planner = planner
     application.include_router(task_router, prefix="/api")
     application.include_router(run_router, prefix="/api")
     application.add_api_route(
