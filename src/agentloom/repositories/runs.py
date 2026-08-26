@@ -408,6 +408,24 @@ class RunRepository:
         messages = (await self._session.scalars(statement)).all()
         return [self._to_message_read(message) for message in messages]
 
+    async def get_node_attempts(
+        self,
+        run_id: UUID,
+        node_key: str,
+    ) -> list[NodeRunRead] | None:
+        """Return every persisted attempt for a run node, or None for a missing run."""
+
+        exists = await self._session.scalar(select(RunModel.id).where(RunModel.id == run_id))
+        if exists is None:
+            return None
+        statement = (
+            select(NodeRunModel)
+            .where(NodeRunModel.run_id == run_id, NodeRunModel.node_key == node_key)
+            .order_by(NodeRunModel.attempt)
+        )
+        attempts = (await self._session.scalars(statement)).all()
+        return [self._to_node_run_read(attempt) for attempt in attempts]
+
     async def _transition_latest_node(
         self,
         run_id: UUID,

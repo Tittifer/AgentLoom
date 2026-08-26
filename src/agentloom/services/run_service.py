@@ -6,7 +6,7 @@ from agentloom.db.base import JsonObject
 from agentloom.repositories.runs import RunRepository
 from agentloom.repositories.tasks import TaskRepository
 from agentloom.repositories.workflows import WorkflowRepository
-from agentloom.runtime.run import AgentMessageRead, RunRead, RunSnapshot
+from agentloom.runtime.run import AgentMessageRead, NodeRunRead, RunRead, RunSnapshot
 from agentloom.runtime.states import TaskStatus
 from agentloom.services.task_service import TaskNotFoundError
 
@@ -82,6 +82,16 @@ class RunService:
         if messages is None:
             raise NodeRunNotFoundError
         return messages
+
+    async def get_node_attempts(self, run_id: UUID, node_key: str) -> list[NodeRunRead]:
+        """Return all attempts for one node in creation order."""
+
+        attempts = await self._runs.get_node_attempts(run_id, node_key)
+        if attempts is None:
+            raise RunNotFoundError
+        if not attempts:
+            raise NodeRunNotFoundError
+        return attempts
 
 
 __all__ = [

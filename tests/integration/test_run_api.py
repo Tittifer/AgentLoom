@@ -23,7 +23,7 @@ from agentloom.main import create_app
 from agentloom.repositories.events import RunEventRepository
 from agentloom.repositories.tasks import TaskRepository
 from agentloom.repositories.workflows import WorkflowRepository
-from agentloom.runtime.run import AgentMessageRead, RunRead, RunSnapshot
+from agentloom.runtime.run import AgentMessageRead, NodeRunRead, RunRead, RunSnapshot
 from agentloom.runtime.states import NodeRunStatus, RunStatus, TaskStatus
 from agentloom.services.event_service import EventService
 from tests.fixtures.product_research import (
@@ -173,6 +173,24 @@ async def test_run_api_executes_static_workflow_to_completion() -> None:
                     "assistant",
                     "reviewer",
                 ]
+
+                attempts_response = await client.get(
+                    f"/api/runs/{run.id}/nodes/{snapshot.node_runs[0].node_key}/attempts"
+                )
+                assert attempts_response.status_code == 200
+                attempts = [
+                    NodeRunRead.model_validate(attempt) for attempt in attempts_response.json()
+                ]
+                assert [attempt.attempt for attempt in attempts] == [1]
+
+                missing_node_response = await client.get(
+                    f"/api/runs/{run.id}/nodes/missing/attempts"
+                )
+                assert missing_node_response.status_code == 404
+                assert (
+                    ApiError.model_validate(missing_node_response.json()).code
+                    == "NODE_RUN_NOT_FOUND"
+                )
 
                 missing_response = await client.get(f"/api/runs/{uuid4()}")
                 assert missing_response.status_code == 404

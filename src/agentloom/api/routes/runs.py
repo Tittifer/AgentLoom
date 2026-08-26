@@ -15,7 +15,7 @@ from agentloom.repositories.events import RunEventRepository
 from agentloom.repositories.runs import RunRepository
 from agentloom.repositories.tasks import TaskRepository
 from agentloom.repositories.workflows import WorkflowRepository
-from agentloom.runtime.run import AgentMessageRead, RunEventRead, RunRead, RunSnapshot
+from agentloom.runtime.run import AgentMessageRead, NodeRunRead, RunEventRead, RunRead, RunSnapshot
 from agentloom.services.event_service import EventService, RunEventNotifier
 from agentloom.services.run_service import (
     NodeRunNotFoundError,
@@ -145,6 +145,26 @@ async def get_run(
         return await service.get_run(run_id)
     except RunNotFoundError:
         return error_response(404, "RUN_NOT_FOUND", "Run not found")
+
+
+@router.get(
+    "/runs/{run_id}/nodes/{node_key}/attempts",
+    response_model=list[NodeRunRead],
+    responses={status.HTTP_404_NOT_FOUND: {"model": ApiError}},
+)
+async def get_node_attempts(
+    run_id: UUID,
+    node_key: str,
+    service: RunServiceDependency,
+) -> list[NodeRunRead] | JSONResponse:
+    """Return every persisted attempt for one node in a run."""
+
+    try:
+        return await service.get_node_attempts(run_id, node_key)
+    except RunNotFoundError:
+        return error_response(404, "RUN_NOT_FOUND", "Run not found")
+    except NodeRunNotFoundError:
+        return error_response(404, "NODE_RUN_NOT_FOUND", "Node run not found")
 
 
 @router.get(

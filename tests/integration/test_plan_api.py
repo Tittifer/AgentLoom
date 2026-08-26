@@ -60,6 +60,9 @@ async def test_plan_api_creates_workflow_and_advances_task_to_ready() -> None:
 
                 response = await client.post(f"/api/tasks/{task.id}/plan")
                 conflict = await client.post(f"/api/tasks/{task.id}/plan")
+                stored_workflow_response = await client.get(
+                    f"/api/tasks/{task.id}/workflow"
+                )
                 detail = await client.get(f"/api/tasks/{task.id}")
 
         assert response.status_code == 200
@@ -73,6 +76,8 @@ async def test_plan_api_creates_workflow_and_advances_task_to_ready() -> None:
         ]
         assert conflict.status_code == 409
         assert ApiError.model_validate(conflict.json()).code == "TASK_NOT_PLANNABLE"
+        assert stored_workflow_response.status_code == 200
+        assert WorkflowRead.model_validate(stored_workflow_response.json()) == workflow
         assert TaskRead.model_validate(detail.json()).status is TaskStatus.READY
     finally:
         if task_id is not None:
@@ -131,10 +136,16 @@ async def test_plan_api_returns_not_found_and_provider_errors() -> None:
                 missing = await client.post(f"/api/tasks/{uuid4()}/plan")
                 task = await create_task(client, f"Planner provider {uuid4().hex}")
                 task_id = task.id
+                no_workflow = await client.get(f"/api/tasks/{task.id}/workflow")
+                missing_workflow_task = await client.get(f"/api/tasks/{uuid4()}/workflow")
                 provider_error = await client.post(f"/api/tasks/{task.id}/plan")
 
         assert missing.status_code == 404
         assert ApiError.model_validate(missing.json()).code == "TASK_NOT_FOUND"
+        assert no_workflow.status_code == 404
+        assert ApiError.model_validate(no_workflow.json()).code == "WORKFLOW_NOT_FOUND"
+        assert missing_workflow_task.status_code == 404
+        assert ApiError.model_validate(missing_workflow_task.json()).code == "TASK_NOT_FOUND"
         assert provider_error.status_code == 502
         assert ApiError.model_validate(provider_error.json()).code == "PLANNER_PROVIDER_ERROR"
         async with database.session_factory() as session:

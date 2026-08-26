@@ -70,8 +70,14 @@ async def test_worker_retry_creates_a_second_persisted_attempt() -> None:
             events = await EventService(RunEventRepository(session)).list_after(run.id, 0)
             first_messages = await RunRepository(session).get_node_messages(attempts[0].id)
             second_messages = await RunRepository(session).get_node_messages(attempts[1].id)
+            attempt_reads = await RunRepository(session).get_node_attempts(
+                run.id,
+                "research_apple",
+            )
 
         assert [attempt.attempt for attempt in attempts] == [1, 2]
+        assert attempt_reads is not None
+        assert [attempt.attempt for attempt in attempt_reads] == [1, 2]
         assert [attempt.status for attempt in attempts] == [
             NodeRunStatus.RETRYING,
             NodeRunStatus.COMPLETED,

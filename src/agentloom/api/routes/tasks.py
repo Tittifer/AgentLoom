@@ -11,6 +11,7 @@ from agentloom.agents.planner import Planner, PlannerGenerationError, PlannerPro
 from agentloom.api.schemas import ApiError, ApiErrorDetail, PaginatedResponse, TaskCreate, TaskRead
 from agentloom.db.session import DatabaseSessionManager, get_db_session
 from agentloom.repositories.tasks import TaskRepository
+from agentloom.repositories.workflows import WorkflowRepository
 from agentloom.runtime.states import TaskStatus
 from agentloom.runtime.workflow import WorkflowRead
 from agentloom.services.planning_service import PlanningService, TaskNotPlannableError
@@ -112,6 +113,27 @@ async def plan_task(
         )
     except PlannerProviderError:
         return error_response(502, "PLANNER_PROVIDER_ERROR", "Planner model request failed")
+
+
+@router.get(
+    "/{task_id}/workflow",
+    response_model=WorkflowRead,
+    responses={status.HTTP_404_NOT_FOUND: {"model": ApiError}},
+)
+async def get_task_workflow(
+    task_id: UUID,
+    session: DatabaseSession,
+) -> WorkflowRead | JSONResponse:
+    """Return the newest persisted workflow for one task."""
+
+    task = await TaskRepository(session).get(task_id)
+    if task is None:
+        return error_response(404, "TASK_NOT_FOUND", "Task not found")
+
+    workflow = await WorkflowRepository(session).get_latest_for_task(task_id)
+    if workflow is None:
+        return error_response(404, "WORKFLOW_NOT_FOUND", "Task has no workflow")
+    return workflow
 
 
 @router.get(
