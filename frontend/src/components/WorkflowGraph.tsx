@@ -12,6 +12,7 @@ import "@xyflow/react/dist/style.css";
 
 import type { NodeRunRead } from "../api/runs";
 import type { WorkflowRead } from "../api/tasks";
+import { getNodeStatusColor } from "../utils/workflow";
 
 interface WorkflowGraphProps {
   workflow: WorkflowRead;
@@ -19,17 +20,6 @@ interface WorkflowGraphProps {
   selectedNodeKey?: string;
   onSelectNode: (nodeKey: string) => void;
 }
-
-const STATUS_COLORS: Record<string, string> = {
-  pending: "#94a3b8",
-  running: "#2563eb",
-  reviewing: "#7c3aed",
-  retrying: "#d97706",
-  completed: "#16a34a",
-  failed: "#dc2626",
-  skipped: "#64748b",
-  cancelled: "#475569",
-};
 
 function calculateLayers(workflow: WorkflowRead): Map<string, number> {
   const nodesByKey = new Map(workflow.nodes.map((node) => [node.key, node]));
@@ -96,7 +86,7 @@ export function WorkflowGraph({
         style: {
           width: 210,
           padding: 14,
-          border: `2px solid ${selected ? "#172033" : STATUS_COLORS[status]}`,
+          border: `2px solid ${selected ? "#172033" : getNodeStatusColor(status)}`,
           borderRadius: 12,
           background: "#ffffff",
           boxShadow: selected ? "0 0 0 4px rgb(49 91 214 / 14%)" : "0 8px 20px rgb(15 23 42 / 8%)",

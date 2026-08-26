@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 
 import { getNodeAttempts, getNodeMessages, type NodeRunRead } from "../api/runs";
@@ -40,10 +40,6 @@ export function NodeDetailDrawer({
     queryKey: ["node-attempts", runId, node.key],
     queryFn: () => getNodeAttempts(runId, node.key),
   });
-
-  useEffect(() => {
-    setSelectedAttemptId(undefined);
-  }, [node.key]);
 
   const attempts = attemptsQuery.data ?? (latestNodeRun ? [latestNodeRun] : []);
   const attempt =

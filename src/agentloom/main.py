@@ -12,6 +12,7 @@ from agentloom.bootstrap import create_planner, create_run_scheduler
 from agentloom.config import Settings, get_settings
 from agentloom.db.session import DatabaseSessionManager
 from agentloom.logging import configure_logging
+from agentloom.runtime.recovery import recover_active_runs
 from agentloom.services.event_service import RunEventNotifier
 
 
@@ -42,6 +43,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise
 
         logger.info("database_connected")
+        recovered_run_ids = await recover_active_runs(database.session_factory, event_notifier)
+        if recovered_run_ids:
+            logger.info("runs_recovered", count=len(recovered_run_ids))
         logger.info(
             "application_started",
             environment=app_settings.environment,

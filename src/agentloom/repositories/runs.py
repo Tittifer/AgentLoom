@@ -389,6 +389,48 @@ class RunRepository:
         )
         return True
 
+    async def cancel_run(self, run_id: UUID) -> RunRead | None:
+        """Cancel an active run, its task, and every unfinished node attempt."""
+
+        task_id = await self._session.scalar(
+            update(RunModel)
+            .where(
+                RunModel.id == run_id,
+                RunModel.status.in_([RunStatus.QUEUED, RunStatus.RUNNING]),
+            )
+            .values(status=RunStatus.CANCELLED, ended_at=utc_now())
+            .returning(RunModel.task_id)
+        )
+        if task_id is None:
+            return None
+        await self._session.execute(
+            update(NodeRunModel)
+            .where(
+                NodeRunModel.run_id == run_id,
+                NodeRunModel.status.in_(
+                    [
+                        NodeRunStatus.PENDING,
+                        NodeRunStatus.RUNNING,
+                        NodeRunStatus.REVIEWING,
+                        NodeRunStatus.RETRYING,
+                    ]
+                ),
+            )
+            .values(status=NodeRunStatus.CANCELLED, ended_at=utc_now())
+        )
+        await self._session.execute(
+            update(TaskModel)
+            .where(
+                TaskModel.id == task_id,
+                TaskModel.status.in_([TaskStatus.READY, TaskStatus.RUNNING]),
+            )
+            .values(status=TaskStatus.CANCELLED)
+        )
+        snapshot = await self.get_snapshot(run_id)
+        if snapshot is None:
+            raise RuntimeError(f"Cancelled run {run_id} could not be reloaded")
+        return snapshot.run
+
     async def get_node_messages(
         self,
         node_run_id: UUID,

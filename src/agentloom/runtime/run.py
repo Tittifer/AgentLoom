@@ -11,8 +11,10 @@ from agentloom.runtime.workflow import WorkflowNodeRead, WorkflowRead
 JsonPayload = dict[str, JsonValue]
 RunEventType = Literal[
     "run.started",
+    "run.recovered",
     "run.completed",
     "run.failed",
+    "run.cancelled",
     "node.started",
     "node.reviewed",
     "node.retrying",

@@ -1,134 +1,156 @@
 # AgentLoom
 
-AgentLoom is a lightweight multi-agent collaboration project. The repository root is
-the FastAPI backend project, while `frontend/` is a separate React package.
+AgentLoom is a lightweight, database-backed multi-agent workflow application. A Planner turns a natural-language task into a validated DAG; asynchronous Workers execute ready nodes, a deterministic Reviewer validates structured results, and the React UI streams persisted progress over SSE.
 
-## Prerequisites
+## Current scope
 
-- Python 3.11 managed by uv
-- Node.js 22 and npm 10
-- A PostgreSQL database configured through `.env`
-- Docker Engine with Docker Compose v2 (optional)
-- GNU Make
+Version `0.1.0` is intentionally limited to:
+
+- one backend process and one scheduler;
+- one trusted user with no authentication or authorization;
+- read-only registered tools;
+- PostgreSQL persistence;
+- a deterministic offline MockLLM or a LiteLLM-backed provider;
+- at most 20 nodes per workflow and configurable bounded concurrency/retries.
+
+Do not expose this version directly to untrusted networks. Multi-user isolation, distributed scheduling, write-capable tools, quotas, and production authentication are outside the MVP.
 
 ## Repository layout
 
 ```text
-src/       FastAPI backend package
-tests/     Backend tests
-frontend/  Independent React and TypeScript package
-examples/  Example task and workflow inputs
-tmp/       Local planning documents (not committed)
+src/                  FastAPI backend package
+tests/                Backend unit, integration, contract, and E2E support
+frontend/             React, TypeScript, Vitest, and Playwright package
+alembic/              PostgreSQL migrations
+examples/             Product-research workflow example
+scripts/              Local development launcher
+compose.yaml          Optional development PostgreSQL service
 ```
 
-## Run the development environment
+## Prerequisites
 
-Start FastAPI with reload and Vite from the repository root. This uses the
-database configured by `AGENTLOOM_DATABASE_URL` in `.env`:
+- Python 3.11
+- [uv](https://docs.astral.sh/uv/)
+- Node.js 22 and npm 10
+- PostgreSQL 16, installed locally or started by the optional development Compose service
+- GNU Make is optional; PowerShell users can run the equivalent commands directly
 
-```bash
-make dev
+## Local development
+
+Copy the example configuration and install dependencies:
+
+```powershell
+Copy-Item .env.example .env
+uv sync --locked --all-groups
+npm --prefix frontend ci
 ```
 
-The command installs frontend dependencies with `npm ci` when they are missing.
-Press `Ctrl+C` to stop FastAPI and Vite.
+If PostgreSQL is installed locally, create the configured database and apply migrations:
 
-To start the Docker PostgreSQL service before the backend and frontend, use:
-
-```bash
-make dev-docker
+```powershell
+uv run --locked alembic upgrade head
 ```
 
-The Docker database remains available after FastAPI and Vite stop so its
-persistent development data is preserved. Stop it separately with:
+Start the backend and frontend together:
 
-```bash
-make dev-stop
-```
-
-If GNU Make is unavailable, the equivalent command is:
-
-```bash
+```powershell
 uv run --locked python scripts/dev.py
 ```
 
-Add `--with-docker` to that command to start the Docker database as well.
+Alternatively, start the development PostgreSQL container first:
 
-## Run the backend
-
-```bash
-uv sync
-uv run uvicorn agentloom.main:app --reload
+```powershell
+uv run --locked python scripts/dev.py --with-docker
 ```
 
-The health endpoint is available at <http://localhost:8000/health>.
+On systems with GNU Make, the equivalent commands are `make dev` and `make dev-docker`. Open <http://localhost:5173/tasks>; FastAPI health is available at <http://localhost:8000/health>.
 
-## Run PostgreSQL
+## Model configuration
 
-Copy the development environment template if you do not already have a local
-`.env` file, then start PostgreSQL:
+The default configuration is completely offline:
 
-```bash
-cp .env.example .env
-docker compose up -d postgres
-docker compose ps
+```dotenv
+AGENTLOOM_LLM_PROVIDER=mock
+AGENTLOOM_LLM_MODEL=mock/schema
 ```
 
-The database is exposed on `localhost:15432` by default, avoiding conflicts
-with locally installed PostgreSQL instances. Its data is stored in
-the `postgres_data` named volume and survives ordinary container recreation.
-The values in `.env.example` are development defaults and must not be used as
-production credentials.
+For a model supported by LiteLLM, set:
 
-To stop the database without deleting its data:
-
-```bash
-docker compose stop postgres
+```dotenv
+AGENTLOOM_LLM_PROVIDER=litellm
+AGENTLOOM_LLM_MODEL=openai/gpt-4.1-mini
+OPENAI_API_KEY=replace-with-your-key
 ```
 
-## Manage database migrations
+Use the provider-specific environment variable required by LiteLLM. Never commit `.env` or API keys. `AGENTLOOM_LLM_TIMEOUT_SECONDS` bounds each model call and `AGENTLOOM_WORKER_MAX_TURNS` bounds each Worker tool loop.
 
-Apply all committed migrations after PostgreSQL is healthy:
+## Run tests and checks
 
-```bash
+Backend tests use PostgreSQL but never require a model API key:
+
+```powershell
+uv run --locked pytest -m "not live" --cov=agentloom --cov-report=term-missing
+uv run --locked ruff format --check .
+uv run --locked ruff check .
+uv run --locked pyright
+```
+
+Frontend checks are also offline:
+
+```powershell
+npm --prefix frontend run lint
+npm --prefix frontend run typecheck
+npm --prefix frontend run test
+npm --prefix frontend run build
+```
+
+Install Chromium once and run the full product-research browser flow:
+
+```powershell
+Set-Location frontend
+npx playwright install chromium
+npm run test:e2e
+Set-Location ..
+```
+
+The E2E test starts isolated FastAPI and Vite processes, uses a deterministic MockLLM, exercises one Reviewer retry, and needs the configured PostgreSQL database.
+
+## Database migrations
+
+Apply and inspect migrations from the repository root:
+
+```powershell
 uv run --locked alembic upgrade head
 uv run --locked alembic current
-```
-
-After changing ORM models, generate and inspect a migration before applying it:
-
-```bash
-uv run --locked alembic revision --autogenerate -m "describe schema change"
-uv run --locked alembic upgrade head
 uv run --locked alembic check
 ```
 
-Revert the latest migration during development with:
+Apply committed migrations before starting Uvicorn. Run only one backend instance during `0.1.0`; recovery and scheduling use a single-process ownership model.
 
-```bash
-uv run --locked alembic downgrade -1
+## Runtime behavior
+
+- Startup recovery finds queued/running Runs, keeps completed nodes, resets interrupted running/reviewing attempts, records `run.recovered`, and resumes scheduling.
+- Cancelling a Run marks all unfinished attempts cancelled. A model call already in flight may finish, but its output cannot transition or commit.
+- Retrying a failed Run creates a new Run using the same immutable Workflow and input. The failed Run remains available as history.
+- SSE events are persisted before notification, support replay, and close in the UI when a Run completes, fails, or is cancelled.
+
+## Release check
+
+Run the complete local release gate:
+
+```powershell
+uv lock --check
+uv run --locked ruff format --check .
+uv run --locked ruff check .
+uv run --locked pyright
+uv run --locked pytest -m "not live" --cov=agentloom --cov-report=term-missing
+uv run --locked alembic upgrade head
+npm --prefix frontend ci
+npm --prefix frontend run lint
+npm --prefix frontend run typecheck
+npm --prefix frontend run test
+npm --prefix frontend run build
+npm --prefix frontend run test:e2e
 ```
 
-## Run backend checks
-
-```bash
-uv run ruff format --check .
-uv run ruff check .
-uv run pyright
-uv run pytest --cov=agentloom --cov-report=term-missing
-```
-
-The coverage configuration fails the test command when total backend coverage
-falls below 80%.
-
-## Run the frontend
-
-```bash
-cd frontend
-npm ci
-npm run dev
-```
-
-The task list is available at <http://localhost:5173/tasks>. The page checks
-the backend health endpoint through the Vite development proxy.
-
+The repository includes a GitHub Actions workflow that runs the same offline backend, frontend, migration, and Playwright checks against PostgreSQL 16.

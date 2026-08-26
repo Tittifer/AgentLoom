@@ -68,6 +68,14 @@ export function getRun(runId: string): Promise<RunSnapshot> {
   return apiClient.get<RunSnapshot>(`/api/runs/${runId}`);
 }
 
+export function cancelRun(runId: string): Promise<RunRead> {
+  return apiClient.post<RunRead>(`/api/runs/${runId}/cancel`);
+}
+
+export function retryRun(runId: string): Promise<RunRead> {
+  return apiClient.post<RunRead>(`/api/runs/${runId}/retry`);
+}
+
 export function getNodeAttempts(runId: string, nodeKey: string): Promise<NodeRunRead[]> {
   return apiClient.get<NodeRunRead[]>(
     `/api/runs/${runId}/nodes/${encodeURIComponent(nodeKey)}/attempts`,

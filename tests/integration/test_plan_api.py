@@ -60,9 +60,7 @@ async def test_plan_api_creates_workflow_and_advances_task_to_ready() -> None:
 
                 response = await client.post(f"/api/tasks/{task.id}/plan")
                 conflict = await client.post(f"/api/tasks/{task.id}/plan")
-                stored_workflow_response = await client.get(
-                    f"/api/tasks/{task.id}/workflow"
-                )
+                stored_workflow_response = await client.get(f"/api/tasks/{task.id}/workflow")
                 detail = await client.get(f"/api/tasks/{task.id}")
 
         assert response.status_code == 200

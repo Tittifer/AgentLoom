@@ -17,6 +17,11 @@ from agentloom.repositories.tasks import TaskRepository
 from agentloom.repositories.workflows import WorkflowRepository
 from agentloom.runtime.run import AgentMessageRead, NodeRunRead, RunEventRead, RunRead, RunSnapshot
 from agentloom.services.event_service import EventService, RunEventNotifier
+from agentloom.services.run_lifecycle_service import (
+    RunLifecycleService,
+    RunNotCancellableError,
+    RunNotRetryableError,
+)
 from agentloom.services.run_service import (
     NodeRunNotFoundError,
     RunNotFoundError,
@@ -42,6 +47,20 @@ def get_run_service(session: DatabaseSession) -> RunService:
 
 
 RunServiceDependency = Annotated[RunService, Depends(get_run_service)]
+
+
+def get_run_lifecycle_service(request: Request) -> RunLifecycleService:
+    """Build committed run commands around application-owned resources."""
+
+    database = cast(DatabaseSessionManager, request.app.state.database)
+    notifier = cast(RunEventNotifier, request.app.state.run_event_notifier)
+    return RunLifecycleService(database.session_factory, notifier)
+
+
+RunLifecycleServiceDependency = Annotated[
+    RunLifecycleService,
+    Depends(get_run_lifecycle_service),
+]
 EventSequence = Annotated[int, Query(ge=0)]
 
 SSE_HEARTBEAT_SECONDS = 15.0
@@ -145,6 +164,51 @@ async def get_run(
         return await service.get_run(run_id)
     except RunNotFoundError:
         return error_response(404, "RUN_NOT_FOUND", "Run not found")
+
+
+@router.post(
+    "/runs/{run_id}/cancel",
+    response_model=RunRead,
+    responses={
+        status.HTTP_404_NOT_FOUND: {"model": ApiError},
+        status.HTTP_409_CONFLICT: {"model": ApiError},
+    },
+)
+async def cancel_run(
+    run_id: UUID,
+    service: RunLifecycleServiceDependency,
+) -> RunRead | JSONResponse:
+    """Cancel an active run and prevent unfinished node results from committing."""
+
+    try:
+        return await service.cancel_run(run_id)
+    except RunNotFoundError:
+        return error_response(404, "RUN_NOT_FOUND", "Run not found")
+    except RunNotCancellableError:
+        return error_response(409, "RUN_NOT_CANCELLABLE", "Run is already terminal")
+
+
+@router.post(
+    "/runs/{run_id}/retry",
+    response_model=RunRead,
+    status_code=status.HTTP_202_ACCEPTED,
+    responses={
+        status.HTTP_404_NOT_FOUND: {"model": ApiError},
+        status.HTTP_409_CONFLICT: {"model": ApiError},
+    },
+)
+async def retry_run(
+    run_id: UUID,
+    service: RunLifecycleServiceDependency,
+) -> RunRead | JSONResponse:
+    """Queue a new execution using the workflow and input of a failed run."""
+
+    try:
+        return await service.retry_run(run_id)
+    except RunNotFoundError:
+        return error_response(404, "RUN_NOT_FOUND", "Run not found")
+    except RunNotRetryableError:
+        return error_response(409, "RUN_NOT_RETRYABLE", "Only the current failed run can retry")
 
 
 @router.get(

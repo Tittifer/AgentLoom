@@ -128,7 +128,8 @@ p {
 }
 
 .primary-button,
-.secondary-button {
+.secondary-button,
+.danger-button {
   border-radius: 10px;
   font-weight: 700;
 }
@@ -151,6 +152,17 @@ p {
   color: #315bd6;
   background: #edf2ff;
   cursor: pointer;
+}
+
+.danger-button {
+  padding: 0.8rem 1.15rem;
+  color: #b42318;
+  background: #fee4e2;
+}
+
+.danger-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
 }
 
 .button-link {
@@ -885,6 +897,7 @@ pre,
   }
 
   .primary-button,
+  .danger-button,
   .form-actions .secondary-button {
     width: 100%;
   }

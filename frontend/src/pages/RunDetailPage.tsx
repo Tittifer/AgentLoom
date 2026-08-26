@@ -1,8 +1,8 @@
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { Link, useParams } from "react-router-dom";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link, useNavigate, useParams } from "react-router-dom";
 
-import { getRun } from "../api/runs";
+import { cancelRun, getRun, retryRun } from "../api/runs";
 import { NodeDetailDrawer } from "../components/NodeDetailDrawer";
 import { ResultViewer } from "../components/ResultViewer";
 import { RunEventTimeline } from "../components/RunEventTimeline";
@@ -13,6 +13,8 @@ import { formatError } from "../utils/format";
 
 export function RunDetailPage() {
   const { runId } = useParams();
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const [selectedNodeKey, setSelectedNodeKey] = useState<string>();
   const runQuery = useQuery({
     queryKey: ["run", runId],
@@ -20,6 +22,17 @@ export function RunDetailPage() {
     enabled: Boolean(runId),
   });
   const liveEvents = useRunEvents(runId, Boolean(runId));
+  const cancelMutation = useMutation({
+    mutationFn: () => cancelRun(runId ?? ""),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["run", runId] });
+      await queryClient.invalidateQueries({ queryKey: ["tasks"] });
+    },
+  });
+  const retryMutation = useMutation({
+    mutationFn: () => retryRun(runId ?? ""),
+    onSuccess: (run) => navigate(`/runs/${run.id}`),
+  });
 
   if (!runId) {
     return <div className="panel error-panel"><h2>Invalid run URL</h2></div>;
@@ -44,7 +57,35 @@ export function RunDetailPage() {
           <h1 id="run-title">Execution</h1>
           <p className="mono-id">{snapshot.run.id}</p>
         </div>
+        <div className="heading-actions">
+          {snapshot.run.status === "queued" || snapshot.run.status === "running" ? (
+            <button
+              className="danger-button"
+              disabled={cancelMutation.isPending}
+              onClick={() => cancelMutation.mutate()}
+              type="button"
+            >
+              {cancelMutation.isPending ? "Cancelling…" : "Cancel run"}
+            </button>
+          ) : null}
+          {snapshot.run.status === "failed" ? (
+            <button
+              className="primary-button"
+              disabled={retryMutation.isPending}
+              onClick={() => retryMutation.mutate()}
+              type="button"
+            >
+              {retryMutation.isPending ? "Queuing retry…" : "Retry run"}
+            </button>
+          ) : null}
+        </div>
       </div>
+
+      {cancelMutation.isError || retryMutation.isError ? (
+        <div className="form-error" role="alert">
+          {formatError(cancelMutation.error ?? retryMutation.error)}
+        </div>
+      ) : null}
 
       <RunProgress events={liveEvents.events} nodeRuns={snapshot.node_runs} run={snapshot.run} />
       <div className="run-layout">
