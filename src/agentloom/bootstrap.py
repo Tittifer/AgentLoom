@@ -50,7 +50,7 @@ def create_llm_provider(settings: Settings) -> LLMProvider:
 
     if settings.llm_provider == "mock":
         return SchemaMockLLMProvider(settings.llm_model)
-    return LiteLLMProvider()
+    return LiteLLMProvider(response_format=settings.llm_response_format)
 
 
 __all__ = ["create_llm_provider", "create_planner", "create_run_scheduler"]

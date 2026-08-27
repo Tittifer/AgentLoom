@@ -6,9 +6,14 @@ import { createTask, planTask, type JsonObject, type TaskCreateInput } from "../
 import { formatError } from "../utils/format";
 
 function parseContext(value: string): JsonObject {
-  const parsed: unknown = JSON.parse(value);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    throw new Error("上下文必须是有效的 JSON 对象。");
+  }
   if (parsed === null || Array.isArray(parsed) || typeof parsed !== "object") {
-    throw new Error("Context must be a JSON object.");
+    throw new Error("上下文必须是 JSON 对象。");
   }
   return parsed as JsonObject;
 }
@@ -53,35 +58,35 @@ export function NewTaskPage() {
 
   return (
     <section className="narrow-page" aria-labelledby="new-task-title">
-      <Link className="back-link" to="/tasks">← Back to tasks</Link>
+      <Link className="back-link" to="/tasks">← 返回任务列表</Link>
       <div className="page-heading">
         <div>
-          <span className="eyebrow">New workflow</span>
-          <h1 id="new-task-title">Create a task</h1>
-          <p>Describe the outcome. The Planner will turn it into a validated agent DAG.</p>
+          <span className="eyebrow">新工作流</span>
+          <h1 id="new-task-title">创建任务</h1>
+          <p>描述期望结果，规划器会将其转换为经过校验的智能体 DAG。</p>
         </div>
       </div>
 
       <form className="panel task-form" onSubmit={handleSubmit}>
         <label>
-          <span>Title</span>
+          <span>标题</span>
           <input maxLength={200} onChange={(event) => setTitle(event.target.value)} required value={title} />
         </label>
         <label>
-          <span>Goal</span>
+          <span>目标</span>
           <textarea onChange={(event) => setGoal(event.target.value)} required rows={6} value={goal} />
         </label>
         <label>
-          <span>Context (JSON object)</span>
+          <span>上下文（JSON 对象）</span>
           <textarea className="code-input" onChange={(event) => setContext(event.target.value)} rows={7} value={context} />
         </label>
         <div className="form-grid">
           <label>
-            <span>Maximum parallel nodes</span>
+            <span>最大并行节点数</span>
             <input max={20} min={1} onChange={(event) => setMaxParallelNodes(event.target.valueAsNumber)} required type="number" value={maxParallelNodes} />
           </label>
           <label>
-            <span>Maximum retries</span>
+            <span>最大重试次数</span>
             <input min={0} onChange={(event) => setMaxRetries(event.target.valueAsNumber)} required type="number" value={maxRetries} />
           </label>
         </div>
@@ -91,12 +96,12 @@ export function NewTaskPage() {
         ) : null}
 
         <div className="form-actions">
-          <Link className="secondary-button button-link" to="/tasks">Cancel</Link>
+          <Link className="secondary-button button-link" to="/tasks">取消</Link>
           <button className="primary-button" disabled={createMutation.isPending} type="submit">
-            {createMutation.isPending ? "Creating and planning…" : "Create and plan"}
+            {createMutation.isPending ? "正在创建并规划…" : "创建并规划"}
           </button>
         </div>
-        {createMutation.isPending ? <p className="planning-note">The Planner is generating and validating the workflow. This may take a moment.</p> : null}
+        {createMutation.isPending ? <p className="planning-note">规划器正在生成并校验工作流，请稍候。</p> : null}
       </form>
     </section>
   );

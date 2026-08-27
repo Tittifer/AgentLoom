@@ -74,6 +74,11 @@ def test_planner_prompt_contains_roles_tools_and_runtime_limits() -> None:
         max_nodes=20,
         max_parallel_nodes=3,
         max_retries=2,
+        response_schema={
+            "type": "object",
+            "required": ["nodes"],
+            "properties": {"nodes": {"type": "array"}},
+        },
     )
 
     assert [message.role for message in messages] == ["system", "user"]
@@ -82,6 +87,8 @@ def test_planner_prompt_contains_roles_tools_and_runtime_limits() -> None:
     assert "Maximum nodes: 20" in messages[0].content
     assert "Runtime parallel-node limit: 3" in messages[0].content
     assert "Compare products" in messages[1].content
+    assert "Required WorkflowPlan JSON Schema" in messages[1].content
+    assert '"required":["nodes"]' in messages[1].content
 
 
 def _context_payload() -> dict[str, object]:

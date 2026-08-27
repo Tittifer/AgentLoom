@@ -10,7 +10,7 @@ import "./index.css";
 const root = document.getElementById("root");
 
 if (!root) {
-  throw new Error("Root element was not found");
+  throw new Error("未找到应用根元素");
 }
 
 createRoot(root).render(

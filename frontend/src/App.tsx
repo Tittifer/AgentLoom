@@ -10,12 +10,12 @@ function App() {
           </span>
           <span>
             <strong>AgentLoom</strong>
-            <small>Multi-agent workspace</small>
+            <small>多智能体协作工作台</small>
           </span>
         </NavLink>
-        <nav aria-label="Primary navigation">
+        <nav aria-label="主导航">
           <NavLink className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")} to="/tasks">
-            Tasks
+            任务
           </NavLink>
         </nav>
       </header>

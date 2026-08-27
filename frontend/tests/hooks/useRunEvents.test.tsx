@@ -65,7 +65,7 @@ describe("useRunEvents", () => {
     act(() => source.emit("run.cancelled", 2, { status: "cancelled" }));
     expect(source.close).toHaveBeenCalled();
     expect(result.current.connected).toBe(false);
-    expect(result.current.error).toBe("Run finished");
+    expect(result.current.error).toBe("运行已结束");
   });
 
   it("deduplicates replayed event sequences", async () => {

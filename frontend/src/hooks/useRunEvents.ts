@@ -48,7 +48,7 @@ export function useRunEvents(runId: string | undefined, enabled: boolean) {
       setConnectionState({ runId, connected: true, error: null });
     };
     source.onerror = () => {
-      setConnectionState({ runId, connected: false, error: "Reconnecting" });
+      setConnectionState({ runId, connected: false, error: "正在重新连接" });
     };
 
     RUN_EVENT_TYPES.forEach((type) => {
@@ -61,7 +61,7 @@ export function useRunEvents(runId: string | undefined, enabled: boolean) {
           setConnectionState({
             runId,
             connected: false,
-            error: "Received an invalid event payload",
+            error: "收到的事件数据无效",
           });
           source.close();
           return;
@@ -71,7 +71,7 @@ export function useRunEvents(runId: string | undefined, enabled: boolean) {
           setConnectionState({
             runId,
             connected: false,
-            error: "Received an event without a valid sequence",
+            error: "收到的事件缺少有效序号",
           });
           source.close();
           return;
@@ -92,7 +92,7 @@ export function useRunEvents(runId: string | undefined, enabled: boolean) {
         void queryClient.invalidateQueries({ queryKey: ["run", runId] });
         if (type === "run.completed" || type === "run.failed" || type === "run.cancelled") {
           source.close();
-          setConnectionState({ runId, connected: false, error: "Run finished" });
+          setConnectionState({ runId, connected: false, error: "运行已结束" });
         }
       };
       listeners.set(type, listener);

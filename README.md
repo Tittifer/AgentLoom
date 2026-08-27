@@ -72,6 +72,7 @@ The default configuration is completely offline:
 ```dotenv
 AGENTLOOM_LLM_PROVIDER=mock
 AGENTLOOM_LLM_MODEL=mock/schema
+AGENTLOOM_LLM_RESPONSE_FORMAT=json_schema
 ```
 
 For a model supported by LiteLLM, set:
@@ -79,10 +80,21 @@ For a model supported by LiteLLM, set:
 ```dotenv
 AGENTLOOM_LLM_PROVIDER=litellm
 AGENTLOOM_LLM_MODEL=openai/gpt-4.1-mini
+AGENTLOOM_LLM_RESPONSE_FORMAT=json_schema
 OPENAI_API_KEY=replace-with-your-key
 ```
 
-Use the provider-specific environment variable required by LiteLLM. Never commit `.env` or API keys. `AGENTLOOM_LLM_TIMEOUT_SECONDS` bounds each model call and `AGENTLOOM_WORKER_MAX_TURNS` bounds each Worker tool loop.
+For an OpenAI-compatible endpoint that supports JSON objects but rejects strict JSON Schema, use:
+
+```dotenv
+AGENTLOOM_LLM_PROVIDER=litellm
+AGENTLOOM_LLM_MODEL=openai/provider-model-id
+AGENTLOOM_LLM_RESPONSE_FORMAT=json_object
+OPENAI_BASE_URL=https://provider.example/v1
+OPENAI_API_KEY=replace-with-your-key
+```
+
+`json_schema` remains the default and provides provider-side strict validation. The `json_object` compatibility mode relies on AgentLoom's local Pydantic, DAG, and Reviewer validation. Use the provider-specific environment variables required by LiteLLM. Never commit `.env` or API keys. `AGENTLOOM_LLM_TIMEOUT_SECONDS` bounds each model call and `AGENTLOOM_WORKER_MAX_TURNS` bounds each Worker tool loop.
 
 ## Run tests and checks
 

@@ -40,12 +40,12 @@ describe("NewTaskPage", () => {
       </QueryClientProvider>,
     );
 
-    await user.type(screen.getByLabelText("Title"), task.title);
-    await user.type(screen.getByLabelText("Goal"), task.goal);
-    fireEvent.change(screen.getByLabelText("Context (JSON object)"), {
+    await user.type(screen.getByLabelText("标题"), task.title);
+    await user.type(screen.getByLabelText("目标"), task.goal);
+    fireEvent.change(screen.getByLabelText("上下文（JSON 对象）"), {
       target: { value: '{"language":"en"}' },
     });
-    await user.click(screen.getByRole("button", { name: "Create and plan" }));
+    await user.click(screen.getByRole("button", { name: "创建并规划" }));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
     expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/tasks");
@@ -64,13 +64,13 @@ describe("NewTaskPage", () => {
       </QueryClientProvider>,
     );
 
-    await user.type(screen.getByLabelText("Title"), task.title);
-    await user.type(screen.getByLabelText("Goal"), task.goal);
-    fireEvent.change(screen.getByLabelText("Context (JSON object)"), {
+    await user.type(screen.getByLabelText("标题"), task.title);
+    await user.type(screen.getByLabelText("目标"), task.goal);
+    fireEvent.change(screen.getByLabelText("上下文（JSON 对象）"), {
       target: { value: "[]" },
     });
-    await user.click(screen.getByRole("button", { name: "Create and plan" }));
+    await user.click(screen.getByRole("button", { name: "创建并规划" }));
 
-    expect(screen.getByRole("alert")).toHaveTextContent("Context must be a JSON object.");
+    expect(screen.getByRole("alert")).toHaveTextContent("上下文必须是 JSON 对象。");
   });
 });

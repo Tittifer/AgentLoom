@@ -17,9 +17,17 @@ class RetryOnceSchemaMockLLMProvider(SchemaMockLLMProvider):
         self._lock = asyncio.Lock()
 
     async def complete(self, request: LLMRequest) -> LLMResponse:
-        is_apple_worker = any(
-            "Research subject A for the requested comparison" in message.content
-            for message in request.messages
+        required_fields = (
+            request.response_schema.get("required")
+            if request.response_schema is not None
+            else None
+        )
+        is_apple_worker = (
+            required_fields == ["summary", "sources"]
+            and any(
+                "Research subject A for the requested comparison" in message.content
+                for message in request.messages
+            )
         )
         if is_apple_worker:
             async with self._lock:

@@ -20,6 +20,7 @@ def build_planner_messages(
     max_nodes: int,
     max_parallel_nodes: int,
     max_retries: int,
+    response_schema: dict[str, JsonValue],
 ) -> list[LLMMessage]:
     """Build the fixed planner context without executing any task work."""
 
@@ -39,7 +40,8 @@ def build_planner_messages(
     user_sections = [
         f"Task goal: {goal}",
         f"Task context: {_bounded_json(context)}",
-        "Return only a WorkflowPlan matching the required JSON Schema.",
+        f"Required WorkflowPlan JSON Schema: {_bounded_json(response_schema)}",
+        "Return only a JSON object matching the required WorkflowPlan JSON Schema.",
     ]
     return [
         LLMMessage(role="system", content="\n".join(system_sections)),

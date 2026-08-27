@@ -84,6 +84,7 @@ class Planner:
     ) -> WorkflowPlan:
         """Generate a valid plan, feeding deterministic errors into bounded repairs."""
 
+        response_schema = _workflow_plan_schema(self._tool_names)
         messages = build_planner_messages(
             goal,
             context,
@@ -92,8 +93,8 @@ class Planner:
             max_nodes=MAX_PLANNER_NODES,
             max_parallel_nodes=max_parallel_nodes,
             max_retries=max_retries,
+            response_schema=response_schema,
         )
-        response_schema = _workflow_plan_schema(self._tool_names)
         last_issues: list[PlannerIssue] = []
 
         for attempt in range(self._max_repairs + 1):

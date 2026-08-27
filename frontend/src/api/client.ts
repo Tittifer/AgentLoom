@@ -10,7 +10,7 @@ export class ApiClientError extends Error {
   readonly details?: unknown;
 
   constructor(status: number, payload: ApiErrorPayload) {
-    super(payload.message ?? `Request failed with status ${status}`);
+    super(payload.message ?? `请求失败，状态码 ${status}`);
     this.name = "ApiClientError";
     this.status = status;
     this.code = payload.code;
@@ -22,7 +22,7 @@ async function parseError(response: Response): Promise<ApiErrorPayload> {
   try {
     return (await response.json()) as ApiErrorPayload;
   } catch {
-    return { message: response.statusText || "Request failed" };
+    return { message: response.statusText || "请求失败" };
   }
 }
 

@@ -59,24 +59,24 @@ export function NodeDetailDrawer({
       >
         <header className="drawer-header">
           <div>
-            <span className="eyebrow">{node.role}</span>
+            <span className="eyebrow">{humanize(node.role)}</span>
             <h2 id="node-detail-title">{node.name}</h2>
           </div>
-          <button aria-label="Close node details" className="icon-button" onClick={onClose} type="button">
+          <button aria-label="关闭节点详情" className="icon-button" onClick={onClose} type="button">
             ×
           </button>
         </header>
 
         <p>{node.description}</p>
         <dl className="definition-list">
-          <div><dt>Key</dt><dd>{node.key}</dd></div>
-          <div><dt>Depends on</dt><dd>{node.depends_on.join(", ") || "None"}</dd></div>
-          <div><dt>Tools</dt><dd>{node.tools.join(", ") || "None"}</dd></div>
-          <div><dt>Review criteria</dt><dd>{node.review_criteria ?? "Schema validation only"}</dd></div>
+          <div><dt>节点标识</dt><dd>{node.key}</dd></div>
+          <div><dt>依赖节点</dt><dd>{node.depends_on.join(", ") || "无"}</dd></div>
+          <div><dt>工具</dt><dd>{node.tools.join(", ") || "无"}</dd></div>
+          <div><dt>审核标准</dt><dd>{node.review_criteria ?? "仅进行 Schema 校验"}</dd></div>
         </dl>
 
         <section className="drawer-section">
-          <h3>Attempts</h3>
+          <h3>执行尝试</h3>
           {attemptsQuery.isError ? <p className="error-message">{formatError(attemptsQuery.error)}</p> : null}
           <div className="attempt-tabs">
             {attempts.map((item) => (
@@ -95,25 +95,25 @@ export function NodeDetailDrawer({
         {attempt ? (
           <>
             <dl className="definition-list compact-list">
-              <div><dt>Status</dt><dd>{humanize(attempt.status)}</dd></div>
-              <div><dt>Started</dt><dd>{formatDate(attempt.started_at)}</dd></div>
-              <div><dt>Ended</dt><dd>{formatDate(attempt.ended_at)}</dd></div>
+              <div><dt>状态</dt><dd>{humanize(attempt.status)}</dd></div>
+              <div><dt>开始时间</dt><dd>{formatDate(attempt.started_at)}</dd></div>
+              <div><dt>结束时间</dt><dd>{formatDate(attempt.ended_at)}</dd></div>
             </dl>
-            <JsonSection title="Input" value={attempt.input} />
-            <JsonSection title="Output" value={attempt.output} />
-            <JsonSection title="Reviewer" value={attempt.review} />
-            <JsonSection title="Token usage" value={attempt.usage} />
-            <JsonSection title="Error" value={attempt.error} />
+            <JsonSection title="输入" value={attempt.input} />
+            <JsonSection title="输出" value={attempt.output} />
+            <JsonSection title="审核结果" value={attempt.review} />
+            <JsonSection title="Token 用量" value={attempt.usage} />
+            <JsonSection title="错误" value={attempt.error} />
 
             <section className="drawer-section">
-              <h3>Agent-visible messages</h3>
-              {messagesQuery.isLoading ? <p>Loading messages…</p> : null}
+              <h3>智能体可见消息</h3>
+              {messagesQuery.isLoading ? <p>正在加载消息…</p> : null}
               {messagesQuery.isError ? <p className="error-message">{formatError(messagesQuery.error)}</p> : null}
               <div className="message-list">
                 {messagesQuery.data?.map((message) => (
                   <article key={message.id}>
                     <header>
-                      <strong>{message.role}</strong>
+                      <strong>{humanize(message.role)}</strong>
                       <time>{formatDate(message.created_at)}</time>
                     </header>
                     <pre>{message.content || formatJson(message.tool_calls)}</pre>
@@ -123,11 +123,11 @@ export function NodeDetailDrawer({
             </section>
           </>
         ) : (
-          <p className="muted-placeholder">No attempt has been created for this node.</p>
+          <p className="muted-placeholder">该节点尚未创建执行尝试。</p>
         )}
 
         <section className="drawer-section">
-          <h3>Output schema</h3>
+          <h3>输出 Schema</h3>
           <pre>{formatJson(node.output_schema)}</pre>
         </section>
       </aside>

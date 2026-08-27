@@ -33,24 +33,24 @@ export function RunProgress({ run, nodeRuns, events = [] }: RunProgressProps) {
   const percent = nodeRuns.length === 0 ? 0 : Math.round((completed / nodeRuns.length) * 100);
 
   return (
-    <section className="run-progress panel" aria-label="Run progress">
+    <section className="run-progress panel" aria-label="运行进度">
       <div className="run-stat">
-        <span>Status</span>
+        <span>状态</span>
         <strong className={`status-badge status-${run.status}`}>{humanize(run.status)}</strong>
       </div>
       <div className="run-stat">
-        <span>Progress</span>
-        <strong>{completed} / {nodeRuns.length} nodes</strong>
+        <span>进度</span>
+        <strong>{completed} / {nodeRuns.length} 个节点</strong>
       </div>
       <div className="run-stat">
-        <span>Tokens</span>
+        <span>Token 用量</span>
         <strong>{tokenCount(nodeRuns, events).toLocaleString()}</strong>
       </div>
       <div className="run-stat">
-        <span>Started</span>
+        <span>开始时间</span>
         <strong>{formatDate(run.started_at)}</strong>
       </div>
-      <div className="progress-track" aria-label={`${percent}% complete`}>
+      <div className="progress-track" aria-label={`已完成 ${percent}%`}>
         <span style={{ width: `${percent}%` }} />
       </div>
     </section>

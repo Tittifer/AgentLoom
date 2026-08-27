@@ -76,13 +76,36 @@ async def test_litellm_provider_normalizes_request_response_tools_and_usage() ->
     assert completion.parameters["stream"] is False
     assert completion.parameters["timeout"] == 1
     assert "tools" in completion.parameters
-    assert "response_format" in completion.parameters
+    assert completion.parameters["response_format"] == {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "agentloom_output",
+            "schema": request().response_schema,
+            "strict": True,
+        },
+    }
     assert response.model == "provider/model-version"
     assert response.structured_output == {"answer": "done"}
     assert response.tool_calls[0].name == "lookup"
     assert response.tool_calls[0].arguments == {"query": "value"}
     assert response.input_tokens == 11
     assert response.output_tokens == 7
+
+
+async def test_litellm_provider_supports_json_object_compatibility() -> None:
+    completion = RecordingCompletion(
+        {
+            "choices": [{"message": {"content": '{"answer":"done"}', "tool_calls": None}}],
+        }
+    )
+
+    response = await LiteLLMProvider(
+        completion,
+        response_format="json_object",
+    ).complete(request())
+
+    assert completion.parameters["response_format"] == {"type": "json_object"}
+    assert response.structured_output == {"answer": "done"}
 
 
 async def test_litellm_provider_rejects_invalid_tool_arguments_and_provider_errors() -> None:

@@ -4,7 +4,7 @@ import asyncio
 import json
 from collections.abc import Awaitable, Callable, Mapping
 from importlib import import_module
-from typing import Protocol, cast, runtime_checkable
+from typing import Literal, Protocol, cast, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError
 
@@ -17,6 +17,7 @@ from agentloom.llm.base import (
 )
 
 CompletionCallable = Callable[..., Awaitable[object]]
+ResponseFormat = Literal["json_schema", "json_object"]
 LITELLM_COMPLETION_ATTRIBUTE = "acompletion"
 
 
@@ -46,7 +47,7 @@ class LiteMessage(BaseModel):
 
     content: str | None = None
     parsed: dict[str, JsonValue] | None = None
-    tool_calls: list[LiteToolCall] = Field(default_factory=lambda: list[LiteToolCall]())
+    tool_calls: list[LiteToolCall] | None = None
 
 
 class LiteChoice(BaseModel):
@@ -73,8 +74,14 @@ class LiteResponse(BaseModel):
 class LiteLLMProvider:
     """Convert AgentLoom contracts to and from LiteLLM chat completions."""
 
-    def __init__(self, completion: CompletionCallable | None = None) -> None:
+    def __init__(
+        self,
+        completion: CompletionCallable | None = None,
+        *,
+        response_format: ResponseFormat = "json_schema",
+    ) -> None:
         self._completion = completion or _load_default_completion()
+        self._response_format = response_format
 
     async def complete(self, request: LLMRequest) -> LLMResponse:
         """Execute one non-streaming completion with normalized errors and output."""
@@ -98,14 +105,17 @@ class LiteLLMProvider:
                 for tool in request.tools
             ]
         if request.response_schema is not None:
-            parameters["response_format"] = {
-                "type": "json_schema",
-                "json_schema": {
-                    "name": "agentloom_output",
-                    "schema": request.response_schema,
-                    "strict": True,
-                },
-            }
+            if self._response_format == "json_object":
+                parameters["response_format"] = {"type": "json_object"}
+            else:
+                parameters["response_format"] = {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "agentloom_output",
+                        "schema": request.response_schema,
+                        "strict": True,
+                    },
+                }
 
         try:
             raw_response = await asyncio.wait_for(
@@ -162,7 +172,7 @@ def _normalize_response(raw_response: object, request: LLMRequest) -> LLMRespons
         raise LLMResponseError(f"LiteLLM returned an invalid response: {error}") from error
 
     message = response.choices[0].message
-    tool_calls = [_normalize_tool_call(tool_call) for tool_call in message.tool_calls]
+    tool_calls = [_normalize_tool_call(tool_call) for tool_call in message.tool_calls or []]
     structured_output = message.parsed
     if structured_output is None and request.response_schema is not None and message.content:
         try:
@@ -211,4 +221,4 @@ def _normalize_tool_call(tool_call: LiteToolCall) -> ToolCall:
     )
 
 
-__all__ = ["CompletionCallable", "LiteLLMProvider"]
+__all__ = ["CompletionCallable", "LiteLLMProvider", "ResponseFormat"]

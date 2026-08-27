@@ -35,13 +35,13 @@ export function RunDetailPage() {
   });
 
   if (!runId) {
-    return <div className="panel error-panel"><h2>Invalid run URL</h2></div>;
+    return <div className="panel error-panel"><h2>运行地址无效</h2></div>;
   }
   if (runQuery.isLoading) {
-    return <div className="panel loading-panel">Loading run…</div>;
+    return <div className="panel loading-panel">正在加载运行记录…</div>;
   }
   if (runQuery.isError || !runQuery.data) {
-    return <div className="panel error-panel"><h2>Run could not be loaded</h2><p>{formatError(runQuery.error)}</p></div>;
+    return <div className="panel error-panel"><h2>无法加载运行记录</h2><p>{formatError(runQuery.error)}</p></div>;
   }
 
   const snapshot = runQuery.data;
@@ -50,11 +50,11 @@ export function RunDetailPage() {
 
   return (
     <section aria-labelledby="run-title">
-      <Link className="back-link" to={`/tasks/${snapshot.run.task_id}`}>← Back to task</Link>
+      <Link className="back-link" to={`/tasks/${snapshot.run.task_id}`}>← 返回任务</Link>
       <div className="page-heading detail-heading">
         <div>
-          <span className="eyebrow">Workflow run</span>
-          <h1 id="run-title">Execution</h1>
+          <span className="eyebrow">工作流运行</span>
+          <h1 id="run-title">执行详情</h1>
           <p className="mono-id">{snapshot.run.id}</p>
         </div>
         <div className="heading-actions">
@@ -65,7 +65,7 @@ export function RunDetailPage() {
               onClick={() => cancelMutation.mutate()}
               type="button"
             >
-              {cancelMutation.isPending ? "Cancelling…" : "Cancel run"}
+              {cancelMutation.isPending ? "正在取消…" : "取消运行"}
             </button>
           ) : null}
           {snapshot.run.status === "failed" ? (
@@ -75,7 +75,7 @@ export function RunDetailPage() {
               onClick={() => retryMutation.mutate()}
               type="button"
             >
-              {retryMutation.isPending ? "Queuing retry…" : "Retry run"}
+              {retryMutation.isPending ? "正在加入重试队列…" : "重试运行"}
             </button>
           ) : null}
         </div>
@@ -92,8 +92,8 @@ export function RunDetailPage() {
         <section className="run-graph-section">
           <div className="panel-heading compact-heading">
             <div>
-              <span className="eyebrow">Live DAG</span>
-              <h2>Node progress</h2>
+              <span className="eyebrow">实时 DAG</span>
+              <h2>节点进度</h2>
             </div>
           </div>
           <WorkflowGraph

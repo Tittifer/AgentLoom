@@ -28,6 +28,10 @@ class Settings(BaseSettings):
         min_length=1,
         validation_alias="AGENTLOOM_LLM_MODEL",
     )
+    llm_response_format: Literal["json_schema", "json_object"] = Field(
+        default="json_schema",
+        validation_alias="AGENTLOOM_LLM_RESPONSE_FORMAT",
+    )
     llm_timeout_seconds: float = Field(
         default=60,
         gt=0,

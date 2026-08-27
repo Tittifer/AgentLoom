@@ -20,22 +20,22 @@ export function TaskListPage() {
     <section aria-labelledby="tasks-title">
       <div className="page-heading">
         <div>
-          <span className="eyebrow">Workspace</span>
-          <h1 id="tasks-title">Tasks</h1>
-          <p>Create, plan, and monitor multi-agent workflows from one place.</p>
+          <span className="eyebrow">工作台</span>
+          <h1 id="tasks-title">任务</h1>
+          <p>在一个页面中创建、规划并监控多智能体工作流。</p>
         </div>
         <Link className="primary-button button-link" to="/tasks/new">
-          New task
+          新建任务
         </Link>
       </div>
 
-      {tasksQuery.isLoading ? <div className="panel loading-panel">Loading tasks…</div> : null}
+      {tasksQuery.isLoading ? <div className="panel loading-panel">正在加载任务…</div> : null}
       {tasksQuery.isError ? (
         <div className="panel error-panel">
-          <h2>Tasks could not be loaded</h2>
+          <h2>无法加载任务</h2>
           <p>{formatError(tasksQuery.error)}</p>
           <button className="secondary-button" onClick={() => void tasksQuery.refetch()} type="button">
-            Retry
+            重试
           </button>
         </div>
       ) : null}
@@ -43,9 +43,9 @@ export function TaskListPage() {
       {tasksQuery.data?.items.length === 0 ? (
         <div className="empty-state">
           <div className="empty-icon" aria-hidden="true">◇</div>
-          <h2>No tasks yet</h2>
-          <p>Create a task to generate your first multi-agent workflow.</p>
-          <Link className="primary-button button-link" to="/tasks/new">Create task</Link>
+          <h2>还没有任务</h2>
+          <p>创建一个任务，生成你的第一个多智能体工作流。</p>
+          <Link className="primary-button button-link" to="/tasks/new">创建任务</Link>
         </div>
       ) : null}
 
@@ -55,11 +55,11 @@ export function TaskListPage() {
             <table className="task-table">
               <thead>
                 <tr>
-                  <th>Task</th>
-                  <th>Status</th>
-                  <th>Parallelism</th>
-                  <th>Created</th>
-                  <th><span className="sr-only">Actions</span></th>
+                  <th>任务</th>
+                  <th>状态</th>
+                  <th>并行节点</th>
+                  <th>创建时间</th>
+                  <th><span className="sr-only">操作</span></th>
                 </tr>
               </thead>
               <tbody>
@@ -70,18 +70,18 @@ export function TaskListPage() {
                       <span>{task.goal}</span>
                     </td>
                     <td><span className={`status-badge status-${task.status}`}>{humanize(task.status)}</span></td>
-                    <td>{task.max_parallel_nodes} nodes</td>
+                    <td>{task.max_parallel_nodes} 个</td>
                     <td>{formatDate(task.created_at)}</td>
-                    <td><Link className="text-link" to={`/tasks/${task.id}`}>View</Link></td>
+                    <td><Link className="text-link" to={`/tasks/${task.id}`}>查看</Link></td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
-          <div className="pagination" aria-label="Task pagination">
-            <button disabled={page === 1} onClick={() => setPage((value) => value - 1)} type="button">Previous</button>
-            <span>Page {page} of {totalPages}</span>
-            <button disabled={page >= totalPages} onClick={() => setPage((value) => value + 1)} type="button">Next</button>
+          <div className="pagination" aria-label="任务分页">
+            <button disabled={page === 1} onClick={() => setPage((value) => value - 1)} type="button">上一页</button>
+            <span>第 {page} 页，共 {totalPages} 页</span>
+            <button disabled={page >= totalPages} onClick={() => setPage((value) => value + 1)} type="button">下一页</button>
           </div>
         </>
       ) : null}

@@ -47,8 +47,8 @@ describe("RunProgress", () => {
       />,
     );
 
-    expect(screen.getByText("1 / 2 nodes")).toBeInTheDocument();
+    expect(screen.getByText("1 / 2 个节点")).toBeInTheDocument();
     expect(screen.getByText("15")).toBeInTheDocument();
-    expect(screen.getByText("running")).toBeInTheDocument();
+    expect(screen.getByText("运行中")).toBeInTheDocument();
   });
 });

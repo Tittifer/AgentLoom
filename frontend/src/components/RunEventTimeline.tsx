@@ -12,15 +12,15 @@ export function RunEventTimeline({ events, connected, error }: RunEventTimelineP
     <section className="panel event-panel" aria-labelledby="events-title">
       <div className="panel-heading compact-heading">
         <div>
-          <span className="eyebrow">Live activity</span>
-          <h2 id="events-title">Event timeline</h2>
+          <span className="eyebrow">实时动态</span>
+          <h2 id="events-title">事件时间线</h2>
         </div>
         <span className={`connection-state ${connected ? "connected" : ""}`}>
-          {connected ? "Live" : error ?? "Disconnected"}
+          {connected ? "实时连接" : error ?? "已断开连接"}
         </span>
       </div>
       {events.length === 0 ? (
-        <p className="muted-placeholder">Events will appear as the scheduler advances this run.</p>
+        <p className="muted-placeholder">调度器推进运行后，事件会显示在这里。</p>
       ) : (
         <ol className="event-list">
           {[...events].reverse().map((event) => (
