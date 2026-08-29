@@ -19,7 +19,7 @@ test("product research completes with one reviewed retry", async ({ page }) => {
   await page.getByRole("button", { name: "启动运行" }).click();
   await expect(page).toHaveURL(/\/runs\/[0-9a-f-]+$/);
   await expect(page.getByText("Mock report", { exact: true })).toBeVisible({ timeout: 20_000 });
-  await expect(page.locator(".graph-node-label small", { hasText: "已完成" })).toHaveCount(4);
+  await expect(page.locator(".graph-status--completed", { hasText: "已完成" })).toHaveCount(4);
   await expect(page.getByText("节点正在重试", { exact: true })).toBeVisible();
 
   await page.getByText("Research subject A", { exact: true }).click();

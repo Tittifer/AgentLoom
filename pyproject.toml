@@ -31,7 +31,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/agentloom"]
+packages = ["agentloom"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -54,7 +54,7 @@ line-length = 100
 select = ["B", "E", "F", "I", "UP", "W"]
 
 [tool.pyright]
-include = ["src", "tests"]
+include = ["agentloom", "tests"]
 pythonVersion = "3.11"
 typeCheckingMode = "strict"
 venvPath = "."

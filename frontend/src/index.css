@@ -498,29 +498,324 @@ pre,
 }
 
 .workflow-graph {
-  height: 560px;
+  height: 620px;
   overflow: hidden;
   border: 1px solid #dce3ec;
-  border-radius: 16px;
-  background: #f8fafc;
+  border-radius: 18px;
+  background:
+    radial-gradient(circle at 15% 15%, rgb(49 91 214 / 7%), transparent 28%),
+    linear-gradient(180deg, #fbfdff 0%, #f5f8fc 100%);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 85%);
 }
 
-.graph-node-label {
+.workflow-node.react-flow__node-default {
+  width: 248px;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid #cbd5e1;
+  border-left: 4px solid #94a3b8;
+  border-radius: 14px;
+  color: #172033;
+  background: rgb(255 255 255 / 96%);
+  box-shadow: 0 10px 26px rgb(15 23 42 / 9%);
+  text-align: left;
+  transition:
+    border-color 160ms ease,
+    box-shadow 160ms ease,
+    transform 160ms ease;
+}
+
+.workflow-node.react-flow__node-default:hover {
+  border-color: #6f8de5;
+  box-shadow: 0 14px 32px rgb(37 75 184 / 14%);
+  transform: translateY(-2px);
+}
+
+.workflow-node.react-flow__node-default:focus-visible,
+.workflow-node--selected.react-flow__node-default {
+  border-color: #315bd6;
+  outline: 0;
+  box-shadow:
+    0 0 0 4px rgb(49 91 214 / 15%),
+    0 14px 32px rgb(37 75 184 / 14%);
+}
+
+.workflow-node--running.react-flow__node-default {
+  border-left-color: #2563eb;
+  box-shadow:
+    0 0 0 3px rgb(37 99 235 / 8%),
+    0 10px 26px rgb(37 99 235 / 12%);
+}
+
+.workflow-node--reviewing.react-flow__node-default {
+  border-left-color: #7c3aed;
+}
+
+.workflow-node--retrying.react-flow__node-default {
+  border-left-color: #d97706;
+}
+
+.workflow-node--completed.react-flow__node-default {
+  border-left-color: #16a34a;
+  background: rgb(248 255 250 / 97%);
+}
+
+.workflow-node--failed.react-flow__node-default {
+  border-left-color: #dc2626;
+  background: rgb(255 249 249 / 97%);
+}
+
+.workflow-node--cancelled.react-flow__node-default,
+.workflow-node--skipped.react-flow__node-default {
+  opacity: 0.72;
+}
+
+.workflow-node--final.react-flow__node-default {
+  border-right: 2px solid #315bd6;
+}
+
+.workflow-node .react-flow__handle {
+  width: 8px;
+  height: 8px;
+  border: 2px solid #fff;
+  background: #64748b;
+}
+
+.workflow-node--running .react-flow__handle,
+.workflow-node--reviewing .react-flow__handle,
+.workflow-node--retrying .react-flow__handle {
+  background: #2563eb;
+}
+
+.workflow-node--completed .react-flow__handle {
+  background: #16a34a;
+}
+
+.graph-node-card {
   display: grid;
-  gap: 0.25rem;
+  gap: 0.32rem;
+  padding: 0.85rem 0.9rem 0.75rem;
   text-align: left;
 }
 
-.graph-node-label span,
-.graph-node-label small {
-  color: #64748b;
-  font-size: 0.75rem;
+.graph-node-heading,
+.graph-node-meta,
+.graph-node-footnote {
+  display: flex;
+  gap: 0.45rem;
+  align-items: center;
 }
 
-.graph-node-label small {
-  color: #315bd6;
+.graph-node-heading {
+  justify-content: space-between;
+}
+
+.graph-node-stage {
+  color: #8490a3;
+  font-size: 0.63rem;
   font-weight: 800;
-  text-transform: capitalize;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.graph-final-badge {
+  padding: 0.16rem 0.38rem;
+  border-radius: 999px;
+  color: #254bb8;
+  background: #e7edff;
+  font-size: 0.6rem;
+  font-weight: 800;
+}
+
+.graph-node-card > strong {
+  margin-top: 0.08rem;
+  overflow: hidden;
+  font-size: 0.9rem;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.graph-node-role,
+.graph-node-meta,
+.graph-node-footnote {
+  color: #64748b;
+  font-size: 0.68rem;
+}
+
+.graph-node-role {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.graph-node-meta {
+  min-height: 23px;
+  margin-top: 0.18rem;
+}
+
+.graph-status {
+  display: inline-flex;
+  gap: 0.32rem;
+  align-items: center;
+  padding: 0.2rem 0.45rem;
+  border-radius: 999px;
+  color: #475569;
+  background: #f1f5f9;
+  font-weight: 800;
+}
+
+.graph-status i,
+.legend-dot {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: #94a3b8;
+}
+
+.graph-status--running,
+.graph-status--reviewing,
+.graph-status--retrying {
+  color: #1d4ed8;
+  background: #dbeafe;
+}
+
+.graph-status--running i,
+.legend-dot--running {
+  background: #2563eb;
+}
+
+.graph-status--reviewing i,
+.legend-dot--reviewing {
+  background: #7c3aed;
+}
+
+.graph-status--retrying i {
+  background: #d97706;
+}
+
+.graph-status--completed {
+  color: #137333;
+  background: #dcfce7;
+}
+
+.graph-status--completed i,
+.legend-dot--completed {
+  background: #16a34a;
+}
+
+.graph-status--failed {
+  color: #b91c1c;
+  background: #fee2e2;
+}
+
+.graph-status--failed i,
+.legend-dot--failed {
+  background: #dc2626;
+}
+
+.legend-dot--pending {
+  background: #94a3b8;
+}
+
+.graph-node-footnote {
+  justify-content: space-between;
+  margin: 0.35rem -0.9rem -0.75rem;
+  padding: 0.48rem 0.9rem;
+  border-top: 1px solid #edf1f5;
+  background: rgb(248 250 252 / 78%);
+}
+
+.graph-summary,
+.graph-legend {
+  display: flex;
+  gap: 0.45rem;
+  align-items: center;
+  padding: 0.45rem;
+  border: 1px solid rgb(203 213 225 / 82%);
+  border-radius: 10px;
+  color: #526078;
+  background: rgb(255 255 255 / 90%);
+  box-shadow: 0 6px 18px rgb(15 23 42 / 7%);
+  backdrop-filter: blur(8px);
+  font-size: 0.68rem;
+}
+
+.graph-summary span {
+  padding: 0.28rem 0.42rem;
+  border-radius: 7px;
+  background: #f5f7fa;
+}
+
+.graph-summary strong {
+  color: #172033;
+  font-variant-numeric: tabular-nums;
+}
+
+.graph-summary .summary-completed {
+  color: #137333;
+  background: #effcf3;
+}
+
+.graph-summary .summary-active {
+  color: #1d4ed8;
+  background: #eff6ff;
+}
+
+.graph-summary .summary-failed {
+  color: #b91c1c;
+  background: #fff1f2;
+}
+
+.graph-legend span {
+  display: inline-flex;
+  gap: 0.3rem;
+  align-items: center;
+  white-space: nowrap;
+}
+
+.workflow-edge--active .react-flow__edge-path {
+  filter: drop-shadow(0 0 3px rgb(37 99 235 / 30%));
+}
+
+.graph-minimap {
+  overflow: hidden;
+  border: 1px solid #d5dce7;
+  border-radius: 10px;
+  background: rgb(255 255 255 / 92%);
+  box-shadow: 0 6px 18px rgb(15 23 42 / 7%);
+}
+
+.workflow-graph .react-flow__controls {
+  overflow: hidden;
+  border: 1px solid #d5dce7;
+  border-radius: 10px;
+  box-shadow: 0 6px 18px rgb(15 23 42 / 7%);
+}
+
+.workflow-graph .react-flow__controls-button {
+  width: 30px;
+  height: 30px;
+  border-bottom-color: #e2e8f0;
+  background: rgb(255 255 255 / 94%);
+}
+
+.workflow-node--running .graph-status i,
+.workflow-node--reviewing .graph-status i,
+.workflow-node--retrying .graph-status i {
+  animation: graph-status-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes graph-status-pulse {
+  50% {
+    box-shadow: 0 0 0 4px rgb(37 99 235 / 14%);
+    transform: scale(0.85);
+  }
+}
+
+.graph-node-meta > span:last-child:not(.graph-status) {
+  font-weight: 800;
 }
 
 .node-preview {
@@ -908,7 +1203,20 @@ pre,
   }
 
   .workflow-graph {
-    height: 440px;
+    height: 520px;
+  }
+
+  .graph-minimap {
+    display: none;
+  }
+
+  .graph-summary {
+    max-width: calc(100% - 16px);
+    flex-wrap: wrap;
+  }
+
+  .graph-legend {
+    display: none;
   }
 
   .event-panel {

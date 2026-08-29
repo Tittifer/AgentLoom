@@ -18,8 +18,10 @@ AgentLoom 是一个轻量级、由数据库提供持久化支持的多智能体�
 ## 仓库结构
 
 ```text
-src/                  FastAPI 后端包
-tests/                后端单元测试、集成测试、契约测试和 E2E 支持代码
+agentloom/            FastAPI 后端包
+tests/agentloom/      与后端源码路径对应的单元测试
+tests/integration/    后端集成测试
+tests/contract/       模型提供商契约测试
 frontend/             React、TypeScript、Vitest 和 Playwright 前端包
 alembic/              PostgreSQL 数据库迁移
 examples/             产品研究工作流示例
