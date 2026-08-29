@@ -1,36 +1,20 @@
 import { createBrowserRouter, Navigate } from "react-router-dom";
 
 import App from "../App";
-import { NewTaskPage } from "../pages/NewTaskPage";
-import { RunDetailPage } from "../pages/RunDetailPage";
-import { TaskDetailPage } from "../pages/TaskDetailPage";
-import { TaskListPage } from "../pages/TaskListPage";
+import { ColonyListPage } from "../pages/ColonyListPage";
+import { ColonyWorkspacePage } from "../pages/ColonyWorkspacePage";
+import { NewColonyPage } from "../pages/NewColonyPage";
 
 export const router = createBrowserRouter([
   {
     path: "/",
     element: <App />,
     children: [
-      {
-        index: true,
-        element: <Navigate replace to="/tasks" />,
-      },
-      {
-        path: "tasks",
-        element: <TaskListPage />,
-      },
-      {
-        path: "tasks/new",
-        element: <NewTaskPage />,
-      },
-      {
-        path: "tasks/:taskId",
-        element: <TaskDetailPage />,
-      },
-      {
-        path: "runs/:runId",
-        element: <RunDetailPage />,
-      },
+      { index: true, element: <Navigate replace to="/colonies" /> },
+      { path: "colonies", element: <ColonyListPage /> },
+      { path: "colonies/new", element: <NewColonyPage /> },
+      { path: "colonies/:colonyId", element: <ColonyWorkspacePage /> },
+      { path: "*", element: <Navigate replace to="/colonies" /> },
     ],
   },
 ]);

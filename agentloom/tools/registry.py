@@ -15,7 +15,7 @@ from agentloom.tools.base import (
     ToolNotFoundError,
     ToolTimeoutError,
 )
-from agentloom.tools.builtin.context import QueryPreviousNodeResultTool, ReadTaskContextTool
+from agentloom.tools.builtin.context import ReadTaskContextTool
 from agentloom.tools.builtin.mock_search import MockWebSearchTool
 
 
@@ -62,7 +62,7 @@ class ToolRegistry:
         """Execute one authorized tool and bound its result size."""
 
         if name not in allowed_tools:
-            raise ToolNotAllowedError(f"Tool {name} is not allowed for this node")
+            raise ToolNotAllowedError(f"Tool {name} is not allowed for this session")
         tool = self._tools.get(name)
         if tool is None:
             raise ToolNotFoundError(f"Tool {name} is not registered")
@@ -94,7 +94,6 @@ def create_builtin_tool_registry() -> ToolRegistry:
     return ToolRegistry(
         [
             ReadTaskContextTool(),
-            QueryPreviousNodeResultTool(),
             MockWebSearchTool(),
         ]
     )

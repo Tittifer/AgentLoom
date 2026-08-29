@@ -123,7 +123,7 @@ def main(*, start_postgres: bool = False) -> int:
         processes.append(("backend", start_process(backend_command, cwd=ROOT)))
         processes.append(("frontend", start_process(frontend_command, cwd=FRONTEND)))
         print("AgentLoom development environment is running:", flush=True)
-        print("  Frontend: http://localhost:5173/tasks", flush=True)
+        print("  Frontend: http://localhost:5173/colonies", flush=True)
         print("  Backend:  http://localhost:8000/health", flush=True)
         print("Press Ctrl+C to stop the frontend and backend.", flush=True)
 

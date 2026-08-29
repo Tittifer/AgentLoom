@@ -1,115 +1,149 @@
 # AgentLoom
 
-AgentLoom 是一个轻量级、由数据库提供持久化支持的多智能体工作流应用。规划器（Planner）将自然语言任务转换为经过校验的 DAG；异步工作器（Worker）执行已就绪的节点，确定性审核器（Reviewer）校验结构化结果，React 界面通过 SSE 实时展示已持久化的执行进度。
+AgentLoom 是一个基于 Hive Colony 思路实现的持久化多智能体协作应用。每个 Colony 拥有一个长期存在的 Queen 会话；Queen 持续与用户对话、维护任务计划和共享 Tracker，并按实际需要动态派生多个并行 Worker。系统不再预先生成固定 DAG，也不要求用户手动填写 Context JSON。
 
-## 当前范围
+## 核心能力
 
-版本 `0.1.0` 有意限定为：
+- Queen 多轮会话：用户可以持续补充信息、调整目标或追问结果。
+- 动态 Worker：Queen 通过 `run_worker` 即时创建一个或多个并行 Worker。
+- 统一 AgentLoop：Queen 和 Worker 共用模型调用、工具循环、质量检查、用量统计和持久化边界。
+- 共享状态：任务计划和 Tracker 保存在 PostgreSQL 中，所有智能体可读写。
+- 可恢复执行：消息、会话游标、Worker 状态和事件均持久化；进程重启会重新排队被中断的执行。
+- 实时工作台：React 界面通过 SSE 展示 Queen、Worker、任务和 Tracker 的变化。
+- 模型兼容：离线开发使用 MockLLM，真实模型通过 LiteLLM 接入 OpenAI 兼容接口或其他提供商。
 
-- 单个后端进程和单个调度器；
-- 单个可信用户，不包含身份认证或权限控制；
-- 仅支持已注册的只读工具；
-- 使用 PostgreSQL 持久化数据；
-- 使用确定性的离线 MockLLM，或由 LiteLLM 支持的模型提供商；
-- 每个工作流最多包含 20 个节点，并支持配置有界的并发数和重试次数。
-
-请勿将此版本直接暴露在不可信网络中。多用户隔离、分布式调度、可写工具、配额以及生产环境身份认证均不在 MVP 范围内。
-
-## 仓库结构
+## 目录结构
 
 ```text
-agentloom/            FastAPI 后端包
-tests/agentloom/      与后端源码路径对应的单元测试
-tests/integration/    后端集成测试
-tests/contract/       模型提供商契约测试
-frontend/             React、TypeScript、Vitest 和 Playwright 前端包
-alembic/              PostgreSQL 数据库迁移
-examples/             产品研究工作流示例
-scripts/              本地开发启动脚本
-compose.yaml          可选的开发用 PostgreSQL 服务
+agentloom/                 FastAPI 后端包
+  agents/                 统一 AgentLoop 与 Judge
+  api/routes/colonies.py  Colony、会话和 SSE API
+  colony/                 Colony DTO、通知器和运行时
+  db/models/              Colony 持久化模型
+  repositories/           Colony 聚合仓储
+  llm/                    Mock 与 LiteLLM 适配器
+  tools/                  有界只读工具注册表
+frontend/                 React Colony 工作台
+tests/agentloom/          与后端源码路径对应的单元测试
+tests/integration/        PostgreSQL 和 HTTP 集成测试
+tests/contract/           LiteLLM 适配器契约测试
+alembic/                  数据库迁移
+scripts/dev.py            前后端一键启动脚本
 ```
+
+早期版本的 Task、Workflow、Run 表由历史迁移保留，方便已有数据库升级；当前应用代码和 HTTP API 已不再读写这些旧表。
 
 ## 环境要求
 
 - Python 3.11
-- [uv](https://docs.astral.sh/uv/)
+- uv
 - Node.js 22 和 npm 10
-- PostgreSQL 16：可以安装在本机，也可以通过可选的开发用 Compose 服务启动
-- GNU Make 为可选工具；PowerShell 用户可以直接运行对应命令
+- PostgreSQL 16
+- GNU Make（可选；Windows 也可以直接运行脚本）
 
-## 本地开发
+## 环境变量
 
-复制示例配置并安装依赖：
+先复制示例文件：
 
 ```powershell
 Copy-Item .env.example .env
-uv sync --locked --all-groups
-npm --prefix frontend ci
 ```
 
-如果 PostgreSQL 安装在本机，请先创建配置中指定的数据库，然后执行迁移：
+主要配置如下：
+
+```dotenv
+AGENTLOOM_ENV=development
+AGENTLOOM_LOG_LEVEL=INFO
+AGENTLOOM_DATABASE_URL=postgresql+asyncpg://agentloom:agentloom@localhost:5432/agentloom
+
+AGENTLOOM_LLM_PROVIDER=mock
+AGENTLOOM_LLM_MODEL=mock/schema
+AGENTLOOM_LLM_RESPONSE_FORMAT=json_schema
+AGENTLOOM_LLM_TIMEOUT_SECONDS=60
+
+AGENTLOOM_QUEEN_MAX_TURNS=20
+AGENTLOOM_MAX_CONCURRENT_WORKERS=4
+AGENTLOOM_WORKER_TIMEOUT_SECONDS=600
+```
+
+`.env.example` 的数据库端口是开发用 Compose 默认端口 `15432`。如果使用本机 PostgreSQL，通常将其改成 `5432`。
+
+### 第三方 OpenAI 兼容模型
+
+```dotenv
+AGENTLOOM_LLM_PROVIDER=litellm
+AGENTLOOM_LLM_MODEL=openai/你的模型名称
+AGENTLOOM_LLM_RESPONSE_FORMAT=json_object
+OPENAI_BASE_URL=https://你的服务地址/v1
+OPENAI_API_KEY=你的密钥
+```
+
+如果提供商完整支持严格 JSON Schema，可将 `AGENTLOOM_LLM_RESPONSE_FORMAT` 改成 `json_schema`。不要提交 `.env` 或真实 API 密钥。
+
+## 安装、迁移和启动
 
 ```powershell
+uv sync --locked --all-groups
+npm --prefix frontend ci
 uv run --locked alembic upgrade head
 ```
 
-同时启动后端和前端：
+一键启动前后端：
+
+```powershell
+make dev
+```
+
+Windows 未安装 `make` 时使用：
 
 ```powershell
 uv run --locked python scripts/dev.py
 ```
 
-也可以先启动开发用 PostgreSQL 容器：
+启动后访问：
+
+- 前端工作台：<http://localhost:5173/colonies>
+- 后端健康检查：<http://localhost:8000/health>
+- OpenAPI：<http://localhost:8000/docs>
+
+## 使用流程
+
+1. 在“协作空间”创建 Colony，设置名称和 Queen 配置。
+2. 进入工作台，直接用自然语言向 Queen 描述目标。
+3. Queen 可以创建任务项、写入 Tracker，并通过 `run_worker` 派生并行 Worker。
+4. Worker 独立执行任务，可调用只读工具、更新 Tracker，并通过 `report_to_parent` 向 Queen 汇报。
+5. Worker 汇报会作为新消息回到 Queen 会话；Queen 综合结果后继续回复用户。
+6. 用户可以再次发送消息，开始下一轮协作，无需重新创建工作流。
+
+## 主要 API
+
+```text
+POST /api/colonies
+GET  /api/colonies
+GET  /api/colonies/{colony_id}
+GET  /api/sessions/{session_id}
+GET  /api/sessions/{session_id}/messages
+POST /api/sessions/{session_id}/messages
+GET  /api/colonies/{colony_id}/workers
+GET  /api/colonies/{colony_id}/tasks
+GET  /api/colonies/{colony_id}/tracker
+GET  /api/colonies/{colony_id}/events
+```
+
+SSE 事件先写入 PostgreSQL，再通知客户端；客户端可用 `after` 序号重放断线期间的事件。
+
+## 测试与检查
+
+后端测试会连接 `.env` 指定的 PostgreSQL：
 
 ```powershell
-uv run --locked python scripts/dev.py --with-docker
-```
-
-在安装了 GNU Make 的系统中，对应命令为 `make dev` 和 `make dev-docker`。启动后访问 <http://localhost:5173/tasks>；FastAPI 健康检查地址为 <http://localhost:8000/health>。
-
-## 模型配置
-
-默认配置完全离线运行：
-
-```dotenv
-AGENTLOOM_LLM_PROVIDER=mock
-AGENTLOOM_LLM_MODEL=mock/schema
-AGENTLOOM_LLM_RESPONSE_FORMAT=json_schema
-```
-
-使用 LiteLLM 支持的模型时，设置：
-
-```dotenv
-AGENTLOOM_LLM_PROVIDER=litellm
-AGENTLOOM_LLM_MODEL=openai/gpt-4.1-mini
-AGENTLOOM_LLM_RESPONSE_FORMAT=json_schema
-OPENAI_API_KEY=replace-with-your-key
-```
-
-对于支持 JSON 对象但不接受严格 JSON Schema 的 OpenAI 兼容接口，使用：
-
-```dotenv
-AGENTLOOM_LLM_PROVIDER=litellm
-AGENTLOOM_LLM_MODEL=openai/provider-model-id
-AGENTLOOM_LLM_RESPONSE_FORMAT=json_object
-OPENAI_BASE_URL=https://provider.example/v1
-OPENAI_API_KEY=replace-with-your-key
-```
-
-`json_schema` 仍为默认模式，由模型提供商执行严格校验。`json_object` 兼容模式依赖 AgentLoom 本地的 Pydantic、DAG 和 Reviewer 校验。请按照 LiteLLM 对相应模型提供商的要求设置环境变量。切勿提交 `.env` 或 API 密钥。`AGENTLOOM_LLM_TIMEOUT_SECONDS` 用于限制每次模型调用的时长，`AGENTLOOM_WORKER_MAX_TURNS` 用于限制每个 Worker 的工具调用循环次数。
-
-## 运行测试和检查
-
-后端测试使用 PostgreSQL，但不需要模型 API 密钥：
-
-```powershell
-uv run --locked pytest -m "not live" --cov=agentloom --cov-report=term-missing
+uv run --locked pytest --cov=agentloom --cov-report=term-missing
 uv run --locked ruff format --check .
 uv run --locked ruff check .
 uv run --locked pyright
 ```
 
-前端检查同样可以完全离线运行：
+前端检查：
 
 ```powershell
 npm --prefix frontend run lint
@@ -118,53 +152,12 @@ npm --prefix frontend run test
 npm --prefix frontend run build
 ```
 
-首次运行前安装一次 Chromium，然后执行完整的产品研究浏览器流程：
+也可以运行 `make check` 执行完整检查。当前后端覆盖率门槛为 80%。
 
-```powershell
-Set-Location frontend
-npx playwright install chromium
-npm run test:e2e
-Set-Location ..
-```
+## 当前边界
 
-E2E 测试会启动隔离的 FastAPI 和 Vite 进程，使用确定性的 MockLLM，覆盖一次 Reviewer 重试，并且需要配置好的 PostgreSQL 数据库。
-
-## 数据库迁移
-
-在仓库根目录执行和检查数据库迁移：
-
-```powershell
-uv run --locked alembic upgrade head
-uv run --locked alembic current
-uv run --locked alembic check
-```
-
-启动 Uvicorn 前，请先应用已提交的数据库迁移。`0.1.0` 版本仅运行一个后端实例；恢复和调度采用单进程所有权模型。
-
-## 运行时行为
-
-- 启动恢复会查找处于排队或运行状态的运行记录（Run），保留已完成节点，重置被中断的运行中或审核中尝试，记录 `run.recovered` 事件，然后恢复调度。
-- 取消运行会将所有未完成的尝试标记为已取消。已经发出的模型调用可能仍会结束，但其输出无法再触发状态转换或写入结果。
-- 重试失败的运行会使用相同的不可变工作流和输入创建一条新运行记录。失败的原运行记录会继续保留，供历史查询。
-- SSE 事件会先持久化再发送通知，支持事件重放；运行完成、失败或取消后，界面会关闭对应连接。
-
-## 发布检查
-
-运行完整的本地发布检查：
-
-```powershell
-uv lock --check
-uv run --locked ruff format --check .
-uv run --locked ruff check .
-uv run --locked pyright
-uv run --locked pytest -m "not live" --cov=agentloom --cov-report=term-missing
-uv run --locked alembic upgrade head
-npm --prefix frontend ci
-npm --prefix frontend run lint
-npm --prefix frontend run typecheck
-npm --prefix frontend run test
-npm --prefix frontend run build
-npm --prefix frontend run test:e2e
-```
-
-仓库内包含 GitHub Actions 工作流，它会在 PostgreSQL 16 环境中执行同等的离线后端、前端、数据库迁移和 Playwright 检查。
+- 当前版本面向单个可信用户，不包含登录、租户隔离和细粒度权限。
+- Worker 并发由单进程 `asyncio` 信号量控制，不是分布式队列。
+- 内置 `web_search` 是离线确定性示例；接入真实搜索或 MCP 工具前应增加权限、审计和速率限制。
+- Artifact 表已经建立，但大文件对象存储适配器尚未实现。
+- 本项目不包含生产 Docker 部署方案。

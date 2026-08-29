@@ -8,10 +8,7 @@ import { router } from "./app/router";
 import "./index.css";
 
 const root = document.getElementById("root");
-
-if (!root) {
-  throw new Error("未找到应用根元素");
-}
+if (!root) throw new Error("未找到应用根元素");
 
 createRoot(root).render(
   <StrictMode>
@@ -20,4 +17,3 @@ createRoot(root).render(
     </QueryClientProvider>
   </StrictMode>,
 );
-

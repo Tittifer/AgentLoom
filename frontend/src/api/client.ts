@@ -28,21 +28,11 @@ async function parseError(response: Response): Promise<ApiErrorPayload> {
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
-  if (init?.body && !headers.has("Content-Type")) {
-    headers.set("Content-Type", "application/json");
-  }
+  if (init?.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
   headers.set("Accept", "application/json");
-
   const response = await fetch(path, { ...init, headers });
-
-  if (!response.ok) {
-    throw new ApiClientError(response.status, await parseError(response));
-  }
-
-  if (response.status === 204) {
-    return undefined as T;
-  }
-
+  if (!response.ok) throw new ApiClientError(response.status, await parseError(response));
+  if (response.status === 204) return undefined as T;
   return (await response.json()) as T;
 }
 

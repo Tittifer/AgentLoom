@@ -50,7 +50,7 @@ class SchemaMockLLMProvider:
             _mock_object(request.response_schema) if request.response_schema is not None else None
         )
         return LLMResponse(
-            content=None,
+            content=None if structured_output is not None else "模拟 Queen 已收到消息。",
             structured_output=structured_output,
             input_tokens=10,
             output_tokens=5,

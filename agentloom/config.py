@@ -38,11 +38,23 @@ class Settings(BaseSettings):
         le=600,
         validation_alias="AGENTLOOM_LLM_TIMEOUT_SECONDS",
     )
-    worker_max_turns: int = Field(
-        default=6,
+    queen_max_turns: int = Field(
+        default=20,
         ge=1,
-        le=20,
-        validation_alias="AGENTLOOM_WORKER_MAX_TURNS",
+        le=100,
+        validation_alias="AGENTLOOM_QUEEN_MAX_TURNS",
+    )
+    max_concurrent_workers: int = Field(
+        default=4,
+        ge=1,
+        le=50,
+        validation_alias="AGENTLOOM_MAX_CONCURRENT_WORKERS",
+    )
+    worker_timeout_seconds: int = Field(
+        default=600,
+        ge=1,
+        le=3600,
+        validation_alias="AGENTLOOM_WORKER_TIMEOUT_SECONDS",
     )
     app_name: str = "AgentLoom API"
     app_version: str = "0.1.0"

@@ -6,14 +6,13 @@ from contextlib import asynccontextmanager
 import structlog
 from fastapi import FastAPI
 
-from agentloom.api.routes import run_router, task_router
+from agentloom.api.routes import colony_router
 from agentloom.api.schemas import HealthResponse
-from agentloom.bootstrap import create_planner, create_run_scheduler
+from agentloom.bootstrap import create_colony_runtime
+from agentloom.colony.notifier import ColonyEventNotifier
 from agentloom.config import Settings, get_settings
 from agentloom.db.session import DatabaseSessionManager
 from agentloom.logging import configure_logging
-from agentloom.runtime.recovery import recover_active_runs
-from agentloom.services.event_service import RunEventNotifier
 
 
 async def health() -> HealthResponse:
@@ -29,9 +28,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     configure_logging(app_settings.log_level)
     logger = structlog.get_logger(__name__)
     database = DatabaseSessionManager(app_settings.database_url)
-    event_notifier = RunEventNotifier()
-    scheduler = create_run_scheduler(database, event_notifier, app_settings)
-    planner = create_planner(app_settings)
+    event_notifier = ColonyEventNotifier()
+    colony_runtime = create_colony_runtime(database, event_notifier, app_settings)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncGenerator[None, None]:
@@ -43,20 +41,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise
 
         logger.info("database_connected")
-        recovered_run_ids = await recover_active_runs(database.session_factory, event_notifier)
-        if recovered_run_ids:
-            logger.info("runs_recovered", count=len(recovered_run_ids))
         logger.info(
             "application_started",
             environment=app_settings.environment,
             version=app_settings.app_version,
         )
         try:
-            await scheduler.start()
+            await colony_runtime.start()
             yield
         finally:
             try:
-                await scheduler.stop()
+                await colony_runtime.stop()
             finally:
                 await database.dispose()
                 logger.info("application_stopped")
@@ -67,11 +62,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     application.state.database = database
-    application.state.run_event_notifier = event_notifier
-    application.state.run_scheduler = scheduler
-    application.state.planner = planner
-    application.include_router(task_router, prefix="/api")
-    application.include_router(run_router, prefix="/api")
+    application.state.colony_event_notifier = event_notifier
+    application.state.colony_runtime = colony_runtime
+    application.include_router(colony_router, prefix="/api")
     application.add_api_route(
         "/health",
         health,

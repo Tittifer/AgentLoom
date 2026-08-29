@@ -1,38 +1,10 @@
-"""Tests for canonical lifecycle states."""
+"""Tests for canonical Colony lifecycle states."""
 
-from agentloom.runtime.states import NodeRunStatus, RunStatus, TaskStatus
-
-
-def test_task_status_values_match_design() -> None:
-    assert [status.value for status in TaskStatus] == [
-        "draft",
-        "planning",
-        "ready",
-        "running",
-        "completed",
-        "failed",
-        "cancelled",
-    ]
+from agentloom.runtime.states import ColonyStatus, SessionStatus, TaskItemStatus, WorkerStatus
 
 
-def test_run_status_values_match_design() -> None:
-    assert [status.value for status in RunStatus] == [
-        "queued",
-        "running",
-        "completed",
-        "failed",
-        "cancelled",
-    ]
-
-
-def test_node_run_status_values_match_design() -> None:
-    assert [status.value for status in NodeRunStatus] == [
-        "pending",
-        "running",
-        "reviewing",
-        "retrying",
-        "completed",
-        "failed",
-        "skipped",
-        "cancelled",
-    ]
+def test_colony_runtime_states_match_public_contracts() -> None:
+    assert ColonyStatus.ACTIVE == "active"
+    assert SessionStatus.IDLE == "idle"
+    assert WorkerStatus.TIMED_OUT == "timed_out"
+    assert TaskItemStatus.IN_PROGRESS == "in_progress"

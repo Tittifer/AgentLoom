@@ -8,12 +8,12 @@ from pydantic import JsonValue
 
 from agentloom.llm.base import ToolDefinition
 from agentloom.tools.base import (
-    ToolArgumentsError,
     ToolContext,
     ToolNotAllowedError,
     ToolTimeoutError,
 )
-from agentloom.tools.builtin.context import QueryPreviousNodeResultTool, ReadTaskContextTool
+from agentloom.tools.builtin.context import ReadTaskContextTool
+from agentloom.tools.builtin.mock_search import MockWebSearchTool
 from agentloom.tools.registry import ToolRegistry
 
 
@@ -58,32 +58,22 @@ def context() -> ToolContext:
 
 
 async def test_registry_executes_only_allowed_tools() -> None:
-    registry = ToolRegistry([ReadTaskContextTool(), QueryPreviousNodeResultTool()])
+    registry = ToolRegistry([ReadTaskContextTool(), MockWebSearchTool()])
 
     assert await registry.execute("read_task_context", {}, {"read_task_context"}, context()) == {
         "language": "en"
     }
-    assert await registry.execute(
-        "query_previous_node_result",
-        {"node_key": "research"},
-        {"query_previous_node_result"},
+    search = await registry.execute(
+        "web_search",
+        {"query": "AgentLoom"},
+        {"web_search"},
         context(),
-    ) == {"summary": "facts"}
+    )
+    assert isinstance(search, dict)
+    assert search["query"] == "AgentLoom"
 
     with pytest.raises(ToolNotAllowedError):
         await registry.execute("read_task_context", {}, set(), context())
-
-
-async def test_registry_reports_invalid_previous_node_arguments() -> None:
-    registry = ToolRegistry([QueryPreviousNodeResultTool()])
-
-    with pytest.raises(ToolArgumentsError):
-        await registry.execute(
-            "query_previous_node_result",
-            {"node_key": "not-upstream"},
-            {"query_previous_node_result"},
-            context(),
-        )
 
 
 async def test_registry_applies_timeout_and_result_size_limits() -> None:

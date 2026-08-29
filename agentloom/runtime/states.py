@@ -1,41 +1,44 @@
-"""Canonical lifecycle states shared by persistence and runtime code."""
+"""Canonical Colony lifecycle states."""
 
 from enum import StrEnum
 
 
-class TaskStatus(StrEnum):
-    """Lifecycle state of a user task."""
-
+class ColonyStatus(StrEnum):
     DRAFT = "draft"
-    PLANNING = "planning"
-    READY = "ready"
-    RUNNING = "running"
+    ACTIVE = "active"
+    PAUSED = "paused"
     COMPLETED = "completed"
     FAILED = "failed"
-    CANCELLED = "cancelled"
+    ARCHIVED = "archived"
 
 
-class RunStatus(StrEnum):
-    """Lifecycle state of one task execution."""
-
+class SessionStatus(StrEnum):
+    IDLE = "idle"
     QUEUED = "queued"
     RUNNING = "running"
+    PARKED = "parked"
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
 
 
-class NodeRunStatus(StrEnum):
-    """Lifecycle state of one workflow node execution."""
-
-    PENDING = "pending"
+class WorkerStatus(StrEnum):
+    QUEUED = "queued"
     RUNNING = "running"
-    REVIEWING = "reviewing"
-    RETRYING = "retrying"
+    REPORTING = "reporting"
     COMPLETED = "completed"
+    PARTIAL = "partial"
     FAILED = "failed"
-    SKIPPED = "skipped"
+    TIMED_OUT = "timed_out"
     CANCELLED = "cancelled"
 
 
-__all__ = ["NodeRunStatus", "RunStatus", "TaskStatus"]
+class TaskItemStatus(StrEnum):
+    PENDING = "pending"
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+    BLOCKED = "blocked"
+    CANCELLED = "cancelled"
+
+
+__all__ = ["ColonyStatus", "SessionStatus", "TaskItemStatus", "WorkerStatus"]

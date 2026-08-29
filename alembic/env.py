@@ -20,6 +20,28 @@ config.set_main_option(
     get_settings().database_url.replace("%", "%%"),
 )
 target_metadata = Base.metadata
+LEGACY_TABLES = {
+    "tasks",
+    "workflows",
+    "workflow_nodes",
+    "workflow_edges",
+    "runs",
+    "node_runs",
+    "agent_messages",
+    "run_events",
+}
+
+
+def include_object(
+    _: object,
+    name: str | None,
+    type_: str,
+    reflected: bool,
+    __: object,
+) -> bool:
+    """Keep pre-Colony tables intact without retaining their runtime ORM models."""
+
+    return not (type_ == "table" and reflected and name in LEGACY_TABLES)
 
 
 def run_migrations_offline() -> None:
@@ -31,6 +53,7 @@ def run_migrations_offline() -> None:
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
         compare_type=True,
+        include_object=include_object,
     )
 
     with context.begin_transaction():
@@ -44,6 +67,7 @@ def run_sync_migrations(connection: Connection) -> None:
         connection=connection,
         target_metadata=target_metadata,
         compare_type=True,
+        include_object=include_object,
     )
 
     with context.begin_transaction():

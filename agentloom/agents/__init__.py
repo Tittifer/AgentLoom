@@ -1,5 +1,6 @@
-"""Agent contracts and implementations."""
+"""Unified Queen/Worker agent execution primitives."""
 
-from agentloom.agents.schemas import PlannedNode, WorkflowPlan
+from agentloom.agents.judge import JudgePipeline, JudgeResult
+from agentloom.agents.loop import AgentLoop, LoopContext, ToolExecutionResult
 
-__all__ = ["PlannedNode", "WorkflowPlan"]
+__all__ = ["AgentLoop", "JudgePipeline", "JudgeResult", "LoopContext", "ToolExecutionResult"]
