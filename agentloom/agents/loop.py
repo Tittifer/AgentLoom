@@ -100,7 +100,7 @@ class AgentLoop:
         messages = [self._system_message(context), *context.messages]
         usage = self._initial_usage(context.session)
         configured_tool_calls = context.session.budget.get("max_tool_calls")
-        max_tool_calls = configured_tool_calls if isinstance(configured_tool_calls, int) else 20
+        max_tool_calls = configured_tool_calls if isinstance(configured_tool_calls, int) else 100
         configured_turns = context.session.budget.get("max_turns")
         max_turns = (
             configured_turns if isinstance(configured_turns, int) else self._default_max_turns
@@ -119,6 +119,11 @@ class AgentLoop:
             )
             usage["input_tokens"] += response.input_tokens
             usage["output_tokens"] += response.output_tokens
+            if (
+                response.tool_calls
+                and usage["tool_calls"] + len(response.tool_calls) > max_tool_calls
+            ):
+                raise RuntimeError(f"Agent exceeded {max_tool_calls} tool calls")
             content = response.content or self._json_content(response.structured_output)
             assistant = LLMMessage(
                 role="assistant",
@@ -129,8 +134,6 @@ class AgentLoop:
             await self._store.append_message(context, assistant, "message.completed")
 
             if response.tool_calls:
-                if usage["tool_calls"] + len(response.tool_calls) > max_tool_calls:
-                    raise RuntimeError(f"Agent exceeded {max_tool_calls} tool calls")
                 results = await asyncio.gather(
                     *(self._tools.execute(context, call) for call in response.tool_calls)
                 )

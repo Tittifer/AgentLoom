@@ -230,3 +230,4 @@ async def test_agent_loop_enforces_tool_call_budget() -> None:
     await loop.run(context.session.id)
     assert store.failed is not None
     assert "tool calls" in str(store.failed)
+    assert store.messages == []

@@ -24,6 +24,7 @@ async def test_colony_repository_persists_shared_runtime_state() -> None:
             repository = ColonyRepository(session)
             colony, queen = await repository.create(name, "", "general", "mock/schema", {})
             colony_id = colony.id
+            assert queen.budget["max_tool_calls"] == 100
             assert (await repository.get(colony.id)) == colony
             assert (await repository.get_queen_session(colony.id)) == queen
             assert any(item.id == colony.id for item in await repository.list_colonies())

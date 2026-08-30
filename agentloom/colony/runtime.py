@@ -80,6 +80,56 @@ class TaskUpdateInput(ToolInput):
     status: Literal["pending", "in_progress", "completed", "blocked", "cancelled"]
 
 
+def normalize_message_history(messages: list[MessageRead]) -> tuple[list[LLMMessage], int]:
+    """Drop orphan tool results and downgrade incomplete assistant tool-call groups."""
+
+    normalized: list[LLMMessage] = []
+    repaired_groups = 0
+    index = 0
+    while index < len(messages):
+        item = messages[index]
+        message = LLMMessage.model_validate(
+            {
+                "role": item.role,
+                "content": item.content,
+                "tool_call_id": item.tool_call_id,
+                "tool_calls": item.tool_calls,
+            }
+        )
+        if message.role == "assistant" and message.tool_calls:
+            tool_messages: list[LLMMessage] = []
+            next_index = index + 1
+            while next_index < len(messages) and messages[next_index].role == "tool":
+                tool_item = messages[next_index]
+                tool_messages.append(
+                    LLMMessage.model_validate(
+                        {
+                            "role": tool_item.role,
+                            "content": tool_item.content,
+                            "tool_call_id": tool_item.tool_call_id,
+                            "tool_calls": tool_item.tool_calls,
+                        }
+                    )
+                )
+                next_index += 1
+            expected_ids = {call.id for call in message.tool_calls}
+            response_ids = {tool.tool_call_id for tool in tool_messages}
+            if len(tool_messages) == len(expected_ids) and response_ids == expected_ids:
+                normalized.extend([message, *tool_messages])
+            else:
+                repaired_groups += 1
+                if message.content:
+                    normalized.append(message.model_copy(update={"tool_calls": []}))
+            index = next_index
+            continue
+        if message.role == "tool":
+            repaired_groups += 1
+        else:
+            normalized.append(message)
+        index += 1
+    return normalized, repaired_groups
+
+
 class DatabaseAgentLoopStore(AgentLoopStore):
     """Commit every AgentLoop message, checkpoint, and event atomically."""
 
@@ -90,6 +140,7 @@ class DatabaseAgentLoopStore(AgentLoopStore):
     ) -> None:
         self._session_factory = session_factory
         self._notifier = notifier
+        self._logger = structlog.get_logger(__name__)
 
     async def load(self, session_id: UUID) -> LoopContext | None:
         async with self._session_factory() as session:
@@ -101,17 +152,13 @@ class DatabaseAgentLoopStore(AgentLoopStore):
             messages = await repository.list_messages(session_id)
             if colony is None or messages is None:
                 return None
-            normalized = [
-                LLMMessage.model_validate(
-                    {
-                        "role": item.role,
-                        "content": item.content,
-                        "tool_call_id": item.tool_call_id,
-                        "tool_calls": item.tool_calls,
-                    }
+            normalized, repaired_groups = normalize_message_history(messages)
+            if repaired_groups:
+                self._logger.warning(
+                    "incomplete_tool_history_repaired",
+                    session_id=str(session_id),
+                    repaired_groups=repaired_groups,
                 )
-                for item in messages
-            ]
             return LoopContext(session=agent_session, colony=colony, messages=normalized)
 
     async def mark_running(self, context: LoopContext) -> bool:
