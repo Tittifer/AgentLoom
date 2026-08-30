@@ -42,11 +42,25 @@ class TrackerVersionConflictError(ValueError):
     """Raised when an optimistic tracker update targets a stale version."""
 
 
+def colony_lock_key(colony_id: UUID) -> int:
+    """Return a deterministic signed PostgreSQL advisory-lock key."""
+
+    upper = colony_id.int >> 64
+    lower = colony_id.int & ((1 << 64) - 1)
+    value = upper ^ lower
+    return value - (1 << 64) if value >= 1 << 63 else value
+
+
 class ColonyRepository:
     """Read and mutate Colony state inside caller-owned transactions."""
 
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
+
+    async def lock_colony_for_write(self, colony_id: UUID) -> None:
+        """Serialize writes for one Colony until the current transaction ends."""
+
+        await self._session.execute(select(func.pg_advisory_xact_lock(colony_lock_key(colony_id))))
 
     async def create(
         self,
@@ -133,6 +147,13 @@ class ColonyRepository:
         cursor: Mapping[str, object] | None = None,
         usage: Mapping[str, object] | None = None,
     ) -> bool:
+        colony_id = await self._session.scalar(
+            select(AgentSessionModel.colony_id).where(AgentSessionModel.id == session_id)
+        )
+        if colony_id is None:
+            return False
+        await self.lock_colony_for_write(colony_id)
+
         values: dict[str, object] = {
             "status": status,
             "park_reason": park_reason,
@@ -156,6 +177,13 @@ class ColonyRepository:
         *,
         metadata: Mapping[str, object] | None = None,
     ) -> MessageRead | None:
+        colony_id = await self._session.scalar(
+            select(AgentSessionModel.colony_id).where(AgentSessionModel.id == session_id)
+        )
+        if colony_id is None:
+            return None
+        await self.lock_colony_for_write(colony_id)
+
         session = await self._session.scalar(
             select(AgentSessionModel).where(AgentSessionModel.id == session_id).with_for_update()
         )
@@ -205,6 +233,16 @@ class ColonyRepository:
         tasks: Sequence[WorkerTask],
         timeout_seconds: int,
     ) -> list[WorkerRead]:
+        colony_id = await self._session.scalar(
+            select(AgentSessionModel.colony_id).where(
+                AgentSessionModel.id == queen_session_id,
+                AgentSessionModel.actor_type == "queen",
+            )
+        )
+        if colony_id is None:
+            return []
+        await self.lock_colony_for_write(colony_id)
+
         queen = await self._session.scalar(
             select(AgentSessionModel)
             .where(
@@ -260,6 +298,13 @@ class ColonyRepository:
         return self._worker_read(model) if model is not None else None
 
     async def mark_worker_running(self, worker_id: UUID) -> WorkerRead | None:
+        colony_id = await self._session.scalar(
+            select(WorkerRunModel.colony_id).where(WorkerRunModel.id == worker_id)
+        )
+        if colony_id is None:
+            return None
+        await self.lock_colony_for_write(colony_id)
+
         model = await self._session.scalar(
             select(WorkerRunModel).where(WorkerRunModel.id == worker_id).with_for_update()
         )
@@ -282,6 +327,13 @@ class ColonyRepository:
         report: Mapping[str, object] | None = None,
         error: Mapping[str, object] | None = None,
     ) -> WorkerRead | None:
+        colony_id = await self._session.scalar(
+            select(WorkerRunModel.colony_id).where(WorkerRunModel.worker_session_id == session_id)
+        )
+        if colony_id is None:
+            return None
+        await self.lock_colony_for_write(colony_id)
+
         model = await self._session.scalar(
             select(WorkerRunModel)
             .where(WorkerRunModel.worker_session_id == session_id)
@@ -305,6 +357,8 @@ class ColonyRepository:
     async def upsert_tracker(
         self, colony_id: UUID, session_id: UUID, payload: TrackerUpsert
     ) -> TrackerEntryRead:
+        await self.lock_colony_for_write(colony_id)
+
         model = await self._session.scalar(
             select(TrackerEntryModel)
             .where(
@@ -356,6 +410,8 @@ class ColonyRepository:
     async def create_task_item(
         self, colony_id: UUID, session_id: UUID, payload: TaskItemCreate
     ) -> TaskItemRead:
+        await self.lock_colony_for_write(colony_id)
+
         model = TaskItemModel(
             colony_id=colony_id,
             session_id=session_id,
@@ -372,7 +428,16 @@ class ColonyRepository:
     async def update_task_status(
         self, task_id: UUID, status: TaskItemStatus
     ) -> TaskItemRead | None:
-        model = await self._session.get(TaskItemModel, task_id)
+        colony_id = await self._session.scalar(
+            select(TaskItemModel.colony_id).where(TaskItemModel.id == task_id)
+        )
+        if colony_id is None:
+            return None
+        await self.lock_colony_for_write(colony_id)
+
+        model = await self._session.scalar(
+            select(TaskItemModel).where(TaskItemModel.id == task_id).with_for_update()
+        )
         if model is None:
             return None
         model.status = status
@@ -399,6 +464,8 @@ class ColonyRepository:
         worker_run_id: UUID | None = None,
         payload: Mapping[str, object] | None = None,
     ) -> ColonyEventRead | None:
+        await self.lock_colony_for_write(colony_id)
+
         colony = await self._session.scalar(
             select(ColonyModel).where(ColonyModel.id == colony_id).with_for_update()
         )
@@ -551,4 +618,4 @@ class ColonyRepository:
         )
 
 
-__all__ = ["ColonyRepository", "TrackerVersionConflictError"]
+__all__ = ["ColonyRepository", "TrackerVersionConflictError", "colony_lock_key"]
