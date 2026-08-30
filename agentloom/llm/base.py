@@ -20,6 +20,7 @@ class ToolCall(LLMModel):
     id: str = Field(min_length=1)
     name: str = Field(min_length=1)
     arguments: JsonObject = Field(default_factory=dict)
+    argument_error: str | None = Field(default=None, exclude=True)
 
 
 class ToolDefinition(LLMModel):

@@ -39,6 +39,22 @@ async def test_runtime_exposes_actor_tools_and_executes_builtin() -> None:
         )
         assert isinstance(result.value, dict)
         assert result.value["query"] == "AgentLoom"
+
+        invalid_result = await runtime.execute(
+            context,
+            ToolCall(
+                id="invalid-task",
+                name="task_create",
+                arguments={},
+                argument_error="工具 task_create 的参数不是合法 JSON，请重新生成。",
+            ),
+        )
+        assert invalid_result.value == {
+            "error": {
+                "code": "TOOL_ARGUMENTS_INVALID",
+                "message": "工具 task_create 的参数不是合法 JSON，请重新生成。",
+            }
+        }
     finally:
         await database.dispose()
 

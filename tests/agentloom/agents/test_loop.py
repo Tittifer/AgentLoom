@@ -107,6 +107,15 @@ class FakeTools:
     async def execute(self, context: LoopContext, tool_call: ToolCall) -> ToolExecutionResult:
         del context
         self.calls.append(tool_call)
+        if tool_call.argument_error is not None:
+            return ToolExecutionResult(
+                {
+                    "error": {
+                        "code": "TOOL_ARGUMENTS_INVALID",
+                        "message": tool_call.argument_error,
+                    }
+                }
+            )
         return ToolExecutionResult({"ok": True}, terminate=self.terminate)
 
     async def finalize_text(self, context: LoopContext, content: str) -> None:
@@ -143,6 +152,36 @@ async def test_agent_loop_executes_tool_and_can_terminate() -> None:
     assert tools.calls == [call]
     assert store.messages[-1].role == "tool"
     assert store.checkpoints == ["after_tools"]
+
+
+async def test_agent_loop_returns_invalid_tool_arguments_to_model_for_retry() -> None:
+    context = make_context()
+    store = FakeStore(context)
+    tools = FakeTools()
+    call = ToolCall(
+        id="call-invalid",
+        name="lookup",
+        arguments={},
+        argument_error="工具 lookup 的参数不是合法 JSON，请重新生成。",
+    )
+    provider = ScriptedMockLLMProvider(
+        [
+            LLMResponse(content="", tool_calls=[call], model="mock/test"),
+            LLMResponse(content="修正完成", model="mock/test"),
+        ]
+    )
+    loop = AgentLoop(
+        store, provider, tools, JudgePipeline(), default_max_turns=2, timeout_seconds=1
+    )
+
+    await loop.run(context.session.id)
+
+    tool_message = next(message for message in store.messages if message.role == "tool")
+    assert "TOOL_ARGUMENTS_INVALID" in tool_message.content
+    assert provider.requests[1].messages[-1].role == "tool"
+    assert "TOOL_ARGUMENTS_INVALID" in provider.requests[1].messages[-1].content
+    assert store.finished
+    assert store.failed is None
 
 
 async def test_agent_loop_persists_failure_after_turn_budget() -> None:

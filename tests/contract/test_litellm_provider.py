@@ -108,8 +108,32 @@ async def test_litellm_provider_supports_json_object_compatibility() -> None:
     assert response.structured_output == {"answer": "done"}
 
 
-async def test_litellm_provider_rejects_invalid_tool_arguments_and_provider_errors() -> None:
-    invalid_tool_completion = RecordingCompletion(
+async def test_litellm_provider_normalizes_invalid_tool_arguments() -> None:
+    invalid_json_completion = RecordingCompletion(
+        {
+            "choices": [
+                {
+                    "message": {
+                        "tool_calls": [
+                            {
+                                "id": "call-invalid-json",
+                                "function": {"name": "lookup", "arguments": '{"query":'},
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+    )
+    invalid_json_response = await LiteLLMProvider(invalid_json_completion).complete(request())
+
+    invalid_json_call = invalid_json_response.tool_calls[0]
+    assert invalid_json_call.arguments == {}
+    assert invalid_json_call.argument_error is not None
+    assert "不是合法 JSON" in invalid_json_call.argument_error
+    assert "argument_error" not in invalid_json_call.model_dump()
+
+    non_object_completion = RecordingCompletion(
         {
             "choices": [
                 {
@@ -125,10 +149,17 @@ async def test_litellm_provider_rejects_invalid_tool_arguments_and_provider_erro
             ]
         }
     )
-    with pytest.raises(LLMResponseError, match="arguments must be a JSON object"):
-        await LiteLLMProvider(invalid_tool_completion).complete(request())
+    non_object_response = await LiteLLMProvider(non_object_completion).complete(request())
 
+    non_object_call = non_object_response.tool_calls[0]
+    assert non_object_call.arguments == {}
+    assert non_object_call.argument_error is not None
+    assert "必须是 JSON 对象" in non_object_call.argument_error
+
+
+async def test_litellm_provider_converts_provider_errors() -> None:
     failed_completion = RecordingCompletion(RuntimeError("provider unavailable"))
+
     with pytest.raises(LLMResponseError, match="provider unavailable"):
         await LiteLLMProvider(failed_completion).complete(request())
 

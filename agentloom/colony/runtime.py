@@ -460,6 +460,8 @@ class ColonyRuntime:
 
     async def execute(self, context: LoopContext, tool_call: ToolCall) -> ToolExecutionResult:
         try:
+            if tool_call.argument_error is not None:
+                return self._tool_error("TOOL_ARGUMENTS_INVALID", tool_call.argument_error)
             if tool_call.name == "run_worker":
                 if context.session.actor_type != "queen":
                     return self._tool_error("TOOL_NOT_ALLOWED", "Worker 不能派生其他 Worker")

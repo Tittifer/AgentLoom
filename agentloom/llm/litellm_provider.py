@@ -205,13 +205,24 @@ def _normalize_tool_call(tool_call: LiteToolCall) -> ToolCall:
     if isinstance(arguments, str):
         try:
             parsed_arguments = json.loads(arguments)
-        except json.JSONDecodeError as error:
-            raise LLMResponseError(
-                f"Tool {tool_call.function.name} returned invalid JSON arguments"
-            ) from error
+        except json.JSONDecodeError:
+            return ToolCall(
+                id=tool_call.id,
+                name=tool_call.function.name,
+                arguments={},
+                argument_error=(
+                    f"工具 {tool_call.function.name} 的参数不是合法 JSON，"
+                    "请重新生成完整的 JSON 对象。"
+                ),
+            )
         if not isinstance(parsed_arguments, dict):
-            raise LLMResponseError(
-                f"Tool {tool_call.function.name} arguments must be a JSON object"
+            return ToolCall(
+                id=tool_call.id,
+                name=tool_call.function.name,
+                arguments={},
+                argument_error=(
+                    f"工具 {tool_call.function.name} 的参数必须是 JSON 对象，请重新生成参数。"
+                ),
             )
         arguments = cast(dict[str, JsonValue], parsed_arguments)
     return ToolCall(
