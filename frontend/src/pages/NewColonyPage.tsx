@@ -2,17 +2,25 @@ import { FormEvent, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "react-router-dom";
 
-import { createColony } from "../api/colonies";
-import { formatError } from "../utils/format";
+import { createColony, submitMessage } from "../api/colonies";
+import { formatError, sessionNameFromMessage } from "../utils/format";
 
 export function NewColonyPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const [name, setName] = useState("");
-  const [description, setDescription] = useState("");
-  const [profile, setProfile] = useState("general");
+  const [content, setContent] = useState("");
   const mutation = useMutation({
-    mutationFn: createColony,
+    mutationFn: async (initialMessage: string) => {
+      const colony = await createColony({
+        name: sessionNameFromMessage(initialMessage),
+        description: "",
+        queen_profile: "general",
+        settings: {},
+      });
+      if (!colony.queen_session_id) throw new Error("会话创建失败：缺少对话标识");
+      await submitMessage(colony.queen_session_id, initialMessage);
+      return colony;
+    },
     onSuccess: async (colony) => {
       await queryClient.invalidateQueries({ queryKey: ["colonies"] });
       navigate(`/colonies/${colony.id}`);
@@ -21,48 +29,32 @@ export function NewColonyPage() {
 
   function submit(event: FormEvent) {
     event.preventDefault();
-    mutation.mutate({
-      name,
-      description,
-      queen_profile: profile,
-      settings: {},
-    });
+    const value = content.trim();
+    if (value) mutation.mutate(value);
   }
 
   return (
     <section className="narrow-page" aria-labelledby="new-colony-title">
-      <Link className="back-link" to="/colonies">← 返回协作空间</Link>
-      <div className="page-heading">
-        <div>
-          <span className="eyebrow">NEW COLONY</span>
-          <h1 id="new-colony-title">创建 Colony</h1>
-          <p>创建后即可直接向 Queen 发送目标，不再需要预先编排固定 DAG。</p>
-        </div>
+      <Link className="back-link" to="/colonies">← 返回会话列表</Link>
+      <div className="new-session-hero">
+        <span className="eyebrow">新建会话</span>
+        <h1 id="new-colony-title">今天想完成什么？</h1>
+        <p>直接描述目标即可开始。系统会自动建立会话并按需要组织多个智能体协作。</p>
       </div>
-      <form className="panel colony-form" onSubmit={submit}>
-        <label>
-          <span>名称</span>
-          <input maxLength={200} onChange={(event) => setName(event.target.value)} required value={name} />
-        </label>
-        <label>
-          <span>说明</span>
-          <textarea onChange={(event) => setDescription(event.target.value)} rows={5} value={description} />
-        </label>
-        <label>
-          <span>Queen 配置</span>
-          <select onChange={(event) => setProfile(event.target.value)} value={profile}>
-            <option value="general">通用协作</option>
-            <option value="research">深度研究</option>
-            <option value="engineering">工程实现</option>
-          </select>
-        </label>
+      <form className="panel new-session-form" onSubmit={submit}>
+        <label className="sr-only" htmlFor="initial-message">输入第一条消息</label>
+        <textarea
+          autoFocus
+          id="initial-message"
+          onChange={(event) => setContent(event.target.value)}
+          placeholder="例如：帮我对比几个适合秋季旅行的城市，并给出行程建议"
+          rows={6}
+          value={content}
+        />
         {mutation.isError ? <div className="form-error">{formatError(mutation.error)}</div> : null}
-        <div className="form-actions">
-          <Link className="secondary-button button-link" to="/colonies">取消</Link>
-          <button className="primary-button" disabled={!name.trim() || mutation.isPending} type="submit">
-            {mutation.isPending ? "创建中…" : "创建并进入工作台"}
-          </button>
-        </div>
+        <button className="primary-button" disabled={!content.trim() || mutation.isPending} type="submit">
+          {mutation.isPending ? "正在建立会话…" : "开始会话"}
+        </button>
       </form>
     </section>
   );

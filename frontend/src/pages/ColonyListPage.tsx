@@ -1,52 +1,80 @@
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 
-import { listColonies } from "../api/colonies";
+import { deleteColony, listColonies } from "../api/colonies";
 import { formatDateTime, formatError, statusText } from "../utils/format";
 
 export function ColonyListPage() {
+  const queryClient = useQueryClient();
   const query = useQuery({ queryKey: ["colonies"], queryFn: listColonies });
+  const deleteMutation = useMutation({
+    mutationFn: deleteColony,
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["colonies"] });
+    },
+  });
+
+  function removeSession(colonyId: string, name: string) {
+    if (window.confirm(`确定删除会话“${name}”吗？删除后无法恢复。`)) {
+      deleteMutation.mutate(colonyId);
+    }
+  }
 
   return (
     <section aria-labelledby="colonies-title">
       <div className="page-heading">
         <div>
-          <span className="eyebrow">HIVE COLONY</span>
-          <h1 id="colonies-title">协作空间</h1>
-          <p>每个 Colony 都有一个持续对话的 Queen，并按任务动态派生并行 Worker。</p>
+          <span className="eyebrow">会话列表</span>
+          <h1 id="colonies-title">我的会话</h1>
+          <p>从一次对话开始，让多个智能体在后台协作完成复杂目标。</p>
         </div>
-        <Link className="primary-button button-link" to="/colonies/new">创建 Colony</Link>
+        <Link className="primary-button button-link" to="/colonies/new">新建会话</Link>
       </div>
 
-      {query.isLoading ? <div className="panel loading-panel">正在加载 Colony…</div> : null}
+      {query.isLoading ? <div className="panel loading-panel">正在加载会话…</div> : null}
       {query.isError ? (
         <div className="panel error-panel">
-          <h2>无法加载 Colony</h2>
+          <h2>无法加载会话</h2>
           <p>{formatError(query.error)}</p>
         </div>
+      ) : null}
+      {deleteMutation.isError ? (
+        <div className="panel error-panel"><p>{formatError(deleteMutation.error)}</p></div>
       ) : null}
       {query.data?.length === 0 ? (
         <div className="empty-state">
           <div className="empty-icon" aria-hidden="true">蜂</div>
-          <h2>创建第一个 Colony</h2>
-          <p>从一个目标开始，与 Queen 协作完成研究、分析或执行工作。</p>
-          <Link className="primary-button button-link" to="/colonies/new">立即创建</Link>
+          <h2>开始第一次对话</h2>
+          <p>输入目标，AgentLoom 会自动安排协作过程。</p>
+          <Link className="primary-button button-link" to="/colonies/new">新建会话</Link>
         </div>
       ) : null}
       <div className="colony-card-grid">
         {query.data?.map((colony) => (
-          <Link className="colony-card" key={colony.id} to={`/colonies/${colony.id}`}>
+          <article className="colony-card" key={colony.id}>
             <header>
               <span className="colony-avatar">Q</span>
-              <span className={`status-pill status-${colony.status}`}>{statusText(colony.status)}</span>
+              <div className="card-actions">
+                <span className={`status-pill status-${colony.status}`}>{statusText(colony.status)}</span>
+                <button
+                  aria-label={`删除会话 ${colony.name}`}
+                  className="delete-button"
+                  disabled={deleteMutation.isPending && deleteMutation.variables === colony.id}
+                  onClick={() => removeSession(colony.id, colony.name)}
+                  type="button"
+                >
+                  删除
+                </button>
+              </div>
             </header>
-            <h2>{colony.name}</h2>
-            <p>{colony.description || "暂无描述"}</p>
+            <Link className="colony-card-link" to={`/colonies/${colony.id}`}>
+              <h2>{colony.name}</h2>
+              <p>继续这次协作对话</p>
+            </Link>
             <footer>
-              <span>{colony.queen_profile}</span>
-              <time>{formatDateTime(colony.updated_at)}</time>
+              <span>最近更新</span><time>{formatDateTime(colony.updated_at)}</time>
             </footer>
-          </Link>
+          </article>
         ))}
       </div>
     </section>

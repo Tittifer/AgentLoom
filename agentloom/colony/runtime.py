@@ -326,6 +326,13 @@ class ColonyRuntime:
         async with self._session_factory() as session:
             return await ColonyRepository(session).list_colonies()
 
+    async def delete_colony(self, colony_id: UUID) -> None:
+        async with self._session_factory.begin() as session:
+            deleted = await ColonyRepository(session).delete_colony(colony_id)
+            if not deleted:
+                raise ColonyNotFoundError(str(colony_id))
+        await self._notifier.notify(colony_id)
+
     async def get_snapshot(self, colony_id: UUID) -> ColonySnapshot:
         async with self._session_factory() as session:
             repository = ColonyRepository(session)

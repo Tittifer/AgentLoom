@@ -68,6 +68,10 @@ async def test_colony_api_creates_chats_and_lists(colony_client: tuple[AsyncClie
     list_response = await client.get("/api/colonies")
     assert any(item["id"] == str(colony.id) for item in list_response.json())
 
+    delete_response = await client.delete(f"/api/colonies/{colony.id}")
+    assert delete_response.status_code == 204
+    assert (await client.get(f"/api/colonies/{colony.id}")).status_code == 404
+
 
 async def test_colony_api_returns_standard_missing_errors(
     colony_client: tuple[AsyncClient, str],
@@ -75,8 +79,11 @@ async def test_colony_api_returns_standard_missing_errors(
     client, _ = colony_client
     missing = uuid4()
     colony_response = await client.get(f"/api/colonies/{missing}")
+    delete_response = await client.delete(f"/api/colonies/{missing}")
     session_response = await client.get(f"/api/sessions/{missing}/messages")
     assert colony_response.status_code == 404
     assert colony_response.json()["code"] == "COLONY_NOT_FOUND"
+    assert delete_response.status_code == 404
+    assert delete_response.json()["code"] == "COLONY_NOT_FOUND"
     assert session_response.status_code == 404
     assert session_response.json()["code"] == "SESSION_NOT_FOUND"

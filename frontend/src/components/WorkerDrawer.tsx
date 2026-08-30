@@ -13,7 +13,7 @@ export function WorkerDrawer({ worker, onClose }: WorkerDrawerProps) {
       <aside className="worker-drawer" onClick={(event) => event.stopPropagation()}>
         <header className="panel-title-row">
           <div>
-            <span className="section-kicker">WORKER 详情</span>
+            <span className="section-kicker">协作节点详情</span>
             <h2>{worker.task}</h2>
           </div>
           <button aria-label="关闭" className="icon-button" onClick={onClose} type="button">×</button>
@@ -24,12 +24,27 @@ export function WorkerDrawer({ worker, onClose }: WorkerDrawerProps) {
           <div><dt>开始</dt><dd>{formatDateTime(worker.started_at)}</dd></div>
           <div><dt>结束</dt><dd>{formatDateTime(worker.ended_at)}</dd></div>
         </dl>
-        <h3>输入</h3>
-        <pre>{JSON.stringify(worker.input, null, 2)}</pre>
-        <h3>汇报</h3>
-        <pre>{worker.report ? JSON.stringify(worker.report, null, 2) : "尚未汇报"}</pre>
-        {worker.error ? <><h3>错误</h3><pre>{JSON.stringify(worker.error, null, 2)}</pre></> : null}
+        <section className="worker-result">
+          <h3>工作结果</h3>
+          <p>{reportSummary(worker.report)}</p>
+        </section>
+        {worker.error ? (
+          <section className="worker-error">
+            <h3>失败原因</h3>
+            <p>{errorMessage(worker.error)}</p>
+          </section>
+        ) : null}
       </aside>
     </div>
   );
+}
+
+function reportSummary(report: WorkerRead["report"]): string {
+  const summary = report?.summary;
+  return typeof summary === "string" && summary.trim() ? summary : "该节点尚未生成可展示的结果。";
+}
+
+function errorMessage(error: NonNullable<WorkerRead["error"]>): string {
+  const message = error.message;
+  return typeof message === "string" && message.trim() ? message : "节点执行失败，请稍后重试。";
 }

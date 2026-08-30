@@ -46,4 +46,7 @@ export const apiClient = {
       body: body === undefined ? undefined : JSON.stringify(body),
     });
   },
+  delete(path: string): Promise<void> {
+    return request<void>(path, { method: "DELETE" });
+  },
 };

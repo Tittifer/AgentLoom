@@ -5,7 +5,7 @@ from collections.abc import AsyncGenerator
 from typing import Annotated, cast
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, Request, status
+from fastapi import APIRouter, Depends, Query, Request, Response, status
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from agentloom.api.schemas import ApiError
@@ -103,6 +103,23 @@ async def create_colony(payload: ColonyCreate, runtime: RuntimeDependency) -> Co
 @router.get("/colonies", response_model=list[ColonyRead])
 async def list_colonies(runtime: RuntimeDependency) -> list[ColonyRead]:
     return await runtime.list_colonies()
+
+
+@router.delete(
+    "/colonies/{colony_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_model=None,
+    responses={status.HTTP_404_NOT_FOUND: {"model": ApiError}},
+)
+async def delete_colony(
+    colony_id: UUID,
+    runtime: RuntimeDependency,
+) -> Response | JSONResponse:
+    try:
+        await runtime.delete_colony(colony_id)
+    except ColonyNotFoundError:
+        return error_response(404, "COLONY_NOT_FOUND", "会话不存在")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get(

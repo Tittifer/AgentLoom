@@ -41,6 +41,8 @@ async def test_colony_repository_persists_shared_runtime_state() -> None:
                 [WorkerTask(task="并行研究", data={"topic": "A"})],
                 30,
             )
+            worker_session = await repository.get_session(workers[0].worker_session_id)
+            assert worker_session is not None and worker_session.budget["max_turns"] == 8
             running = await repository.mark_worker_running(workers[0].id)
             assert running is not None and running.status is WorkerStatus.RUNNING
             assert await repository.get_worker_for_session(running.worker_session_id) == running

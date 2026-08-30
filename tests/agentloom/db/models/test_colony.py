@@ -10,4 +10,5 @@ def test_colony_table_uses_json_settings_and_independent_defaults() -> None:
     first = default_colony_settings()
     second = default_colony_settings()
     assert first["max_concurrent_workers"] == 4
+    assert first["worker_max_turns"] == 8
     assert first == second and first is not second

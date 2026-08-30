@@ -19,12 +19,43 @@ const message: MessageRead = {
 };
 
 describe("ChatPanel", () => {
-  it("展示 Queen 消息并发送用户输入", async () => {
+  it("只展示用户与 AgentLoom 的最终消息并发送用户输入", async () => {
     const onSend = vi.fn(async () => undefined);
-    render(<ChatPanel messages={[message]} onSend={onSend} sending={false} session={session} />);
+    const internalMessages: MessageRead[] = [
+      {
+        ...message,
+        id: "tool-message",
+        role: "tool",
+        content: '{"result":"内部工具数据"}',
+      },
+      {
+        ...message,
+        id: "worker-report",
+        role: "user",
+        content: "[WORKER_REPORT] 内部汇报",
+        metadata: { worker_run_id: "worker-1" },
+      },
+      {
+        ...message,
+        id: "tool-call",
+        content: "正在安排内部任务",
+        tool_calls: [{ id: "call-1", name: "run_worker", arguments: {} }],
+      },
+    ];
+    render(
+      <ChatPanel
+        messages={[...internalMessages, message]}
+        onSend={onSend}
+        sending={false}
+        session={session}
+      />,
+    );
     expect(screen.getByText("已经完成分析。")).toBeInTheDocument();
-    await userEvent.type(screen.getByLabelText("发送给 Queen 的消息"), "继续执行");
-    await userEvent.click(screen.getByRole("button", { name: "发送给 Queen" }));
+    expect(screen.queryByText(/内部工具数据/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/内部汇报/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/正在安排内部任务/)).not.toBeInTheDocument();
+    await userEvent.type(screen.getByLabelText("输入消息"), "继续执行");
+    await userEvent.click(screen.getByRole("button", { name: "发送" }));
     expect(onSend).toHaveBeenCalledWith("继续执行");
   });
 });

@@ -5,7 +5,7 @@ from typing import cast
 from uuid import UUID
 
 from pydantic import JsonValue, TypeAdapter
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -109,6 +109,15 @@ class ColonyRepository:
             )
             result.append(self._colony_read(colony, queen_id))
         return result
+
+    async def delete_colony(self, colony_id: UUID) -> bool:
+        """Delete one Colony and its database-owned conversation state."""
+
+        await self.lock_colony_for_write(colony_id)
+        result = await self._session.execute(
+            delete(ColonyModel).where(ColonyModel.id == colony_id)
+        )
+        return cast(CursorResult[object], result).rowcount > 0
 
     async def get(self, colony_id: UUID) -> ColonyRead | None:
         colony = await self._session.get(ColonyModel, colony_id)
@@ -262,7 +271,7 @@ class ColonyRepository:
                 status=SessionStatus.QUEUED,
                 task={"description": task.task, "data": task.data},
                 cursor={"iteration": 0, "phase": "queued"},
-                budget={"max_turns": 4, "max_tool_calls": 12},
+                budget={"max_turns": 8, "max_tool_calls": 12},
                 usage={"input_tokens": 0, "output_tokens": 0, "tool_calls": 0},
             )
             self._session.add(worker_session)

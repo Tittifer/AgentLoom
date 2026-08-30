@@ -1,10 +1,9 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 
-import { getColony, listMessages, submitMessage, type WorkerRead } from "../api/colonies";
+import { deleteColony, getColony, listMessages, submitMessage, type WorkerRead } from "../api/colonies";
 import { ChatPanel } from "../components/ChatPanel";
-import { ColonyEventStrip } from "../components/ColonyEventStrip";
 import { ColonySidebar } from "../components/ColonySidebar";
 import { WorkerDrawer } from "../components/WorkerDrawer";
 import { WorkerMap } from "../components/WorkerMap";
@@ -13,6 +12,7 @@ import { formatError } from "../utils/format";
 
 export function ColonyWorkspacePage() {
   const { colonyId } = useParams();
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [selectedWorker, setSelectedWorker] = useState<WorkerRead | null>(null);
   const colonyQuery = useQuery({
@@ -36,11 +36,18 @@ export function ColonyWorkspacePage() {
       ]);
     },
   });
-  const eventStream = useColonyEvents(colonyId, queenId);
+  const deleteMutation = useMutation({
+    mutationFn: () => deleteColony(requireId(colonyId)),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["colonies"] });
+      navigate("/colonies");
+    },
+  });
+  useColonyEvents(colonyId, queenId);
 
-  if (colonyQuery.isLoading) return <div className="panel loading-panel">正在进入 Colony…</div>;
+  if (colonyQuery.isLoading) return <div className="panel loading-panel">正在进入会话…</div>;
   if (colonyQuery.isError || !colonyQuery.data) {
-    return <div className="panel error-panel"><h2>无法打开 Colony</h2><p>{formatError(colonyQuery.error)}</p></div>;
+    return <div className="panel error-panel"><h2>无法打开会话</h2><p>{formatError(colonyQuery.error)}</p></div>;
   }
   const snapshot = colonyQuery.data;
 
@@ -48,24 +55,35 @@ export function ColonyWorkspacePage() {
     <section className="workspace-page" aria-labelledby="workspace-title">
       <div className="workspace-heading">
         <div>
-          <Link className="back-link" to="/colonies">← 协作空间</Link>
-          <span className="eyebrow">COLONY WORKSPACE</span>
+          <Link className="back-link" to="/colonies">← 会话列表</Link>
+          <span className="eyebrow">协作会话</span>
           <h1 id="workspace-title">{snapshot.colony.name}</h1>
-          <p>{snapshot.colony.description || "与 Queen 持续协作，动态调度 Worker 完成目标。"}</p>
+          <p>你只需要持续对话，任务拆解与智能体协作会在后台自动完成。</p>
         </div>
-        <div className="model-chip"><small>当前模型</small><strong>{snapshot.colony.model}</strong></div>
+        <div className="workspace-actions">
+          <button
+            className="danger-button"
+            disabled={deleteMutation.isPending}
+            onClick={() => {
+              if (window.confirm(`确定删除会话“${snapshot.colony.name}”吗？删除后无法恢复。`)) {
+                deleteMutation.mutate();
+              }
+            }}
+            type="button"
+          >
+            {deleteMutation.isPending ? "正在删除…" : "删除会话"}
+          </button>
+        </div>
       </div>
-      <ColonyEventStrip connected={eventStream.connected} events={eventStream.events} />
+      {deleteMutation.isError ? <div className="form-error">{formatError(deleteMutation.error)}</div> : null}
+      <WorkerMap queen={snapshot.queen_session} workers={snapshot.workers} onSelect={setSelectedWorker} />
       <div className="workspace-grid">
-        <div className="workspace-main">
-          <WorkerMap queen={snapshot.queen_session} workers={snapshot.workers} onSelect={setSelectedWorker} />
-          <ChatPanel
-            messages={messagesQuery.data ?? []}
-            onSend={async (content) => { await messageMutation.mutateAsync(content); }}
-            sending={messageMutation.isPending}
-            session={snapshot.queen_session}
-          />
-        </div>
+        <ChatPanel
+          messages={messagesQuery.data ?? []}
+          onSend={async (content) => { await messageMutation.mutateAsync(content); }}
+          sending={messageMutation.isPending}
+          session={snapshot.queen_session}
+        />
         <ColonySidebar tasks={snapshot.tasks} tracker={snapshot.tracker} />
       </div>
       <WorkerDrawer onClose={() => setSelectedWorker(null)} worker={selectedWorker} />

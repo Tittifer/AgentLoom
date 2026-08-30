@@ -108,12 +108,11 @@ uv run --locked python dev.py
 
 ## 使用流程
 
-1. 在“协作空间”创建 Colony，设置名称和 Queen 配置。
-2. 进入工作台，直接用自然语言向 Queen 描述目标。
-3. Queen 可以创建任务项、写入 Tracker，并通过 `run_worker` 派生并行 Worker。
-4. Worker 独立执行任务，可调用只读工具、更新 Tracker，并通过 `report_to_parent` 向 Queen 汇报。
-5. Worker 汇报会作为新消息回到 Queen 会话；Queen 综合结果后继续回复用户。
-6. 用户可以再次发送消息，开始下一轮协作，无需重新创建工作流。
+1. 点击“新建会话”，直接输入第一条消息；系统会据此生成会话名称并使用默认协作配置。
+2. 主智能体可以创建任务项、写入共享状态，并按需要派生多个并行协作节点。
+3. 协作节点独立执行任务并向主智能体汇报；内部工具消息和结构化数据不会显示在用户对话中。
+4. 主智能体综合协作结果后回复用户，用户可以继续补充信息或调整要求。
+5. 不再需要的会话可以从会话列表或会话页面删除。
 
 ## 主要 API
 
@@ -121,6 +120,7 @@ uv run --locked python dev.py
 POST /api/colonies
 GET  /api/colonies
 GET  /api/colonies/{colony_id}
+DELETE /api/colonies/{colony_id}
 GET  /api/sessions/{session_id}
 GET  /api/sessions/{session_id}/messages
 POST /api/sessions/{session_id}/messages

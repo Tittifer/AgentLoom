@@ -21,7 +21,7 @@ describe("WorkerMap", () => {
   it("展示动态 Worker 并支持选择", async () => {
     const onSelect = vi.fn();
     render(<WorkerMap onSelect={onSelect} queen={queen} workers={[worker]} />);
-    expect(screen.getByText("Queen")).toBeInTheDocument();
+    expect(screen.getByText("任务协调者")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: /收集竞品资料/ }));
     expect(onSelect).toHaveBeenCalledWith(worker);
   });

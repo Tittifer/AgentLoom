@@ -124,6 +124,10 @@ export function createColony(payload: ColonyCreate): Promise<ColonyRead> {
   return apiClient.post("/api/colonies", payload);
 }
 
+export function deleteColony(colonyId: string): Promise<void> {
+  return apiClient.delete(`/api/colonies/${colonyId}`);
+}
+
 export function getColony(colonyId: string): Promise<ColonySnapshot> {
   return apiClient.get(`/api/colonies/${colonyId}`);
 }

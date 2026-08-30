@@ -8,25 +8,43 @@ interface WorkerMapProps {
 }
 
 export function WorkerMap({ queen, workers, onSelect }: WorkerMapProps) {
+  const activeCount = workers.filter((worker) =>
+    ["queued", "running", "reporting"].includes(worker.status)
+  ).length;
+  const completedCount = workers.filter((worker) =>
+    ["completed", "partial"].includes(worker.status)
+  ).length;
+
   return (
     <section className="workspace-panel worker-map-panel" aria-labelledby="worker-map-title">
       <header className="panel-title-row">
         <div>
-          <span className="section-kicker">COLONY 拓扑</span>
-          <h2 id="worker-map-title">动态智能体</h2>
+          <span className="section-kicker">协作视图</span>
+          <h2 id="worker-map-title">智能体任务图</h2>
+          <p>主智能体负责理解目标，并把可并行的工作分配给协作节点。</p>
         </div>
-        <span className="count-chip">{workers.length} 个 Worker</span>
+        <div className="map-summary" aria-label="节点统计">
+          <span><b>{workers.length}</b> 全部</span>
+          <span><b>{activeCount}</b> 进行中</span>
+          <span><b>{completedCount}</b> 已完成</span>
+        </div>
       </header>
 
       <div className="colony-map">
         <div className={`queen-node status-ring-${queen.status}`}>
-          <span>Q</span>
-          <strong>Queen</strong>
-          <small>{statusText(queen.status)}</small>
+          <span className="node-avatar">主</span>
+          <div>
+            <small>主智能体</small>
+            <strong>任务协调者</strong>
+            <em>{statusText(queen.status)}</em>
+          </div>
         </div>
         <div className="worker-node-grid">
           {workers.length === 0 ? (
-            <p className="map-placeholder">Queen 尚未派生 Worker</p>
+            <div className="map-placeholder">
+              <strong>当前由主智能体处理</strong>
+              <p>任务需要拆分时，新的协作节点会自动出现在这里。</p>
+            </div>
           ) : null}
           {workers.map((worker, index) => (
             <button
@@ -36,9 +54,12 @@ export function WorkerMap({ queen, workers, onSelect }: WorkerMapProps) {
               title={worker.task}
               type="button"
             >
-              <span>W{index + 1}</span>
-              <strong>{trimTask(worker.task)}</strong>
-              <small>{statusText(worker.status)}</small>
+              <span className="node-avatar">{index + 1}</span>
+              <span className="worker-node-copy">
+                <small>协作节点 {index + 1}</small>
+                <strong>{trimTask(worker.task)}</strong>
+                <em><i aria-hidden="true" />{statusText(worker.status)}</em>
+              </span>
             </button>
           ))}
         </div>

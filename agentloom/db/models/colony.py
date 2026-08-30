@@ -29,7 +29,7 @@ def default_colony_settings() -> JsonObject:
 
     return {
         "max_concurrent_workers": 4,
-        "worker_max_turns": 4,
+        "worker_max_turns": 8,
         "worker_timeout_seconds": 600,
         "max_tool_calls": 20,
     }

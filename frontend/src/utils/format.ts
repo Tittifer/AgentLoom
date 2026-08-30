@@ -40,3 +40,8 @@ export function formatDate(value: string | null | undefined): string {
 export function humanize(value: string): string {
   return statusText(value);
 }
+
+export function sessionNameFromMessage(content: string): string {
+  const normalized = content.replace(/\s+/g, " ").trim();
+  return normalized.length > 32 ? `${normalized.slice(0, 32)}…` : normalized;
+}
