@@ -28,7 +28,7 @@ tests/agentloom/          与后端源码路径对应的单元测试
 tests/integration/        PostgreSQL 和 HTTP 集成测试
 tests/contract/           LiteLLM 适配器契约测试
 alembic/                  数据库迁移
-scripts/dev.py            前后端一键启动脚本
+dev.py                    前后端一键启动脚本
 ```
 
 早期版本的 Task、Workflow、Run 表由历史迁移保留，方便已有数据库升级；当前应用代码和 HTTP API 已不再读写这些旧表。
@@ -97,7 +97,7 @@ make dev
 Windows 未安装 `make` 时使用：
 
 ```powershell
-uv run --locked python scripts/dev.py
+uv run --locked python dev.py
 ```
 
 启动后访问：

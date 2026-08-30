@@ -10,7 +10,7 @@ import sys
 import time
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parent
 FRONTEND = ROOT / "frontend"
 
 
@@ -82,7 +82,7 @@ def should_start_postgres(arguments: list[str]) -> bool:
         return False
     if arguments == ["--with-docker"]:
         return True
-    raise RuntimeError("Usage: scripts/dev.py [--with-docker]")
+    raise RuntimeError("Usage: dev.py [--with-docker]")
 
 
 def main(*, start_postgres: bool = False) -> int:

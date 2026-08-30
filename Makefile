@@ -1,10 +1,10 @@
 .PHONY: dev dev-docker dev-stop test test-frontend e2e check release-check
 
 dev:
-	uv run --locked python scripts/dev.py
+	uv run --locked python dev.py
 
 dev-docker:
-	uv run --locked python scripts/dev.py --with-docker
+	uv run --locked python dev.py --with-docker
 
 dev-stop:
 	docker compose stop postgres
