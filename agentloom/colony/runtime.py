@@ -56,6 +56,9 @@ class SessionConflictError(ValueError):
     """Raised when a session cannot accept the requested transition."""
 
 
+UNTITLED_COLONY_NAME = "新会话"
+
+
 class ToolInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -423,11 +426,19 @@ class ColonyRuntime:
                 SessionStatus.CANCELLED,
             }:
                 raise SessionConflictError("Session is terminal")
+            colony = await repository.get(agent_session.colony_id)
+            if colony is None:
+                raise ColonyNotFoundError(str(agent_session.colony_id))
             message = await repository.append_message(
                 session_id, LLMMessage(role="user", content=content)
             )
             if message is None:
                 raise SessionNotFoundError(str(session_id))
+            if colony.name == UNTITLED_COLONY_NAME:
+                await repository.rename_colony(
+                    agent_session.colony_id,
+                    conversation_name_from_message(content),
+                )
             await repository.set_session_status(session_id, SessionStatus.QUEUED)
             await repository.append_event(
                 agent_session.colony_id,
@@ -741,6 +752,11 @@ class ColonyRuntime:
     @staticmethod
     def _tool_error(code: str, message: str) -> ToolExecutionResult:
         return ToolExecutionResult({"error": {"code": code, "message": message}})
+
+
+def conversation_name_from_message(content: str) -> str:
+    normalized = " ".join(content.split())
+    return f"{normalized[:32]}…" if len(normalized) > 32 else normalized
 
 
 __all__ = [

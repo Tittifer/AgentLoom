@@ -87,3 +87,27 @@ async def test_colony_api_returns_standard_missing_errors(
     assert delete_response.json()["code"] == "COLONY_NOT_FOUND"
     assert session_response.status_code == 404
     assert session_response.json()["code"] == "SESSION_NOT_FOUND"
+
+
+async def test_first_message_names_an_untitled_colony(
+    colony_client: tuple[AsyncClient, str],
+) -> None:
+    client, prefix = colony_client
+    created_response = await client.post(
+        "/api/colonies",
+        json={"name": "新会话", "description": "", "queen_profile": "general"},
+    )
+    colony = ColonyRead.model_validate(created_response.json())
+    first_message = f"{prefix} 请制定完整计划"
+    try:
+        response = await client.post(
+            f"/api/sessions/{colony.queen_session_id}/messages",
+            json={"content": first_message},
+        )
+        assert response.status_code == 202
+        snapshot = ColonySnapshot.model_validate(
+            (await client.get(f"/api/colonies/{colony.id}")).json()
+        )
+        assert snapshot.colony.name == first_message[:32] + "…"
+    finally:
+        await client.delete(f"/api/colonies/{colony.id}")

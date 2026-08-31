@@ -5,9 +5,10 @@ interface WorkerMapProps {
   queen: SessionRead;
   workers: WorkerRead[];
   onSelect: (worker: WorkerRead) => void;
+  embedded?: boolean;
 }
 
-export function WorkerMap({ queen, workers, onSelect }: WorkerMapProps) {
+export function WorkerMap({ queen, workers, onSelect, embedded = false }: WorkerMapProps) {
   const activeCount = workers.filter((worker) =>
     ["queued", "running", "reporting"].includes(worker.status)
   ).length;
@@ -16,7 +17,10 @@ export function WorkerMap({ queen, workers, onSelect }: WorkerMapProps) {
   ).length;
 
   return (
-    <section className="workspace-panel worker-map-panel" aria-labelledby="worker-map-title">
+    <section
+      className={`${embedded ? "embedded-worker-map" : "workspace-panel"} worker-map-panel`}
+      aria-labelledby="worker-map-title"
+    >
       <header className="panel-title-row">
         <div>
           <span className="section-kicker">协作视图</span>
@@ -69,5 +73,5 @@ export function WorkerMap({ queen, workers, onSelect }: WorkerMapProps) {
 }
 
 function trimTask(task: string) {
-  return task.length > 18 ? `${task.slice(0, 18)}…` : task;
+  return task.length > 42 ? `${task.slice(0, 42)}…` : task;
 }

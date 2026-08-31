@@ -5,7 +5,11 @@ from uuid import uuid4
 
 from agentloom.agents.loop import LoopContext
 from agentloom.colony.notifier import ColonyEventNotifier
-from agentloom.colony.runtime import ColonyRuntime, normalize_message_history
+from agentloom.colony.runtime import (
+    ColonyRuntime,
+    conversation_name_from_message,
+    normalize_message_history,
+)
 from agentloom.colony.schemas import ColonyRead, JsonObject, MessageRead, SessionRead
 from agentloom.config import Settings
 from agentloom.db.session import DatabaseSessionManager
@@ -76,6 +80,11 @@ def test_runtime_preserves_complete_tool_call_history() -> None:
     assert repaired_groups == 0
     assert [item.role for item in normalized] == ["assistant", "tool"]
     assert normalized[0].tool_calls[0].id == "call-1"
+
+
+def test_conversation_name_comes_from_first_message() -> None:
+    assert conversation_name_from_message("  帮我\n制定计划  ") == "帮我 制定计划"
+    assert conversation_name_from_message("一" * 40) == "一" * 32 + "…"
 
 
 async def test_runtime_exposes_actor_tools_and_executes_builtin() -> None:

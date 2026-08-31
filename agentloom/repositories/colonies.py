@@ -114,9 +114,7 @@ class ColonyRepository:
         """Delete one Colony and its database-owned conversation state."""
 
         await self.lock_colony_for_write(colony_id)
-        result = await self._session.execute(
-            delete(ColonyModel).where(ColonyModel.id == colony_id)
-        )
+        result = await self._session.execute(delete(ColonyModel).where(ColonyModel.id == colony_id))
         return cast(CursorResult[object], result).rowcount > 0
 
     async def get(self, colony_id: UUID) -> ColonyRead | None:
@@ -130,6 +128,15 @@ class ColonyRepository:
             )
         )
         return self._colony_read(colony, queen_id)
+
+    async def rename_colony(self, colony_id: UUID, name: str) -> bool:
+        await self.lock_colony_for_write(colony_id)
+        result = await self._session.execute(
+            update(ColonyModel)
+            .where(ColonyModel.id == colony_id)
+            .values(name=name, updated_at=utc_now())
+        )
+        return cast(CursorResult[object], result).rowcount > 0
 
     async def get_session(self, session_id: UUID, *, lock: bool = False) -> SessionRead | None:
         statement = select(AgentSessionModel).where(AgentSessionModel.id == session_id)

@@ -1,16 +1,29 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 
-import { deleteColony, listColonies } from "../api/colonies";
+import { createColony, deleteColony, listColonies } from "../api/colonies";
 import { formatDateTime, formatError, statusText } from "../utils/format";
 
 export function ColonyListPage() {
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const query = useQuery({ queryKey: ["colonies"], queryFn: listColonies });
   const deleteMutation = useMutation({
     mutationFn: deleteColony,
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["colonies"] });
+    },
+  });
+  const createMutation = useMutation({
+    mutationFn: () => createColony({
+      name: "新会话",
+      description: "",
+      queen_profile: "general",
+      settings: {},
+    }),
+    onSuccess: async (colony) => {
+      await queryClient.invalidateQueries({ queryKey: ["colonies"] });
+      navigate(`/colonies/${colony.id}`);
     },
   });
 
@@ -28,7 +41,14 @@ export function ColonyListPage() {
           <h1 id="colonies-title">我的会话</h1>
           <p>从一次对话开始，让多个智能体在后台协作完成复杂目标。</p>
         </div>
-        <Link className="primary-button button-link" to="/colonies/new">新建会话</Link>
+        <button
+          className="primary-button"
+          disabled={createMutation.isPending}
+          onClick={() => createMutation.mutate()}
+          type="button"
+        >
+          {createMutation.isPending ? "正在创建…" : "新建会话"}
+        </button>
       </div>
 
       {query.isLoading ? <div className="panel loading-panel">正在加载会话…</div> : null}
@@ -41,12 +61,22 @@ export function ColonyListPage() {
       {deleteMutation.isError ? (
         <div className="panel error-panel"><p>{formatError(deleteMutation.error)}</p></div>
       ) : null}
+      {createMutation.isError ? (
+        <div className="panel error-panel"><p>{formatError(createMutation.error)}</p></div>
+      ) : null}
       {query.data?.length === 0 ? (
         <div className="empty-state">
           <div className="empty-icon" aria-hidden="true">蜂</div>
           <h2>开始第一次对话</h2>
           <p>输入目标，AgentLoom 会自动安排协作过程。</p>
-          <Link className="primary-button button-link" to="/colonies/new">新建会话</Link>
+          <button
+            className="primary-button"
+            disabled={createMutation.isPending}
+            onClick={() => createMutation.mutate()}
+            type="button"
+          >
+            {createMutation.isPending ? "正在创建…" : "新建会话"}
+          </button>
         </div>
       ) : null}
       <div className="colony-card-grid">

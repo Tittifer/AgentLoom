@@ -44,18 +44,33 @@ describe("ChatPanel", () => {
     ];
     render(
       <ChatPanel
+        activeWorkerCount={0}
         messages={[...internalMessages, message]}
         onSend={onSend}
         sending={false}
         session={session}
       />,
     );
-    expect(screen.getByText("已经完成分析。")).toBeInTheDocument();
+    expect(await screen.findByText("已经完成分析。")).toBeInTheDocument();
     expect(screen.queryByText(/内部工具数据/)).not.toBeInTheDocument();
     expect(screen.queryByText(/内部汇报/)).not.toBeInTheDocument();
     expect(screen.queryByText(/正在安排内部任务/)).not.toBeInTheDocument();
     await userEvent.type(screen.getByLabelText("输入消息"), "继续执行");
     await userEvent.click(screen.getByRole("button", { name: "发送" }));
     expect(onSend).toHaveBeenCalledWith("继续执行");
+  });
+
+  it("Worker 执行期间显示动态等待状态", () => {
+    render(
+      <ChatPanel
+        activeWorkerCount={3}
+        messages={[]}
+        onSend={vi.fn(async () => undefined)}
+        sending={false}
+        session={{ ...session, status: "idle" }}
+      />,
+    );
+
+    expect(screen.getByRole("status")).toHaveTextContent("3 个协作节点正在执行任务");
   });
 });

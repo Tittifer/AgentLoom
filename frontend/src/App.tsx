@@ -1,6 +1,9 @@
-import { NavLink, Outlet } from "react-router-dom";
+import { NavLink, Outlet, useLocation } from "react-router-dom";
 
 function App() {
+  const location = useLocation();
+  const isWorkspace = /^\/colonies\/[^/]+$/.test(location.pathname);
+
   return (
     <div className="app-shell">
       <header className="app-header">
@@ -14,7 +17,9 @@ function App() {
           </NavLink>
         </nav>
       </header>
-      <main className="page-container"><Outlet /></main>
+      <main className={`page-container${isWorkspace ? " workspace-container" : ""}`}>
+        <Outlet />
+      </main>
     </div>
   );
 }
