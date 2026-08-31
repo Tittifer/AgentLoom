@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useRef, useState } from "react";
 
 import type { MessageRead, SessionRead } from "../api/colonies";
+import type { StreamingAssistantMessage } from "../hooks/useColonyEvents";
 import { formatDateTime } from "../utils/format";
 
 interface ChatPanelProps {
@@ -8,6 +9,7 @@ interface ChatPanelProps {
   messages: MessageRead[];
   activeWorkerCount: number;
   sending: boolean;
+  streamingMessage: StreamingAssistantMessage | null;
   onSend: (content: string) => Promise<void>;
 }
 
@@ -16,19 +18,20 @@ export function ChatPanel({
   messages,
   activeWorkerCount,
   sending,
+  streamingMessage,
   onSend,
 }: ChatPanelProps) {
   const [content, setContent] = useState("");
   const messagesElement = useRef<HTMLDivElement>(null);
-  const visibleMessages = messages.filter(isVisibleConversationMessage);
-  const latestAssistantId = [...visibleMessages]
-    .reverse()
-    .find((message) => message.role === "assistant")?.id;
-  const isWaiting =
+  const visibleMessages = messages
+    .filter(isVisibleConversationMessage)
+    .filter((message) => message.id !== streamingMessage?.id);
+  const isWaiting = !streamingMessage && (
     sending ||
     session.status === "queued" ||
     session.status === "running" ||
-    activeWorkerCount > 0;
+    activeWorkerCount > 0
+  );
 
   useEffect(() => {
     const element = messagesElement.current;
@@ -61,7 +64,7 @@ export function ChatPanel({
       </header>
 
       <div className="chat-messages" aria-live="polite" ref={messagesElement}>
-        {visibleMessages.length === 0 ? (
+        {visibleMessages.length === 0 && !streamingMessage ? (
           <div className="chat-empty">
             <span className="chat-empty-mark" aria-hidden="true">AL</span>
             <strong>已经准备好了</strong>
@@ -78,15 +81,22 @@ export function ChatPanel({
                 <strong>{roleText(message.role)}</strong>
                 <time>{formatDateTime(message.created_at)}</time>
               </header>
-              <p>
-                <StreamingText
-                  content={message.content}
-                  enabled={message.id === latestAssistantId}
-                />
-              </p>
+              <p>{message.content}</p>
             </div>
           </article>
         ))}
+        {streamingMessage ? (
+          <article className="chat-message role-assistant" key={streamingMessage.id}>
+            <span className="message-avatar" aria-hidden="true">AL</span>
+            <div className="message-surface">
+              <header><strong>AgentLoom</strong><span>正在生成</span></header>
+              <p>
+                {streamingMessage.content}
+                <span className="streaming-cursor" aria-hidden="true" />
+              </p>
+            </div>
+          </article>
+        ) : null}
         {isWaiting ? (
           <div className="agent-waiting" role="status">
             <span className="waiting-orbit" aria-hidden="true"><i /><i /><i /></span>
@@ -125,35 +135,6 @@ export function ChatPanel({
         </button>
       </form>
     </section>
-  );
-}
-
-function StreamingText({ content, enabled }: { content: string; enabled: boolean }) {
-  if (!enabled) return content;
-  return <AnimatedStreamingText content={content} key={content} />;
-}
-
-function AnimatedStreamingText({ content }: { content: string }) {
-  const [visibleContent, setVisibleContent] = useState("");
-
-  useEffect(() => {
-    let position = 0;
-    const step = Math.max(1, Math.ceil(content.length / 100));
-    const timer = window.setInterval(() => {
-      position = Math.min(content.length, position + step);
-      setVisibleContent(content.slice(0, position));
-      if (position >= content.length) window.clearInterval(timer);
-    }, 16);
-    return () => window.clearInterval(timer);
-  }, [content]);
-
-  return (
-    <>
-      {visibleContent}
-      {visibleContent.length < content.length ? (
-        <span className="streaming-cursor" aria-hidden="true" />
-      ) : null}
-    </>
   );
 }
 

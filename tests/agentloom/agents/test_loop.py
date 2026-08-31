@@ -1,7 +1,7 @@
 """Tests for the unified Queen/Worker AgentLoop."""
 
 from datetime import UTC, datetime
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from agentloom.agents.judge import JudgePipeline
 from agentloom.agents.loop import AgentLoop, LoopContext, ToolExecutionResult
@@ -54,6 +54,8 @@ class FakeStore:
         self.checkpoints: list[str] = []
         self.finished = False
         self.failed: Exception | None = None
+        self.deltas: list[tuple[UUID, str]] = []
+        self.cancelled_streams: list[UUID] = []
 
     async def load(self, session_id):  # type: ignore[no-untyped-def]
         return self.context if session_id == self.context.session.id else None
@@ -62,13 +64,17 @@ class FakeStore:
         return context is self.context
 
     async def append_message(
-        self, context: LoopContext, message: LLMMessage, event_type: str
+        self,
+        context: LoopContext,
+        message: LLMMessage,
+        event_type: str,
+        message_id: UUID | None = None,
     ) -> MessageRead:
         del context, event_type
         self.messages.append(message)
         now = datetime.now(UTC)
         return MessageRead(
-            id=uuid4(),
+            id=message_id or uuid4(),
             session_id=self.context.session.id,
             sequence=len(self.messages),
             role=message.role,
@@ -78,6 +84,16 @@ class FakeStore:
             metadata={},
             created_at=now,
         )
+
+    async def publish_message_delta(
+        self, context: LoopContext, message_id: UUID, delta: str
+    ) -> None:
+        del context
+        self.deltas.append((message_id, delta))
+
+    async def cancel_message_stream(self, context: LoopContext, message_id: UUID) -> None:
+        del context
+        self.cancelled_streams.append(message_id)
 
     async def checkpoint(
         self, context: LoopContext, iteration: int, phase: str, usage: dict[str, int]
@@ -135,6 +151,7 @@ async def test_agent_loop_finishes_visible_response() -> None:
     assert store.finished
     assert tools.finalized == ["完成"]
     assert provider.requests[0].messages[0].role == "system"
+    assert [delta for _, delta in store.deltas] == ["完成"]
 
 
 async def test_agent_loop_executes_tool_and_can_terminate() -> None:
@@ -152,6 +169,7 @@ async def test_agent_loop_executes_tool_and_can_terminate() -> None:
     assert tools.calls == [call]
     assert store.messages[-1].role == "tool"
     assert store.checkpoints == ["after_tools"]
+    assert store.deltas == []
 
 
 async def test_agent_loop_returns_invalid_tool_arguments_to_model_for_retry() -> None:

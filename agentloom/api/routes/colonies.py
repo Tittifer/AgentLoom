@@ -1,5 +1,6 @@
 """Colony lifecycle, conversation, state, and event-stream endpoints."""
 
+import asyncio
 import json
 from collections.abc import AsyncGenerator
 from typing import Annotated, cast
@@ -9,7 +10,7 @@ from fastapi import APIRouter, Depends, Query, Request, Response, status
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from agentloom.api.schemas import ApiError
-from agentloom.colony.notifier import ColonyEventNotifier
+from agentloom.colony.notifier import ColonyEventNotifier, TransientColonyEvent
 from agentloom.colony.runtime import (
     ColonyNotFoundError,
     ColonyRuntime,
@@ -61,6 +62,13 @@ def format_sse_event(event: ColonyEventRead) -> str:
     )
 
 
+def format_transient_sse_event(event: TransientColonyEvent) -> str:
+    return (
+        f"event: {event.type}\n"
+        f"data: {json.dumps(event.payload, ensure_ascii=False, separators=(',', ':'))}\n\n"
+    )
+
+
 async def stream_colony_events(
     request: Request,
     runtime: ColonyRuntime,
@@ -70,25 +78,25 @@ async def stream_colony_events(
     heartbeat_seconds: float = SSE_HEARTBEAT_SECONDS,
 ) -> AsyncGenerator[str, None]:
     cursor = after
-    while not await request.is_disconnected():
-        observed_version = notifier.version(colony_id)
-        events = await runtime.list_events_after(colony_id, cursor)
-        if events is None:
-            return
-        if events:
-            for event in events:
-                if await request.is_disconnected():
-                    return
-                cursor = event.sequence
-                yield format_sse_event(event)
-            continue
-        changed = await notifier.wait_for_change(
-            colony_id,
-            observed_version,
-            timeout=heartbeat_seconds,
-        )
-        if not changed:
-            yield ": heartbeat\n\n"
+    async with notifier.subscribe(colony_id) as updates:
+        while not await request.is_disconnected():
+            events = await runtime.list_events_after(colony_id, cursor)
+            if events is None:
+                return
+            if events:
+                for event in events:
+                    if await request.is_disconnected():
+                        return
+                    cursor = event.sequence
+                    yield format_sse_event(event)
+                continue
+            try:
+                update = await asyncio.wait_for(updates.get(), timeout=heartbeat_seconds)
+            except TimeoutError:
+                yield ": heartbeat\n\n"
+                continue
+            if update is not None:
+                yield format_transient_sse_event(update)
 
 
 @router.post(

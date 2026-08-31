@@ -1,5 +1,6 @@
 """Provider-neutral language-model request and response contracts."""
 
+from collections.abc import AsyncIterator
 from typing import Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
@@ -61,10 +62,20 @@ class LLMResponse(LLMModel):
     model: str = Field(min_length=1)
 
 
+class LLMStreamChunk(LLMModel):
+    """One incremental provider update or the terminal normalized response."""
+
+    content_delta: str = ""
+    tool_calls_started: bool = False
+    response: LLMResponse | None = None
+
+
 class LLMProvider(Protocol):
     """Runtime interface implemented by mock and real model adapters."""
 
     async def complete(self, request: LLMRequest) -> LLMResponse: ...
+
+    def stream(self, request: LLMRequest) -> AsyncIterator[LLMStreamChunk]: ...
 
 
 class LLMProviderError(RuntimeError):
@@ -87,6 +98,7 @@ __all__ = [
     "LLMRequest",
     "LLMResponse",
     "LLMResponseError",
+    "LLMStreamChunk",
     "LLMTimeoutError",
     "MessageRole",
     "ToolCall",

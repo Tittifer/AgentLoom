@@ -1,12 +1,12 @@
 """Deterministic language-model providers for tests and local development."""
 
 import asyncio
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
 from copy import deepcopy
 
 from pydantic import JsonValue
 
-from agentloom.llm.base import LLMProviderError, LLMRequest, LLMResponse
+from agentloom.llm.base import LLMProviderError, LLMRequest, LLMResponse, LLMStreamChunk
 
 ScriptedResult = LLMResponse | Exception
 
@@ -34,6 +34,17 @@ class ScriptedMockLLMProvider:
             raise result
         return result.model_copy(deep=True)
 
+    async def stream(self, request: LLMRequest) -> AsyncIterator[LLMStreamChunk]:
+        """Expose scripted results through the same stream contract as real providers."""
+
+        response = await self.complete(request)
+        if response.content:
+            yield LLMStreamChunk(content_delta=response.content)
+        yield LLMStreamChunk(
+            tool_calls_started=bool(response.tool_calls),
+            response=response,
+        )
+
 
 class SchemaMockLLMProvider:
     """Generate a deterministic value that satisfies common JSON Schema shapes."""
@@ -56,6 +67,14 @@ class SchemaMockLLMProvider:
             output_tokens=5,
             model=self._model,
         )
+
+    async def stream(self, request: LLMRequest) -> AsyncIterator[LLMStreamChunk]:
+        """Expose deterministic output through the provider stream contract."""
+
+        response = await self.complete(request)
+        if response.content:
+            yield LLMStreamChunk(content_delta=response.content)
+        yield LLMStreamChunk(response=response)
 
 
 def _mock_object(schema: dict[str, JsonValue]) -> dict[str, JsonValue]:

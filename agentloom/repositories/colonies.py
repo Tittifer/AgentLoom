@@ -2,7 +2,7 @@
 
 from collections.abc import Mapping, Sequence
 from typing import cast
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from pydantic import JsonValue, TypeAdapter
 from sqlalchemy import delete, func, select, update
@@ -191,6 +191,7 @@ class ColonyRepository:
         session_id: UUID,
         message: LLMMessage,
         *,
+        message_id: UUID | None = None,
         metadata: Mapping[str, object] | None = None,
     ) -> MessageRead | None:
         colony_id = await self._session.scalar(
@@ -219,6 +220,7 @@ class ColonyRepository:
             sanitize_json(JSON_OBJECT.validate_python(dict(metadata or {})))
         )
         model = ConversationMessageModel(
+            id=message_id or uuid4(),
             session_id=session_id,
             sequence=sequence,
             role=message.role,

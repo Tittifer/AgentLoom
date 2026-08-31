@@ -64,7 +64,11 @@ export function ColonyWorkspacePage() {
       navigate(`/colonies/${colony.id}`);
     },
   });
-  useColonyEvents(colonyId, queenId);
+  const streamingMessage = useColonyEvents(
+    colonyId,
+    queenId,
+    (messagesQuery.data ?? []).map((message) => message.id),
+  );
 
   if (colonyQuery.isLoading) return <div className="panel loading-panel">正在进入会话…</div>;
   if (colonyQuery.isError || !colonyQuery.data) {
@@ -116,6 +120,7 @@ export function ColonyWorkspacePage() {
             onSend={async (content) => { await messageMutation.mutateAsync(content); }}
             sending={messageMutation.isPending}
             session={snapshot.queen_session}
+            streamingMessage={streamingMessage}
           />
         </div>
         <ColonySidebar

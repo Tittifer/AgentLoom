@@ -3,7 +3,12 @@
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from agentloom.api.routes.colonies import error_response, format_sse_event
+from agentloom.api.routes.colonies import (
+    error_response,
+    format_sse_event,
+    format_transient_sse_event,
+)
+from agentloom.colony.notifier import TransientColonyEvent
 from agentloom.colony.schemas import ColonyEventRead
 
 
@@ -24,3 +29,10 @@ def test_colony_route_formats_errors_and_replayable_sse() -> None:
     assert "id: 3\n" in encoded
     assert "event: colony.created\n" in encoded
     assert '"name":"研究"' in encoded
+
+    transient = format_transient_sse_event(
+        TransientColonyEvent(type="message.delta", payload={"delta": "实时"})
+    )
+    assert "id:" not in transient
+    assert "event: message.delta\n" in transient
+    assert '"delta":"实时"' in transient

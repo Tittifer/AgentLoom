@@ -172,3 +172,77 @@ async def test_litellm_provider_converts_timeout() -> None:
 
     with pytest.raises(LLMTimeoutError, match="timed out"):
         await LiteLLMProvider(slow_completion).complete(request(timeout_seconds=0.01))
+
+
+async def test_litellm_provider_streams_native_text_deltas_and_terminal_usage() -> None:
+    async def chunks():  # type: ignore[no-untyped-def]
+        yield {
+            "model": "provider/model-version",
+            "choices": [{"delta": {"content": '{"answer":"'}}],
+        }
+        yield {"choices": [{"delta": {"content": "完成"}}]}
+        yield {
+            "choices": [{"delta": {"content": '"}'}}],
+            "usage": {"prompt_tokens": 13, "completion_tokens": 4},
+        }
+
+    completion = RecordingCompletion(chunks())
+    streamed = [chunk async for chunk in LiteLLMProvider(completion).stream(request())]
+
+    assert completion.parameters["stream"] is True
+    assert [chunk.content_delta for chunk in streamed[:-1]] == [
+        '{"answer":"',
+        "完成",
+        '"}',
+    ]
+    response = streamed[-1].response
+    assert response is not None
+    assert response.content == '{"answer":"完成"}'
+    assert response.structured_output == {"answer": "完成"}
+    assert response.input_tokens == 13
+    assert response.output_tokens == 4
+
+
+async def test_litellm_provider_accumulates_fragmented_stream_tool_calls() -> None:
+    async def chunks():  # type: ignore[no-untyped-def]
+        yield {
+            "choices": [
+                {
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call-1",
+                                "function": {"name": "lookup", "arguments": '{"query":"'},
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+        yield {
+            "choices": [
+                {"delta": {"tool_calls": [{"index": 0, "function": {"arguments": 'value"}'}}]}}
+            ]
+        }
+
+    streamed = [
+        chunk async for chunk in LiteLLMProvider(RecordingCompletion(chunks())).stream(request())
+    ]
+
+    assert streamed[0].tool_calls_started
+    response = streamed[-1].response
+    assert response is not None
+    assert response.tool_calls[0].id == "call-1"
+    assert response.tool_calls[0].name == "lookup"
+    assert response.tool_calls[0].arguments == {"query": "value"}
+
+
+async def test_litellm_provider_times_out_while_consuming_stream() -> None:
+    async def chunks():  # type: ignore[no-untyped-def]
+        await asyncio.sleep(1)
+        yield {"choices": [{"delta": {"content": "too late"}}]}
+
+    provider = LiteLLMProvider(RecordingCompletion(chunks()))
+    with pytest.raises(LLMTimeoutError, match="timed out"):
+        _ = [chunk async for chunk in provider.stream(request(timeout_seconds=0.01))]

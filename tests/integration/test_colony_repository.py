@@ -30,11 +30,14 @@ async def test_colony_repository_persists_shared_runtime_state() -> None:
             assert any(item.id == colony.id for item in await repository.list_colonies())
 
             await repository.set_session_status(queen.id, SessionStatus.QUEUED)
+            expected_message_id = uuid4()
             user_message = await repository.append_message(
                 queen.id,
                 LLMMessage(role="user", content="开始"),
+                message_id=expected_message_id,
             )
-            assert user_message is not None and user_message.sequence == 1
+            assert user_message is not None and user_message.id == expected_message_id
+            assert user_message.sequence == 1
             assert len(await repository.list_messages(queen.id) or []) == 1
 
             workers = await repository.create_workers(

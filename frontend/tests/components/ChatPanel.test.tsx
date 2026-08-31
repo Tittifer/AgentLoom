@@ -49,6 +49,7 @@ describe("ChatPanel", () => {
         onSend={onSend}
         sending={false}
         session={session}
+        streamingMessage={null}
       />,
     );
     expect(await screen.findByText("已经完成分析。")).toBeInTheDocument();
@@ -68,9 +69,27 @@ describe("ChatPanel", () => {
         onSend={vi.fn(async () => undefined)}
         sending={false}
         session={{ ...session, status: "idle" }}
+        streamingMessage={null}
       />,
     );
 
     expect(screen.getByRole("status")).toHaveTextContent("3 个协作节点正在执行任务");
+  });
+
+  it("直接展示后端推送的增量文本，不回放已持久化消息", () => {
+    const { container } = render(
+      <ChatPanel
+        activeWorkerCount={0}
+        messages={[message]}
+        onSend={vi.fn(async () => undefined)}
+        sending={false}
+        session={{ ...session, status: "running" }}
+        streamingMessage={{ id: "stream-1", content: "正在实时生成" }}
+      />,
+    );
+
+    expect(screen.getByText("正在实时生成")).toBeInTheDocument();
+    expect(screen.getByText("正在生成")).toBeInTheDocument();
+    expect(container.querySelector(".agent-waiting")).not.toBeInTheDocument();
   });
 });

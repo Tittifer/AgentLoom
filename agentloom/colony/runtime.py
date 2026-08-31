@@ -185,11 +185,19 @@ class DatabaseAgentLoopStore(AgentLoopStore):
         return True
 
     async def append_message(
-        self, context: LoopContext, message: LLMMessage, event_type: str
+        self,
+        context: LoopContext,
+        message: LLMMessage,
+        event_type: str,
+        message_id: UUID | None = None,
     ) -> MessageRead:
         async with self._session_factory.begin() as session:
             repository = ColonyRepository(session)
-            saved = await repository.append_message(context.session.id, message)
+            saved = await repository.append_message(
+                context.session.id,
+                message,
+                message_id=message_id,
+            )
             if saved is None:
                 raise SessionNotFoundError(str(context.session.id))
             await repository.append_event(
@@ -200,6 +208,42 @@ class DatabaseAgentLoopStore(AgentLoopStore):
             )
         await self._notifier.notify(context.session.colony_id)
         return saved
+
+    async def publish_message_delta(
+        self,
+        context: LoopContext,
+        message_id: UUID,
+        delta: str,
+    ) -> None:
+        if context.session.actor_type != "queen":
+            return
+        await self._notifier.publish(
+            context.session.colony_id,
+            "message.delta",
+            {
+                "colony_id": str(context.session.colony_id),
+                "session_id": str(context.session.id),
+                "message_id": str(message_id),
+                "delta": delta,
+            },
+        )
+
+    async def cancel_message_stream(
+        self,
+        context: LoopContext,
+        message_id: UUID,
+    ) -> None:
+        if context.session.actor_type != "queen":
+            return
+        await self._notifier.publish(
+            context.session.colony_id,
+            "message.stream.cancelled",
+            {
+                "colony_id": str(context.session.colony_id),
+                "session_id": str(context.session.id),
+                "message_id": str(message_id),
+            },
+        )
 
     async def checkpoint(
         self,

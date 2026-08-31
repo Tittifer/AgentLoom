@@ -4,13 +4,20 @@ import asyncio
 import json
 from dataclasses import dataclass
 from typing import Protocol
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from pydantic import JsonValue
 
 from agentloom.agents.judge import JudgePipeline
 from agentloom.colony.schemas import ActorType, ColonyRead, MessageRead, SessionRead
-from agentloom.llm.base import LLMMessage, LLMProvider, LLMRequest, ToolCall, ToolDefinition
+from agentloom.llm.base import (
+    LLMMessage,
+    LLMProvider,
+    LLMRequest,
+    LLMResponseError,
+    ToolCall,
+    ToolDefinition,
+)
 
 
 @dataclass(frozen=True)
@@ -32,8 +39,25 @@ class AgentLoopStore(Protocol):
     async def mark_running(self, context: LoopContext) -> bool: ...
 
     async def append_message(
-        self, context: LoopContext, message: LLMMessage, event_type: str
+        self,
+        context: LoopContext,
+        message: LLMMessage,
+        event_type: str,
+        message_id: UUID | None = None,
     ) -> MessageRead: ...
+
+    async def publish_message_delta(
+        self,
+        context: LoopContext,
+        message_id: UUID,
+        delta: str,
+    ) -> None: ...
+
+    async def cancel_message_stream(
+        self,
+        context: LoopContext,
+        message_id: UUID,
+    ) -> None: ...
 
     async def checkpoint(
         self,
@@ -109,14 +133,47 @@ class AgentLoop:
         first_iteration = start_iteration + 1 if isinstance(start_iteration, int) else 1
 
         for iteration in range(first_iteration, max_turns + 1):
-            response = await self._provider.complete(
-                LLMRequest(
-                    model=context.colony.model,
-                    messages=messages,
-                    tools=self._tools.definitions(context.session.actor_type),
-                    timeout_seconds=self._timeout_seconds,
-                )
+            request = LLMRequest(
+                model=context.colony.model,
+                messages=messages,
+                tools=self._tools.definitions(context.session.actor_type),
+                timeout_seconds=self._timeout_seconds,
             )
+            message_id = uuid4()
+            response = None
+            stream_visible = False
+            tool_calls_started = False
+            try:
+                async for chunk in self._provider.stream(request):
+                    if chunk.tool_calls_started:
+                        tool_calls_started = True
+                        if stream_visible:
+                            await self._store.cancel_message_stream(context, message_id)
+                            stream_visible = False
+                    if (
+                        chunk.content_delta
+                        and context.session.actor_type == "queen"
+                        and not tool_calls_started
+                    ):
+                        await self._store.publish_message_delta(
+                            context,
+                            message_id,
+                            chunk.content_delta,
+                        )
+                        stream_visible = True
+                    if chunk.response is not None:
+                        response = chunk.response
+            except Exception:
+                if stream_visible:
+                    await self._store.cancel_message_stream(context, message_id)
+                raise
+            if response is None:
+                if stream_visible:
+                    await self._store.cancel_message_stream(context, message_id)
+                raise LLMResponseError("Model stream ended without a terminal response")
+            if response.tool_calls and stream_visible:
+                await self._store.cancel_message_stream(context, message_id)
+                stream_visible = False
             usage["input_tokens"] += response.input_tokens
             usage["output_tokens"] += response.output_tokens
             if (
@@ -131,7 +188,12 @@ class AgentLoop:
                 tool_calls=response.tool_calls,
             )
             messages.append(assistant)
-            await self._store.append_message(context, assistant, "message.completed")
+            await self._store.append_message(
+                context,
+                assistant,
+                "message.completed",
+                message_id,
+            )
 
             if response.tool_calls:
                 results = await asyncio.gather(

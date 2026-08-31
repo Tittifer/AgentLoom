@@ -16,3 +16,16 @@ async def test_notifier_reports_change_and_timeout() -> None:
         notifier.version(colony_id),
         timeout=0.001,
     )
+
+
+async def test_notifier_delivers_transient_events_only_to_active_subscribers() -> None:
+    notifier = ColonyEventNotifier()
+    colony_id = uuid4()
+
+    async with notifier.subscribe(colony_id) as updates:
+        await notifier.publish(colony_id, "message.delta", {"delta": "你"})
+        event = await updates.get()
+
+    assert event is not None
+    assert event.type == "message.delta"
+    assert event.payload == {"delta": "你"}
