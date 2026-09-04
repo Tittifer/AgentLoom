@@ -1,6 +1,7 @@
 """Unit tests for Colony runtime tool boundaries."""
 
 from datetime import UTC, datetime
+from pathlib import Path
 from uuid import uuid4
 
 from agentloom.agents.loop import LoopContext
@@ -12,10 +13,10 @@ from agentloom.colony.runtime import (
 )
 from agentloom.colony.schemas import ColonyRead, JsonObject, MessageRead, SessionRead
 from agentloom.config import Settings
-from agentloom.db.session import DatabaseSessionManager
 from agentloom.llm.base import ToolCall
 from agentloom.llm.mock import SchemaMockLLMProvider
 from agentloom.runtime.states import ColonyStatus, SessionStatus
+from agentloom.storage import LocalColonyStore
 from agentloom.tools.registry import create_builtin_tool_registry
 
 
@@ -87,48 +88,44 @@ def test_conversation_name_comes_from_first_message() -> None:
     assert conversation_name_from_message("一" * 40) == "一" * 32 + "…"
 
 
-async def test_runtime_exposes_actor_tools_and_executes_builtin() -> None:
-    settings = Settings(environment="test")
-    database = DatabaseSessionManager(settings.database_url)
+async def test_runtime_exposes_actor_tools_and_executes_builtin(tmp_path: Path) -> None:
+    settings = Settings(environment="test", storage_root=tmp_path)
     runtime = ColonyRuntime(
-        database.session_factory,
+        LocalColonyStore(tmp_path),
         SchemaMockLLMProvider(),
         ColonyEventNotifier(),
         settings,
         create_builtin_tool_registry(),
     )
-    try:
-        queen_names = {item.name for item in runtime.definitions("queen")}
-        worker_names = {item.name for item in runtime.definitions("worker")}
-        assert {"run_worker", "web_search", "read_task_context"} <= queen_names
-        assert "report_to_parent" in worker_names
-        assert "run_worker" not in worker_names
+    queen_names = {item.name for item in runtime.definitions("queen")}
+    worker_names = {item.name for item in runtime.definitions("worker")}
+    assert {"run_worker", "web_search", "read_task_context"} <= queen_names
+    assert "report_to_parent" in worker_names
+    assert "run_worker" not in worker_names
 
-        context = make_context()
-        result = await runtime.execute(
-            context,
-            ToolCall(id="search-1", name="web_search", arguments={"query": "AgentLoom"}),
-        )
-        assert isinstance(result.value, dict)
-        assert result.value["query"] == "AgentLoom"
+    context = make_context()
+    result = await runtime.execute(
+        context,
+        ToolCall(id="search-1", name="web_search", arguments={"query": "AgentLoom"}),
+    )
+    assert isinstance(result.value, dict)
+    assert result.value["query"] == "AgentLoom"
 
-        invalid_result = await runtime.execute(
-            context,
-            ToolCall(
-                id="invalid-task",
-                name="task_create",
-                arguments={},
-                argument_error="工具 task_create 的参数不是合法 JSON，请重新生成。",
-            ),
-        )
-        assert invalid_result.value == {
-            "error": {
-                "code": "TOOL_ARGUMENTS_INVALID",
-                "message": "工具 task_create 的参数不是合法 JSON，请重新生成。",
-            }
+    invalid_result = await runtime.execute(
+        context,
+        ToolCall(
+            id="invalid-task",
+            name="task_create",
+            arguments={},
+            argument_error="工具 task_create 的参数不是合法 JSON，请重新生成。",
+        ),
+    )
+    assert invalid_result.value == {
+        "error": {
+            "code": "TOOL_ARGUMENTS_INVALID",
+            "message": "工具 task_create 的参数不是合法 JSON，请重新生成。",
         }
-    finally:
-        await database.dispose()
+    }
 
 
 def make_context() -> LoopContext:

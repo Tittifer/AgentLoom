@@ -3,22 +3,22 @@
 from agentloom.colony.notifier import ColonyEventNotifier
 from agentloom.colony.runtime import ColonyRuntime
 from agentloom.config import Settings
-from agentloom.db.session import DatabaseSessionManager
 from agentloom.llm.base import LLMProvider
 from agentloom.llm.litellm_provider import LiteLLMProvider
 from agentloom.llm.mock import SchemaMockLLMProvider
+from agentloom.storage import LocalColonyStore
 from agentloom.tools.registry import create_builtin_tool_registry
 
 
 def create_colony_runtime(
-    database: DatabaseSessionManager,
+    storage: LocalColonyStore,
     event_notifier: ColonyEventNotifier,
     settings: Settings,
 ) -> ColonyRuntime:
     """Build the persistent Queen/Worker runtime."""
 
     return ColonyRuntime(
-        database.session_factory,
+        storage,
         create_llm_provider(settings),
         event_notifier,
         settings,

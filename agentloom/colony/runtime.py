@@ -7,8 +7,6 @@ from uuid import UUID
 
 import structlog
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError
-from sqlalchemy import select, update
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from agentloom.agents.judge import JudgePipeline
 from agentloom.agents.loop import (
@@ -35,11 +33,9 @@ from agentloom.colony.schemas import (
     WorkerTask,
 )
 from agentloom.config import Settings
-from agentloom.db.models.session import AgentSessionModel
-from agentloom.db.models.worker import WorkerRunModel
 from agentloom.llm.base import LLMMessage, LLMProvider, ToolCall, ToolDefinition
-from agentloom.repositories.colonies import ColonyRepository, TrackerVersionConflictError
 from agentloom.runtime.states import SessionStatus, WorkerStatus
+from agentloom.storage import LocalColonyStore, TrackerVersionConflictError
 from agentloom.tools.base import ToolContext, ToolError
 from agentloom.tools.registry import ToolRegistry
 
@@ -133,54 +129,50 @@ def normalize_message_history(messages: list[MessageRead]) -> tuple[list[LLMMess
     return normalized, repaired_groups
 
 
-class DatabaseAgentLoopStore(AgentLoopStore):
-    """Commit every AgentLoop message, checkpoint, and event atomically."""
+class FileAgentLoopStore(AgentLoopStore):
+    """Persist AgentLoop messages, checkpoints, and events locally."""
 
     def __init__(
         self,
-        session_factory: async_sessionmaker[AsyncSession],
+        store: LocalColonyStore,
         notifier: ColonyEventNotifier,
     ) -> None:
-        self._session_factory = session_factory
+        self._store = store
         self._notifier = notifier
         self._logger = structlog.get_logger(__name__)
 
     async def load(self, session_id: UUID) -> LoopContext | None:
-        async with self._session_factory() as session:
-            repository = ColonyRepository(session)
-            agent_session = await repository.get_session(session_id)
-            if agent_session is None:
-                return None
-            colony = await repository.get(agent_session.colony_id)
-            messages = await repository.list_messages(session_id)
-            if colony is None or messages is None:
-                return None
-            normalized, repaired_groups = normalize_message_history(messages)
-            if repaired_groups:
-                self._logger.warning(
-                    "incomplete_tool_history_repaired",
-                    session_id=str(session_id),
-                    repaired_groups=repaired_groups,
-                )
-            return LoopContext(session=agent_session, colony=colony, messages=normalized)
+        agent_session = await self._store.get_session(session_id)
+        if agent_session is None:
+            return None
+        colony = await self._store.get(agent_session.colony_id)
+        messages = await self._store.list_messages(session_id)
+        if colony is None or messages is None:
+            return None
+        normalized, repaired_groups = normalize_message_history(messages)
+        if repaired_groups:
+            self._logger.warning(
+                "incomplete_tool_history_repaired",
+                session_id=str(session_id),
+                repaired_groups=repaired_groups,
+            )
+        return LoopContext(session=agent_session, colony=colony, messages=normalized)
 
     async def mark_running(self, context: LoopContext) -> bool:
-        async with self._session_factory.begin() as session:
-            repository = ColonyRepository(session)
-            current = await repository.get_session(context.session.id, lock=True)
-            if current is None or current.status in {
-                SessionStatus.COMPLETED,
-                SessionStatus.FAILED,
-                SessionStatus.CANCELLED,
-            }:
-                return False
-            await repository.set_session_status(current.id, SessionStatus.RUNNING)
-            await repository.append_event(
-                current.colony_id,
-                "session.started",
-                session_id=current.id,
-                payload={"actor_type": current.actor_type},
-            )
+        current = await self._store.get_session(context.session.id)
+        if current is None or current.status in {
+            SessionStatus.COMPLETED,
+            SessionStatus.FAILED,
+            SessionStatus.CANCELLED,
+        }:
+            return False
+        await self._store.set_session_status(current.id, SessionStatus.RUNNING)
+        await self._store.append_event(
+            current.colony_id,
+            "session.started",
+            session_id=current.id,
+            payload={"actor_type": current.actor_type},
+        )
         await self._notifier.notify(context.session.colony_id)
         return True
 
@@ -191,21 +183,19 @@ class DatabaseAgentLoopStore(AgentLoopStore):
         event_type: str,
         message_id: UUID | None = None,
     ) -> MessageRead:
-        async with self._session_factory.begin() as session:
-            repository = ColonyRepository(session)
-            saved = await repository.append_message(
-                context.session.id,
-                message,
-                message_id=message_id,
-            )
-            if saved is None:
-                raise SessionNotFoundError(str(context.session.id))
-            await repository.append_event(
-                context.session.colony_id,
-                event_type,
-                session_id=context.session.id,
-                payload={"message_id": str(saved.id), "role": saved.role},
-            )
+        saved = await self._store.append_message(
+            context.session.id,
+            message,
+            message_id=message_id,
+        )
+        if saved is None:
+            raise SessionNotFoundError(str(context.session.id))
+        await self._store.append_event(
+            context.session.colony_id,
+            event_type,
+            session_id=context.session.id,
+            payload={"message_id": str(saved.id), "role": saved.role},
+        )
         await self._notifier.notify(context.session.colony_id)
         return saved
 
@@ -252,61 +242,56 @@ class DatabaseAgentLoopStore(AgentLoopStore):
         phase: str,
         usage: dict[str, int],
     ) -> None:
-        async with self._session_factory.begin() as session:
-            await ColonyRepository(session).set_session_status(
-                context.session.id,
-                SessionStatus.RUNNING,
-                cursor={"iteration": iteration, "phase": phase},
-                usage=usage,
-            )
+        await self._store.set_session_status(
+            context.session.id,
+            SessionStatus.RUNNING,
+            cursor={"iteration": iteration, "phase": phase},
+            usage=usage,
+        )
 
     async def finish(self, context: LoopContext, content: str, usage: dict[str, int]) -> None:
         del content
-        async with self._session_factory.begin() as session:
-            repository = ColonyRepository(session)
-            current = await repository.get_session(context.session.id, lock=True)
-            if current is None:
-                return
-            if current.actor_type == "queen":
-                await repository.set_session_status(
-                    current.id,
-                    SessionStatus.IDLE,
-                    cursor={"iteration": 0, "phase": "idle"},
-                    usage=usage,
-                )
-                await repository.append_event(
-                    current.colony_id,
-                    "session.idle",
-                    session_id=current.id,
-                    payload={"actor_type": "queen"},
-                )
-            else:
-                await repository.set_session_status(
-                    current.id,
-                    current.status,
-                    cursor={"iteration": 0, "phase": "completed"},
-                    usage=usage,
-                )
+        current = await self._store.get_session(context.session.id)
+        if current is None:
+            return
+        if current.actor_type == "queen":
+            await self._store.set_session_status(
+                current.id,
+                SessionStatus.IDLE,
+                cursor={"iteration": 0, "phase": "idle"},
+                usage=usage,
+            )
+            await self._store.append_event(
+                current.colony_id,
+                "session.idle",
+                session_id=current.id,
+                payload={"actor_type": "queen"},
+            )
+        else:
+            await self._store.set_session_status(
+                current.id,
+                current.status,
+                cursor={"iteration": 0, "phase": "completed"},
+                usage=usage,
+            )
         await self._notifier.notify(context.session.colony_id)
 
     async def fail(self, context: LoopContext, error: Exception) -> None:
-        async with self._session_factory.begin() as session:
-            repository = ColonyRepository(session)
-            await repository.set_session_status(context.session.id, SessionStatus.FAILED)
-            worker = await repository.get_worker_for_session(context.session.id)
-            if worker is not None:
-                await repository.finish_worker(
-                    context.session.id,
-                    WorkerStatus.FAILED,
-                    error={"code": "AGENT_LOOP_FAILED", "message": str(error)},
-                )
-            await repository.append_event(
-                context.session.colony_id,
-                "session.failed",
-                session_id=context.session.id,
-                worker_run_id=worker.id if worker is not None else None,
-                payload={"message": str(error)},
+        await self._store.set_session_status(context.session.id, SessionStatus.FAILED)
+        worker = await self._store.get_worker_for_session(context.session.id)
+        if worker is not None:
+            await self._store.finish_worker(
+                context.session.id,
+                WorkerStatus.FAILED,
+                error={"code": "AGENT_LOOP_FAILED", "message": str(error)},
             )
+        await self._store.append_event(
+            context.session.colony_id,
+            "session.failed",
+            session_id=context.session.id,
+            worker_run_id=worker.id if worker is not None else None,
+            payload={"message": str(error)},
+        )
         await self._notifier.notify(context.session.colony_id)
 
 
@@ -315,17 +300,17 @@ class ColonyRuntime:
 
     def __init__(
         self,
-        session_factory: async_sessionmaker[AsyncSession],
+        store: LocalColonyStore,
         provider: LLMProvider,
         notifier: ColonyEventNotifier,
         settings: Settings,
         tools: ToolRegistry,
     ) -> None:
-        self._session_factory = session_factory
+        self._storage = store
         self._notifier = notifier
         self._settings = settings
         self._tools = tools
-        self._store = DatabaseAgentLoopStore(session_factory, notifier)
+        self._store = FileAgentLoopStore(store, notifier)
         self._loop = AgentLoop(
             self._store,
             provider,
@@ -344,46 +329,7 @@ class ColonyRuntime:
         """Recover queued/running sessions after an application restart."""
 
         self._stopping = False
-        async with self._session_factory.begin() as session:
-            interrupted_worker_sessions = list(
-                await session.scalars(
-                    select(WorkerRunModel.worker_session_id).where(
-                        WorkerRunModel.status == WorkerStatus.RUNNING
-                    )
-                )
-            )
-            if interrupted_worker_sessions:
-                await session.execute(
-                    update(WorkerRunModel)
-                    .where(WorkerRunModel.status == WorkerStatus.RUNNING)
-                    .values(status=WorkerStatus.QUEUED, started_at=None)
-                )
-                await session.execute(
-                    update(AgentSessionModel)
-                    .where(AgentSessionModel.id.in_(interrupted_worker_sessions))
-                    .values(status=SessionStatus.QUEUED)
-                )
-            await session.execute(
-                update(AgentSessionModel)
-                .where(
-                    AgentSessionModel.actor_type == "queen",
-                    AgentSessionModel.status == SessionStatus.RUNNING,
-                )
-                .values(status=SessionStatus.QUEUED)
-            )
-            worker_ids = list(
-                await session.scalars(
-                    select(WorkerRunModel.id).where(WorkerRunModel.status == WorkerStatus.QUEUED)
-                )
-            )
-            queen_ids = list(
-                await session.scalars(
-                    select(AgentSessionModel.id).where(
-                        AgentSessionModel.actor_type == "queen",
-                        AgentSessionModel.status == SessionStatus.QUEUED,
-                    )
-                )
-            )
+        worker_ids, queen_ids = await self._storage.recover_interrupted()
         for worker_id in worker_ids:
             self._schedule(self._run_worker(worker_id))
         for session_id in queen_ids:
@@ -398,130 +344,113 @@ class ColonyRuntime:
             await asyncio.gather(*tasks, return_exceptions=True)
 
     async def create_colony(self, payload: ColonyCreate) -> ColonyRead:
-        async with self._session_factory.begin() as session:
-            repository = ColonyRepository(session)
-            colony, queen = await repository.create(
-                payload.name,
-                payload.description,
-                payload.queen_profile,
-                payload.model or self._settings.llm_model,
-                payload.settings,
-            )
-            await repository.append_event(
-                colony.id,
-                "colony.created",
-                session_id=queen.id,
-                payload={"name": colony.name},
-            )
+        colony, queen = await self._storage.create(
+            payload.name,
+            payload.description,
+            payload.queen_profile,
+            payload.model or self._settings.llm_model,
+            payload.settings,
+        )
+        await self._storage.append_event(
+            colony.id,
+            "colony.created",
+            session_id=queen.id,
+            payload={"name": colony.name},
+        )
         await self._notifier.notify(colony.id)
         return colony
 
     async def list_colonies(self) -> list[ColonyRead]:
-        async with self._session_factory() as session:
-            return await ColonyRepository(session).list_colonies()
+        return await self._storage.list_colonies()
 
     async def delete_colony(self, colony_id: UUID) -> None:
-        async with self._session_factory.begin() as session:
-            deleted = await ColonyRepository(session).delete_colony(colony_id)
-            if not deleted:
-                raise ColonyNotFoundError(str(colony_id))
+        deleted = await self._storage.delete_colony(colony_id)
+        if not deleted:
+            raise ColonyNotFoundError(str(colony_id))
         await self._notifier.notify(colony_id)
 
     async def get_snapshot(self, colony_id: UUID) -> ColonySnapshot:
-        async with self._session_factory() as session:
-            repository = ColonyRepository(session)
-            colony = await repository.get(colony_id)
-            queen = await repository.get_queen_session(colony_id)
-            if colony is None or queen is None:
-                raise ColonyNotFoundError(str(colony_id))
-            return ColonySnapshot(
-                colony=colony,
-                queen_session=queen,
-                workers=await repository.list_workers(colony_id),
-                tasks=await repository.list_tasks(colony_id),
-                tracker=await repository.list_tracker(colony_id),
-            )
+        colony = await self._storage.get(colony_id)
+        queen = await self._storage.get_queen_session(colony_id)
+        if colony is None or queen is None:
+            raise ColonyNotFoundError(str(colony_id))
+        return ColonySnapshot(
+            colony=colony,
+            queen_session=queen,
+            workers=await self._storage.list_workers(colony_id),
+            tasks=await self._storage.list_tasks(colony_id),
+            tracker=await self._storage.list_tracker(colony_id),
+        )
 
     async def get_session(self, session_id: UUID) -> SessionRead:
-        async with self._session_factory() as session:
-            result = await ColonyRepository(session).get_session(session_id)
-            if result is None:
-                raise SessionNotFoundError(str(session_id))
-            return result
+        result = await self._storage.get_session(session_id)
+        if result is None:
+            raise SessionNotFoundError(str(session_id))
+        return result
 
     async def list_messages(self, session_id: UUID) -> list[MessageRead]:
-        async with self._session_factory() as session:
-            result = await ColonyRepository(session).list_messages(session_id)
-            if result is None:
-                raise SessionNotFoundError(str(session_id))
-            return result
+        result = await self._storage.list_messages(session_id)
+        if result is None:
+            raise SessionNotFoundError(str(session_id))
+        return result
 
     async def submit_message(self, session_id: UUID, content: str) -> MessageRead:
-        async with self._session_factory.begin() as session:
-            repository = ColonyRepository(session)
-            agent_session = await repository.get_session(session_id, lock=True)
-            if agent_session is None:
-                raise SessionNotFoundError(str(session_id))
-            if agent_session.actor_type != "queen":
-                raise SessionConflictError("User messages can only be sent to a queen session")
-            if agent_session.status in {
-                SessionStatus.COMPLETED,
-                SessionStatus.FAILED,
-                SessionStatus.CANCELLED,
-            }:
-                raise SessionConflictError("Session is terminal")
-            colony = await repository.get(agent_session.colony_id)
-            if colony is None:
-                raise ColonyNotFoundError(str(agent_session.colony_id))
-            message = await repository.append_message(
-                session_id, LLMMessage(role="user", content=content)
-            )
-            if message is None:
-                raise SessionNotFoundError(str(session_id))
-            if colony.name == UNTITLED_COLONY_NAME:
-                await repository.rename_colony(
-                    agent_session.colony_id,
-                    conversation_name_from_message(content),
-                )
-            await repository.set_session_status(session_id, SessionStatus.QUEUED)
-            await repository.append_event(
+        agent_session = await self._storage.get_session(session_id)
+        if agent_session is None:
+            raise SessionNotFoundError(str(session_id))
+        if agent_session.actor_type != "queen":
+            raise SessionConflictError("User messages can only be sent to a queen session")
+        if agent_session.status in {
+            SessionStatus.COMPLETED,
+            SessionStatus.FAILED,
+            SessionStatus.CANCELLED,
+        }:
+            raise SessionConflictError("Session is terminal")
+        colony = await self._storage.get(agent_session.colony_id)
+        if colony is None:
+            raise ColonyNotFoundError(str(agent_session.colony_id))
+        message = await self._storage.append_message(
+            session_id, LLMMessage(role="user", content=content)
+        )
+        if message is None:
+            raise SessionNotFoundError(str(session_id))
+        if colony.name == UNTITLED_COLONY_NAME:
+            await self._storage.rename_colony(
                 agent_session.colony_id,
-                "message.created",
-                session_id=session_id,
-                payload={"message_id": str(message.id), "role": "user"},
+                conversation_name_from_message(content),
             )
+        await self._storage.set_session_status(session_id, SessionStatus.QUEUED)
+        await self._storage.append_event(
+            agent_session.colony_id,
+            "message.created",
+            session_id=session_id,
+            payload={"message_id": str(message.id), "role": "user"},
+        )
         await self._notifier.notify(agent_session.colony_id)
         self._schedule(self._run_serial(session_id))
         return message
 
     async def list_workers(self, colony_id: UUID) -> list[WorkerRead]:
-        async with self._session_factory() as session:
-            repository = ColonyRepository(session)
-            if await repository.get(colony_id) is None:
-                raise ColonyNotFoundError(str(colony_id))
-            return await repository.list_workers(colony_id)
+        if await self._storage.get(colony_id) is None:
+            raise ColonyNotFoundError(str(colony_id))
+        return await self._storage.list_workers(colony_id)
 
     async def list_tracker(
         self, colony_id: UUID, namespace: str | None = None
     ) -> list[TrackerEntryRead]:
-        async with self._session_factory() as session:
-            repository = ColonyRepository(session)
-            if await repository.get(colony_id) is None:
-                raise ColonyNotFoundError(str(colony_id))
-            return await repository.list_tracker(colony_id, namespace)
+        if await self._storage.get(colony_id) is None:
+            raise ColonyNotFoundError(str(colony_id))
+        return await self._storage.list_tracker(colony_id, namespace)
 
     async def list_tasks(self, colony_id: UUID) -> list[TaskItemRead]:
-        async with self._session_factory() as session:
-            repository = ColonyRepository(session)
-            if await repository.get(colony_id) is None:
-                raise ColonyNotFoundError(str(colony_id))
-            return await repository.list_tasks(colony_id)
+        if await self._storage.get(colony_id) is None:
+            raise ColonyNotFoundError(str(colony_id))
+        return await self._storage.list_tasks(colony_id)
 
     async def list_events_after(
         self, colony_id: UUID, sequence: int
     ) -> list[ColonyEventRead] | None:
-        async with self._session_factory() as session:
-            return await ColonyRepository(session).list_events_after(colony_id, sequence)
+        return await self._storage.list_events_after(colony_id, sequence)
 
     def definitions(self, actor_type: ActorType) -> list[ToolDefinition]:
         common = [
@@ -632,17 +561,15 @@ class ColonyRuntime:
     async def _spawn_workers(
         self, context: LoopContext, tasks: list[WorkerTask], timeout: int
     ) -> list[WorkerRead]:
-        async with self._session_factory.begin() as session:
-            repository = ColonyRepository(session)
-            workers = await repository.create_workers(context.session.id, tasks, timeout)
-            for worker in workers:
-                await repository.append_event(
-                    context.session.colony_id,
-                    "worker.queued",
-                    session_id=worker.worker_session_id,
-                    worker_run_id=worker.id,
-                    payload={"task": worker.task},
-                )
+        workers = await self._storage.create_workers(context.session.id, tasks, timeout)
+        for worker in workers:
+            await self._storage.append_event(
+                context.session.colony_id,
+                "worker.queued",
+                session_id=worker.worker_session_id,
+                worker_run_id=worker.id,
+                payload={"task": worker.task},
+            )
         await self._notifier.notify(context.session.colony_id)
         for worker in workers:
             self._schedule(self._run_worker(worker.id))
@@ -650,18 +577,16 @@ class ColonyRuntime:
 
     async def _run_worker(self, worker_id: UUID) -> None:
         async with self._worker_semaphore:
-            async with self._session_factory.begin() as session:
-                repository = ColonyRepository(session)
-                worker = await repository.mark_worker_running(worker_id)
-                if worker is None:
-                    return
-                await repository.append_event(
-                    worker.colony_id,
-                    "worker.started",
-                    session_id=worker.worker_session_id,
-                    worker_run_id=worker.id,
-                    payload={"task": worker.task},
-                )
+            worker = await self._storage.mark_worker_running(worker_id)
+            if worker is None:
+                return
+            await self._storage.append_event(
+                worker.colony_id,
+                "worker.started",
+                session_id=worker.worker_session_id,
+                worker_run_id=worker.id,
+                payload={"task": worker.task},
+            )
             await self._notifier.notify(worker.colony_id)
             try:
                 await asyncio.wait_for(
@@ -669,20 +594,18 @@ class ColonyRuntime:
                     timeout=worker.timeout_seconds,
                 )
             except TimeoutError:
-                async with self._session_factory.begin() as session:
-                    repository = ColonyRepository(session)
-                    await repository.finish_worker(
-                        worker.worker_session_id,
-                        WorkerStatus.TIMED_OUT,
-                        error={"code": "WORKER_TIMEOUT", "message": "Worker 执行超时"},
-                    )
-                    await repository.append_event(
-                        worker.colony_id,
-                        "worker.timed_out",
-                        session_id=worker.worker_session_id,
-                        worker_run_id=worker.id,
-                        payload={"timeout_seconds": worker.timeout_seconds},
-                    )
+                await self._storage.finish_worker(
+                    worker.worker_session_id,
+                    WorkerStatus.TIMED_OUT,
+                    error={"code": "WORKER_TIMEOUT", "message": "Worker 执行超时"},
+                )
+                await self._storage.append_event(
+                    worker.colony_id,
+                    "worker.timed_out",
+                    session_id=worker.worker_session_id,
+                    worker_run_id=worker.id,
+                    payload={"timeout_seconds": worker.timeout_seconds},
+                )
                 await self._notifier.notify(worker.colony_id)
 
     async def _report_worker(self, context: LoopContext, report: WorkerReport) -> None:
@@ -691,92 +614,84 @@ class ColonyRuntime:
             "partial": WorkerStatus.PARTIAL,
             "failed": WorkerStatus.FAILED,
         }
-        async with self._session_factory.begin() as session:
-            repository = ColonyRepository(session)
-            worker = await repository.finish_worker(
-                context.session.id,
-                status_map[report.status],
-                report=report.model_dump(mode="json"),
-                error=(
-                    {"code": "WORKER_REPORTED_FAILURE", "message": report.summary}
-                    if report.status == "failed"
-                    else None
-                ),
-            )
-            if worker is None:
-                raise SessionConflictError("Worker session has no owning worker run")
-            queen_message = LLMMessage(
-                role="user",
-                content="[WORKER_REPORT]\n" + report.model_dump_json(),
-            )
-            await repository.append_message(
-                worker.queen_session_id,
-                queen_message,
-                metadata={"worker_run_id": str(worker.id)},
-            )
-            await repository.set_session_status(worker.queen_session_id, SessionStatus.QUEUED)
-            await repository.append_event(
-                worker.colony_id,
-                "worker.reported",
-                session_id=worker.worker_session_id,
-                worker_run_id=worker.id,
-                payload={"status": report.status, "summary": report.summary},
-            )
+        worker = await self._storage.finish_worker(
+            context.session.id,
+            status_map[report.status],
+            report=report.model_dump(mode="json"),
+            error=(
+                {"code": "WORKER_REPORTED_FAILURE", "message": report.summary}
+                if report.status == "failed"
+                else None
+            ),
+        )
+        if worker is None:
+            raise SessionConflictError("Worker session has no owning worker run")
+        queen_message = LLMMessage(
+            role="user",
+            content="[WORKER_REPORT]\n" + report.model_dump_json(),
+        )
+        await self._storage.append_message(
+            worker.queen_session_id,
+            queen_message,
+            metadata={"worker_run_id": str(worker.id)},
+        )
+        await self._storage.set_session_status(worker.queen_session_id, SessionStatus.QUEUED)
+        await self._storage.append_event(
+            worker.colony_id,
+            "worker.reported",
+            session_id=worker.worker_session_id,
+            worker_run_id=worker.id,
+            payload={"status": report.status, "summary": report.summary},
+        )
         await self._notifier.notify(context.session.colony_id)
         self._schedule(self._run_serial(worker.queen_session_id))
 
     async def _tracker_upsert(
         self, context: LoopContext, payload: TrackerUpsert
     ) -> TrackerEntryRead:
-        async with self._session_factory.begin() as session:
-            repository = ColonyRepository(session)
-            entry = await repository.upsert_tracker(
-                context.session.colony_id, context.session.id, payload
-            )
-            await repository.append_event(
-                context.session.colony_id,
-                "tracker.updated",
-                session_id=context.session.id,
-                payload={
-                    "namespace": entry.namespace,
-                    "entry_key": entry.entry_key,
-                    "version": entry.version,
-                },
-            )
+        entry = await self._storage.upsert_tracker(
+            context.session.colony_id, context.session.id, payload
+        )
+        await self._storage.append_event(
+            context.session.colony_id,
+            "tracker.updated",
+            session_id=context.session.id,
+            payload={
+                "namespace": entry.namespace,
+                "entry_key": entry.entry_key,
+                "version": entry.version,
+            },
+        )
         await self._notifier.notify(context.session.colony_id)
         return entry
 
     async def _task_create(self, context: LoopContext, payload: TaskItemCreate) -> TaskItemRead:
-        async with self._session_factory.begin() as session:
-            repository = ColonyRepository(session)
-            item = await repository.create_task_item(
-                context.session.colony_id, context.session.id, payload
-            )
-            await repository.append_event(
-                context.session.colony_id,
-                "task.created",
-                session_id=context.session.id,
-                payload={"task_id": str(item.id), "title": item.title},
-            )
+        item = await self._storage.create_task_item(
+            context.session.colony_id, context.session.id, payload
+        )
+        await self._storage.append_event(
+            context.session.colony_id,
+            "task.created",
+            session_id=context.session.id,
+            payload={"task_id": str(item.id), "title": item.title},
+        )
         await self._notifier.notify(context.session.colony_id)
         return item
 
     async def _task_update(self, context: LoopContext, payload: TaskUpdateInput) -> TaskItemRead:
         from agentloom.runtime.states import TaskItemStatus
 
-        async with self._session_factory.begin() as session:
-            repository = ColonyRepository(session)
-            item = await repository.update_task_status(
-                payload.task_id, TaskItemStatus(payload.status)
-            )
-            if item is None or item.colony_id != context.session.colony_id:
-                raise ValueError("任务项不存在")
-            await repository.append_event(
-                context.session.colony_id,
-                "task.updated",
-                session_id=context.session.id,
-                payload={"task_id": str(item.id), "status": item.status},
-            )
+        item = await self._storage.update_task_status(
+            payload.task_id, TaskItemStatus(payload.status)
+        )
+        if item is None or item.colony_id != context.session.colony_id:
+            raise ValueError("任务项不存在")
+        await self._storage.append_event(
+            context.session.colony_id,
+            "task.updated",
+            session_id=context.session.id,
+            payload={"task_id": str(item.id), "status": item.status},
+        )
         await self._notifier.notify(context.session.colony_id)
         return item
 
@@ -806,7 +721,7 @@ def conversation_name_from_message(content: str) -> str:
 __all__ = [
     "ColonyNotFoundError",
     "ColonyRuntime",
-    "DatabaseAgentLoopStore",
+    "FileAgentLoopStore",
     "SessionConflictError",
     "SessionNotFoundError",
 ]

@@ -11,8 +11,8 @@ from agentloom.api.schemas import HealthResponse
 from agentloom.bootstrap import create_colony_runtime
 from agentloom.colony.notifier import ColonyEventNotifier
 from agentloom.config import Settings, get_settings
-from agentloom.db.session import DatabaseSessionManager
 from agentloom.logging import configure_logging
+from agentloom.storage import LocalColonyStore
 
 
 async def health() -> HealthResponse:
@@ -27,20 +27,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app_settings = settings or get_settings()
     configure_logging(app_settings.log_level)
     logger = structlog.get_logger(__name__)
-    database = DatabaseSessionManager(app_settings.database_url)
+    storage = LocalColonyStore(app_settings.storage_root)
     event_notifier = ColonyEventNotifier()
-    colony_runtime = create_colony_runtime(database, event_notifier, app_settings)
+    colony_runtime = create_colony_runtime(storage, event_notifier, app_settings)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncGenerator[None, None]:
         try:
-            await database.check_connection()
+            await storage.initialize()
         except Exception:
-            logger.exception("database_connection_failed")
-            await database.dispose()
+            logger.exception("storage_initialization_failed")
+            await storage.close()
             raise
 
-        logger.info("database_connected")
+        logger.info("local_storage_ready", root=str(storage.root))
         logger.info(
             "application_started",
             environment=app_settings.environment,
@@ -53,7 +53,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             try:
                 await colony_runtime.stop()
             finally:
-                await database.dispose()
+                await storage.close()
                 logger.info("application_stopped")
 
     application = FastAPI(
@@ -61,7 +61,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         version=app_settings.app_version,
         lifespan=lifespan,
     )
-    application.state.database = database
+    application.state.storage = storage
     application.state.colony_event_notifier = event_notifier
     application.state.colony_runtime = colony_runtime
     application.include_router(colony_router, prefix="/api")

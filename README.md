@@ -7,7 +7,7 @@ AgentLoom 是一个基于 Hive Colony 思路实现的持久化多智能体协作
 - Queen 多轮会话：用户可以持续补充信息、调整目标或追问结果。
 - 动态 Worker：Queen 通过 `run_worker` 即时创建一个或多个并行 Worker。
 - 统一 AgentLoop：Queen 和 Worker 共用模型调用、工具循环、质量检查、用量统计和持久化边界。
-- 共享状态：任务计划和 Tracker 保存在 PostgreSQL 中，所有智能体可读写。
+- 共享状态：任务计划保存在会话文件中，每个 Colony 使用独立的 SQLite Tracker。
 - 可恢复执行：消息、会话游标、Worker 状态和事件均持久化；进程重启会重新排队被中断的执行。
 - 实时工作台：React 界面通过 SSE 展示 Queen、Worker、任务和 Tracker 的变化。
 - 模型兼容：离线开发使用 MockLLM，真实模型通过 LiteLLM 接入 OpenAI 兼容接口或其他提供商。
@@ -19,26 +19,21 @@ agentloom/                 FastAPI 后端包
   agents/                 统一 AgentLoop 与 Judge
   api/routes/colonies.py  Colony、会话和 SSE API
   colony/                 Colony DTO、通知器和运行时
-  db/models/              Colony 持久化模型
-  repositories/           Colony 聚合仓储
+  storage/                文件存储与每 Colony SQLite Tracker
   llm/                    Mock 与 LiteLLM 适配器
   tools/                  有界只读工具注册表
 frontend/                 React Colony 工作台
 tests/agentloom/          与后端源码路径对应的单元测试
-tests/integration/        PostgreSQL 和 HTTP 集成测试
+tests/integration/        本地持久化和 HTTP 集成测试
 tests/contract/           LiteLLM 适配器契约测试
-alembic/                  数据库迁移
 dev.py                    前后端一键启动脚本
 ```
-
-早期版本的 Task、Workflow、Run 表由历史迁移保留，方便已有数据库升级；当前应用代码和 HTTP API 已不再读写这些旧表。
 
 ## 环境要求
 
 - Python 3.11
 - uv
 - Node.js 22 和 npm 10
-- PostgreSQL 16
 - GNU Make（可选；Windows 也可以直接运行脚本）
 
 ## 环境变量
@@ -54,7 +49,7 @@ Copy-Item .env.example .env
 ```dotenv
 AGENTLOOM_ENV=development
 AGENTLOOM_LOG_LEVEL=INFO
-AGENTLOOM_DATABASE_URL=postgresql+asyncpg://agentloom:agentloom@localhost:5432/agentloom
+AGENTLOOM_HOME=~/.agentloom
 
 AGENTLOOM_LLM_PROVIDER=mock
 AGENTLOOM_LLM_MODEL=mock/schema
@@ -66,7 +61,7 @@ AGENTLOOM_MAX_CONCURRENT_WORKERS=4
 AGENTLOOM_WORKER_TIMEOUT_SECONDS=600
 ```
 
-`.env.example` 的数据库端口是开发用 Compose 默认端口 `15432`。如果使用本机 PostgreSQL，通常将其改成 `5432`。
+`AGENTLOOM_HOME` 是本地持久化根目录。每个 Colony 都是其中一个自包含目录；除每个 Colony 的 `tracker/tracker.db` 外，其余运行状态使用 JSON、JSONL 和普通文件保存。
 
 ### 第三方 OpenAI 兼容模型
 
@@ -80,12 +75,11 @@ OPENAI_API_KEY=你的密钥
 
 如果提供商完整支持严格 JSON Schema，可将 `AGENTLOOM_LLM_RESPONSE_FORMAT` 改成 `json_schema`。不要提交 `.env` 或真实 API 密钥。
 
-## 安装、迁移和启动
+## 安装和启动
 
 ```powershell
 uv sync --locked --all-groups
 npm --prefix frontend ci
-uv run --locked alembic upgrade head
 ```
 
 一键启动前后端：
@@ -130,11 +124,11 @@ GET  /api/colonies/{colony_id}/tracker
 GET  /api/colonies/{colony_id}/events
 ```
 
-SSE 事件先写入 PostgreSQL，再通知客户端；客户端可用 `after` 序号重放断线期间的事件。
+SSE 事件先追加到 Colony 的 `events.jsonl`，再通知客户端；客户端可用 `after` 序号重放断线期间的事件。
 
 ## 测试与检查
 
-后端测试会连接 `.env` 指定的 PostgreSQL：
+后端测试使用临时本地存储目录，不依赖外部数据库服务：
 
 ```powershell
 uv run --locked pytest --cov=agentloom --cov-report=term-missing
@@ -159,5 +153,5 @@ npm --prefix frontend run build
 - 当前版本面向单个可信用户，不包含登录、租户隔离和细粒度权限。
 - Worker 并发由单进程 `asyncio` 信号量控制，不是分布式队列。
 - 内置 `web_search` 是离线确定性示例；接入真实搜索或 MCP 工具前应增加权限、审计和速率限制。
-- Artifact 表已经建立，但大文件对象存储适配器尚未实现。
+- 每个 Colony 预留独立的 `artifacts/` 目录；大文件 Artifact API 尚未实现。
 - 本项目不包含生产 Docker 部署方案。

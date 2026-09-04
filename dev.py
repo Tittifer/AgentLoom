@@ -75,25 +75,11 @@ def ensure_frontend_dependencies(npm: str) -> None:
         run_checked([npm, "ci"], cwd=FRONTEND)
 
 
-def should_start_postgres(arguments: list[str]) -> bool:
-    """Parse the single optional Docker flag without adding a CLI dependency."""
-
-    if not arguments:
-        return False
-    if arguments == ["--with-docker"]:
-        return True
-    raise RuntimeError("Usage: dev.py [--with-docker]")
-
-
-def main(*, start_postgres: bool = False) -> int:
-    """Start FastAPI and Vite, optionally starting PostgreSQL first."""
+def main() -> int:
+    """Start FastAPI and Vite."""
 
     npm = require_command("npm")
 
-    if start_postgres:
-        docker = require_command("docker")
-        print("Starting PostgreSQL...", flush=True)
-        run_checked([docker, "compose", "up", "-d", "postgres"], cwd=ROOT)
     ensure_frontend_dependencies(npm)
 
     backend_command = [
@@ -144,7 +130,7 @@ def main(*, start_postgres: bool = False) -> int:
 
 if __name__ == "__main__":
     try:
-        raise SystemExit(main(start_postgres=should_start_postgres(sys.argv[1:])))
+        raise SystemExit(main())
     except (OSError, RuntimeError, subprocess.CalledProcessError) as error:
         print(f"Unable to start development environment: {error}", file=sys.stderr)
         raise SystemExit(1) from error

@@ -18,7 +18,7 @@ class TransientColonyEvent:
 
 
 class ColonyEventNotifier:
-    """Wake local streams while keeping PostgreSQL as the event source of truth."""
+    """Wake local streams while persisted events remain the source of truth."""
 
     def __init__(self) -> None:
         self._condition = asyncio.Condition()

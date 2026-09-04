@@ -1,6 +1,7 @@
 """Typed application configuration loaded from environment variables."""
 
 from functools import lru_cache
+from pathlib import Path
 from typing import Literal
 
 from pydantic import Field
@@ -15,9 +16,9 @@ class Settings(BaseSettings):
         validation_alias="AGENTLOOM_ENV",
     )
     log_level: str = Field(default="INFO", validation_alias="AGENTLOOM_LOG_LEVEL")
-    database_url: str = Field(
-        default="postgresql+asyncpg://agentloom:agentloom@localhost:15432/agentloom",
-        validation_alias="AGENTLOOM_DATABASE_URL",
+    storage_root: Path = Field(
+        default=Path("~/.agentloom"),
+        validation_alias="AGENTLOOM_HOME",
     )
     llm_provider: Literal["mock", "litellm"] = Field(
         default="mock",

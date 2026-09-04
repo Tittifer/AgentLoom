@@ -1,13 +1,7 @@
-.PHONY: dev dev-docker dev-stop test test-frontend e2e check release-check
+.PHONY: dev test test-frontend e2e check release-check
 
 dev:
 	uv run --locked python dev.py
-
-dev-docker:
-	uv run --locked python dev.py --with-docker
-
-dev-stop:
-	docker compose stop postgres
 
 test:
 	uv run --locked pytest --cov=agentloom --cov-report=term-missing
@@ -34,7 +28,6 @@ release-check:
 	uv run --locked ruff check .
 	uv run --locked pyright
 	uv run --locked pytest -m "not live" --cov=agentloom --cov-report=term-missing
-	uv run --locked alembic upgrade head
 	npm --prefix frontend ci
 	npm --prefix frontend run lint
 	npm --prefix frontend run typecheck

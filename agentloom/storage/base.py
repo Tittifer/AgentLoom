@@ -1,0 +1,79 @@
+"""Shared filesystem primitives for local persistence."""
+
+from __future__ import annotations
+
+import json
+import os
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any, cast
+from uuid import uuid4
+
+
+def utc_now() -> datetime:
+    """Return a timezone-aware UTC timestamp."""
+
+    return datetime.now(UTC)
+
+
+def read_json(path: Path) -> dict[str, Any]:
+    """Read one required JSON object."""
+
+    with path.open(encoding="utf-8") as handle:
+        value = cast(object, json.load(handle))
+    if not isinstance(value, dict):
+        raise ValueError(f"Expected a JSON object in {path}")
+    return cast(dict[str, Any], value)
+
+
+def atomic_write_json(path: Path, value: dict[str, Any]) -> None:
+    """Durably replace a JSON document without exposing partial content."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+    try:
+        with temporary.open("x", encoding="utf-8", newline="\n") as handle:
+            json.dump(value, handle, ensure_ascii=False, separators=(",", ":"))
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def read_json_lines(path: Path) -> list[dict[str, Any]]:
+    """Read an append-only JSONL document."""
+
+    if not path.exists():
+        return []
+    records: list[dict[str, Any]] = []
+    with path.open(encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, start=1):
+            if not line.strip():
+                continue
+            value = cast(object, json.loads(line))
+            if not isinstance(value, dict):
+                raise ValueError(f"Expected a JSON object in {path}:{line_number}")
+            records.append(cast(dict[str, Any], value))
+    return records
+
+
+def append_json_line(path: Path, value: dict[str, Any]) -> None:
+    """Durably append one compact JSON record."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":")) + "\n"
+    with path.open("a", encoding="utf-8", newline="\n") as handle:
+        handle.write(encoded)
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
+__all__ = [
+    "append_json_line",
+    "atomic_write_json",
+    "read_json",
+    "read_json_lines",
+    "utc_now",
+]

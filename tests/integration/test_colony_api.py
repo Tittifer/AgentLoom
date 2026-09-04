@@ -1,38 +1,28 @@
-"""PostgreSQL integration tests for the Colony HTTP workflow."""
+"""Local-storage integration tests for the Colony HTTP workflow."""
 
 import asyncio
 from collections.abc import AsyncIterator
-from typing import cast
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import delete
 
 from agentloom.colony.schemas import ColonyRead, ColonySnapshot, MessageRead
 from agentloom.config import Settings
-from agentloom.db.models.colony import ColonyModel
-from agentloom.db.session import DatabaseSessionManager
 from agentloom.main import create_app
 
 
 @pytest.fixture
-async def colony_client() -> AsyncIterator[tuple[AsyncClient, str]]:
-    app = create_app(Settings(environment="test", log_level="WARNING"))
-    database = cast(DatabaseSessionManager, app.state.database)
+async def colony_client(tmp_path: Path) -> AsyncIterator[tuple[AsyncClient, str]]:
+    app = create_app(Settings(environment="test", log_level="WARNING", storage_root=tmp_path))
     prefix = f"Colony test {uuid4().hex}"
     async with app.router.lifespan_context(app):
-        try:
-            async with AsyncClient(
-                transport=ASGITransport(app=app),
-                base_url="http://test",
-            ) as client:
-                yield client, prefix
-        finally:
-            async with database.session_factory.begin() as session:
-                await session.execute(
-                    delete(ColonyModel).where(ColonyModel.name.like(f"{prefix}%"))
-                )
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+        ) as client:
+            yield client, prefix
 
 
 async def test_colony_api_creates_chats_and_lists(colony_client: tuple[AsyncClient, str]) -> None:
