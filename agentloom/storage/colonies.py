@@ -439,6 +439,7 @@ class LocalColonyStore:
             sequence=sequence,
             role=message.role,
             content=sanitize_text(message.content),
+            reasoning_content=message.reasoning_content,
             tool_call_id=message.tool_call_id,
             tool_calls=calls,
             metadata=JSON_OBJECT.validate_python(
@@ -446,7 +447,10 @@ class LocalColonyStore:
             ),
             created_at=utc_now(),
         )
-        self._write_model(parts / f"{sequence:010d}.json", saved)
+        payload = saved.model_dump(mode="json")
+        if saved.reasoning_content is not None:
+            payload["reasoning_content"] = saved.reasoning_content
+        atomic_write_json(parts / f"{sequence:010d}.json", payload)
         return saved
 
     def _list_messages_sync(self, colony_id: UUID, session_id: UUID) -> list[MessageRead]:
@@ -476,7 +480,7 @@ class LocalColonyStore:
                 park_reason=None,
                 task={"description": task.task, "data": task.data},
                 cursor={"iteration": 0, "phase": "queued"},
-                budget={"max_turns": 8, "max_tool_calls": 12},
+                budget={"max_turns": 8, "max_tool_calls": 30},
                 usage={"input_tokens": 0, "output_tokens": 0, "tool_calls": 0},
                 created_at=now,
                 updated_at=now,

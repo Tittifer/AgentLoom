@@ -1,5 +1,6 @@
 """Tests for file-backed Colony aggregate storage."""
 
+import json
 from pathlib import Path
 from uuid import uuid4
 
@@ -53,6 +54,36 @@ async def test_colony_state_uses_files_and_one_tracker_database(tmp_path: Path) 
     assert await store.list_tracker(colony.id) == [tracker]
 
 
+async def test_reasoning_content_is_persisted_but_not_publicly_serialized(
+    tmp_path: Path,
+) -> None:
+    store = await create_store(tmp_path)
+    colony, queen = await store.create("Reasoning", "", "general", "mock/schema", {})
+    reasoning = "  internal reasoning  "
+
+    message = await store.append_message(
+        queen.id,
+        LLMMessage(role="assistant", content="完成", reasoning_content=reasoning),
+    )
+
+    assert message is not None and message.reasoning_content == reasoning
+    message_path = (
+        tmp_path
+        / "colonies"
+        / str(colony.id)
+        / "sessions"
+        / str(queen.id)
+        / "conversations"
+        / "parts"
+        / "0000000001.json"
+    )
+    stored = json.loads(message_path.read_text(encoding="utf-8"))
+    assert stored["reasoning_content"] == reasoning
+    loaded = await store.list_messages(queen.id)
+    assert loaded is not None and loaded[0].reasoning_content == reasoning
+    assert "reasoning_content" not in loaded[0].model_dump(mode="json")
+
+
 async def test_workers_tasks_status_and_delete_are_persisted(tmp_path: Path) -> None:
     store = await create_store(tmp_path)
     colony, queen = await store.create("Work", "", "general", "mock/schema", {})
@@ -72,6 +103,7 @@ async def test_workers_tasks_status_and_delete_are_persisted(tmp_path: Path) -> 
     assert finished is not None and finished.report == {"summary": "done"}
     worker_session = await store.get_session(running.worker_session_id)
     assert worker_session is not None and worker_session.status is SessionStatus.COMPLETED
+    assert worker_session.budget["max_tool_calls"] == 30
 
     task = await store.create_task_item(
         colony.id,

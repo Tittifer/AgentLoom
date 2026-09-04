@@ -1,21 +1,32 @@
 """Unit tests for Colony runtime tool boundaries."""
 
+import asyncio
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
+
+from pytest import MonkeyPatch
 
 from agentloom.agents.loop import LoopContext
 from agentloom.colony.notifier import ColonyEventNotifier
 from agentloom.colony.runtime import (
     ColonyRuntime,
+    FileAgentLoopStore,
     conversation_name_from_message,
     normalize_message_history,
 )
-from agentloom.colony.schemas import ColonyRead, JsonObject, MessageRead, SessionRead
+from agentloom.colony.schemas import (
+    ColonyRead,
+    JsonObject,
+    MessageRead,
+    SessionRead,
+    WorkerTask,
+)
 from agentloom.config import Settings
-from agentloom.llm.base import ToolCall
+from agentloom.llm.base import LLMMessage, ToolCall
 from agentloom.llm.mock import SchemaMockLLMProvider
-from agentloom.runtime.states import ColonyStatus, SessionStatus
+from agentloom.runtime.states import ColonyStatus, SessionStatus, WorkerStatus
 from agentloom.storage import LocalColonyStore
 from agentloom.tools.registry import create_builtin_tool_registry
 
@@ -25,6 +36,7 @@ def message(
     role: str,
     *,
     content: str = "",
+    reasoning_content: str | None = None,
     tool_call_id: str | None = None,
     tool_calls: list[JsonObject] | None = None,
 ) -> MessageRead:
@@ -34,6 +46,7 @@ def message(
         sequence=sequence,
         role=role,
         content=content,
+        reasoning_content=reasoning_content,
         tool_call_id=tool_call_id,
         tool_calls=tool_calls or [],
         metadata={},
@@ -72,6 +85,7 @@ def test_runtime_preserves_complete_tool_call_history() -> None:
             1,
             "assistant",
             tool_calls=[{"id": "call-1", "name": "task_update", "arguments": {}}],
+            reasoning_content="  preserved reasoning  ",
         ),
         message(2, "tool", content="已更新", tool_call_id="call-1"),
     ]
@@ -81,11 +95,98 @@ def test_runtime_preserves_complete_tool_call_history() -> None:
     assert repaired_groups == 0
     assert [item.role for item in normalized] == ["assistant", "tool"]
     assert normalized[0].tool_calls[0].id == "call-1"
+    assert normalized[0].reasoning_content == "  preserved reasoning  "
 
 
 def test_conversation_name_comes_from_first_message() -> None:
     assert conversation_name_from_message("  帮我\n制定计划  ") == "帮我 制定计划"
     assert conversation_name_from_message("一" * 40) == "一" * 32 + "…"
+
+
+async def test_loop_store_injects_authoritative_worker_report_status(tmp_path: Path) -> None:
+    store = LocalColonyStore(tmp_path)
+    await store.initialize()
+    _, queen = await store.create("Status", "", "general", "mock/schema", {})
+    workers = await store.create_workers(
+        queen.id,
+        [WorkerTask(task="杭州"), WorkerTask(task="成都")],
+        30,
+    )
+    loop_store = FileAgentLoopStore(store, ColonyEventNotifier())
+
+    await store.finish_worker(
+        workers[0].worker_session_id,
+        WorkerStatus.COMPLETED,
+        report={"summary": "杭州完成"},
+    )
+    await store.append_message(
+        queen.id,
+        LLMMessage(role="user", content="[WORKER_REPORT]\n杭州完成"),
+        metadata={"worker_run_id": str(workers[0].id)},
+    )
+
+    partial = await loop_store.load(queen.id)
+    assert partial is not None and partial.messages[-1].role == "system"
+    partial_status = json.loads(partial.messages[-1].content.removeprefix("[WORKER_STATUS]\n"))
+    assert partial_status["received_reports"] == 1
+    assert partial_status["pending_workers"][0]["task"] == "成都"
+
+    await store.finish_worker(
+        workers[1].worker_session_id,
+        WorkerStatus.COMPLETED,
+        report={"summary": "成都完成"},
+    )
+    await store.append_message(
+        queen.id,
+        LLMMessage(role="user", content="[WORKER_REPORT]\n成都完成"),
+        metadata={"worker_run_id": str(workers[1].id)},
+    )
+
+    complete = await loop_store.load(queen.id)
+    assert complete is not None
+    complete_status = json.loads(complete.messages[-1].content.removeprefix("[WORKER_STATUS]\n"))
+    assert complete_status["received_reports"] == 2
+    assert complete_status["pending_workers"] == []
+    assert "不得声称仍在等待" in complete_status["instruction"]
+
+
+async def test_background_task_failures_are_consumed_and_logged(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    events: list[tuple[str, dict[str, object]]] = []
+
+    class RecordingLogger:
+        def error(self, event: str, **values: object) -> None:
+            events.append((event, values))
+
+    def get_logger(*args: object, **kwargs: object) -> RecordingLogger:
+        del args, kwargs
+        return RecordingLogger()
+
+    monkeypatch.setattr("agentloom.colony.runtime.structlog.get_logger", get_logger)
+    settings = Settings(environment="test", storage_root=tmp_path)
+    runtime = ColonyRuntime(
+        LocalColonyStore(tmp_path),
+        SchemaMockLLMProvider(),
+        ColonyEventNotifier(),
+        settings,
+        create_builtin_tool_registry(),
+    )
+
+    async def fail() -> None:
+        raise RuntimeError("token=secret-value")
+
+    runtime._schedule(fail())  # pyright: ignore[reportPrivateUsage]
+    while runtime._background_tasks:  # pyright: ignore[reportPrivateUsage]
+        await asyncio.sleep(0)
+
+    assert events == [
+        (
+            "background_task_failed",
+            {"error_type": "RuntimeError", "error": "token=[REDACTED]"},
+        )
+    ]
 
 
 async def test_runtime_exposes_actor_tools_and_executes_builtin(tmp_path: Path) -> None:

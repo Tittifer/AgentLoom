@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Protocol
 from uuid import UUID, uuid4
 
+import structlog
 from pydantic import JsonValue
 
 from agentloom.agents.judge import JudgePipeline
@@ -108,12 +109,15 @@ class AgentLoop:
         self._judge = judge
         self._default_max_turns = default_max_turns
         self._timeout_seconds = timeout_seconds
+        self._logger = structlog.get_logger(__name__)
 
     async def run(self, session_id: UUID) -> None:
         context = await self._store.load(session_id)
-        if context is None or not await self._store.mark_running(context):
+        if context is None:
             return
         try:
+            if not await self._store.mark_running(context):
+                return
             await self._run(context)
         except asyncio.CancelledError:
             raise
@@ -176,6 +180,19 @@ class AgentLoop:
                 stream_visible = False
             usage["input_tokens"] += response.input_tokens
             usage["output_tokens"] += response.output_tokens
+            self._logger.info(
+                "agent_turn_usage",
+                session_id=str(context.session.id),
+                actor_type=context.session.actor_type,
+                model=response.model,
+                iteration=iteration,
+                input_tokens=response.input_tokens,
+                output_tokens=response.output_tokens,
+                tool_calls=len(response.tool_calls),
+                total_input_tokens=usage["input_tokens"],
+                total_output_tokens=usage["output_tokens"],
+                total_tool_calls=usage["tool_calls"] + len(response.tool_calls),
+            )
             if (
                 response.tool_calls
                 and usage["tool_calls"] + len(response.tool_calls) > max_tool_calls
@@ -185,6 +202,7 @@ class AgentLoop:
             assistant = LLMMessage(
                 role="assistant",
                 content=content,
+                reasoning_content=response.reasoning_content,
                 tool_calls=response.tool_calls,
             )
             messages.append(assistant)

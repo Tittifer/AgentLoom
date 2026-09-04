@@ -92,4 +92,26 @@ describe("ChatPanel", () => {
     expect(screen.getByText("正在生成")).toBeInTheDocument();
     expect(container.querySelector(".agent-waiting")).not.toBeInTheDocument();
   });
+
+  it("renders assistant Markdown for persisted and streaming messages", () => {
+    const markdownMessage = {
+      ...message,
+      content: "## 城市推荐\n\n| 城市 | 特色 |\n| --- | --- |\n| 成都 | **熊猫** |",
+    };
+    const { container } = render(
+      <ChatPanel
+        activeWorkerCount={0}
+        messages={[markdownMessage]}
+        onSend={vi.fn(async () => undefined)}
+        sending={false}
+        session={{ ...session, status: "running" }}
+        streamingMessage={{ id: "stream-2", content: "### 正在汇总\n\n- 杭州" }}
+      />,
+    );
+
+    expect(screen.getByRole("heading", { level: 2, name: "城市推荐" })).toBeInTheDocument();
+    expect(screen.getByRole("table")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 3, name: "正在汇总" })).toBeInTheDocument();
+    expect(container.querySelector(".streaming-cursor")).toBeInTheDocument();
+  });
 });

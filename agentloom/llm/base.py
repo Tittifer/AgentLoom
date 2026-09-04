@@ -1,12 +1,13 @@
 """Provider-neutral language-model request and response contracts."""
 
 from collections.abc import AsyncIterator
-from typing import Literal, Protocol
+from typing import Annotated, Literal, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, StringConstraints
 
 JsonObject = dict[str, JsonValue]
 MessageRole = Literal["system", "user", "assistant", "tool", "reviewer"]
+ReasoningContent = Annotated[str, StringConstraints(strip_whitespace=False)]
 
 
 class LLMModel(BaseModel):
@@ -37,6 +38,7 @@ class LLMMessage(LLMModel):
 
     role: MessageRole
     content: str
+    reasoning_content: ReasoningContent | None = None
     tool_call_id: str | None = None
     tool_calls: list[ToolCall] = Field(default_factory=lambda: list[ToolCall]())
 
@@ -55,6 +57,7 @@ class LLMResponse(LLMModel):
     """Normalized completion result returned by every provider."""
 
     content: str | None = None
+    reasoning_content: ReasoningContent | None = None
     structured_output: JsonObject | None = None
     tool_calls: list[ToolCall] = Field(default_factory=lambda: list[ToolCall]())
     input_tokens: int = Field(default=0, ge=0)
@@ -101,6 +104,7 @@ __all__ = [
     "LLMStreamChunk",
     "LLMTimeoutError",
     "MessageRole",
+    "ReasoningContent",
     "ToolCall",
     "ToolDefinition",
 ]

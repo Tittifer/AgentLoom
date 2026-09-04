@@ -201,6 +201,36 @@ h3 { margin: 1.25rem 0 .5rem; font-size: .9rem; }
 .role-assistant .message-surface { border: 1px solid #dfe5ee; border-top-left-radius: 5px; background: white; box-shadow: 0 5px 18px rgb(15 23 42 / 5%); }
 .chat-message header { display: flex; gap: 1rem; justify-content: space-between; margin-bottom: .45rem; font-size: .66rem; opacity: .72; }
 .chat-message p { white-space: pre-wrap; }
+.markdown-content { min-width: 0; color: #334155; overflow-wrap: anywhere; }
+.markdown-content > :first-child { margin-top: 0; }
+.markdown-content > :last-child { margin-bottom: 0; }
+.markdown-content h1, .markdown-content h2, .markdown-content h3,
+.markdown-content h4, .markdown-content h5, .markdown-content h6 {
+  margin: 1rem 0 .45rem; color: #172033; line-height: 1.35;
+}
+.markdown-content h1 { font-size: 1.3rem; }
+.markdown-content h2 { font-size: 1.12rem; }
+.markdown-content h3 { font-size: 1rem; }
+.markdown-content h4, .markdown-content h5, .markdown-content h6 { font-size: .9rem; }
+.markdown-content p { margin: .45rem 0; }
+.markdown-content ul, .markdown-content ol { margin: .45rem 0; padding-left: 1.35rem; }
+.markdown-content li + li { margin-top: .2rem; }
+.markdown-content hr { height: 1px; margin: .9rem 0; border: 0; background: #e2e8f0; }
+.markdown-content blockquote {
+  margin: .65rem 0; padding: .2rem 0 .2rem .75rem; border-left: 3px solid #9aace2; color: #64748b;
+}
+.markdown-content a { color: #315bd6; text-decoration: underline; text-underline-offset: 2px; }
+.markdown-content code { padding: .08rem .28rem; border-radius: 4px; background: #eef2f8; font-size: .86em; }
+.markdown-code-block {
+  max-width: 100%; margin: .65rem 0; padding: .75rem; overflow-x: auto; border-radius: 8px;
+  color: #e2e8f0; background: #172033; white-space: pre;
+}
+.markdown-code-block code { padding: 0; color: inherit; background: transparent; }
+.markdown-table-wrap { max-width: 100%; margin: .65rem 0; overflow-x: auto; }
+.markdown-content table { width: 100%; min-width: 420px; border-collapse: collapse; font-size: .78rem; }
+.markdown-content th, .markdown-content td { padding: .5rem .6rem; border: 1px solid #dbe3ee; vertical-align: top; }
+.markdown-content th { color: #24324b; background: #f4f7fb; font-weight: 750; }
+.markdown-content tbody tr:nth-child(even) { background: #fafbfc; }
 .streaming-cursor {
   display: inline-block; width: 2px; height: 1em; margin-left: 3px; vertical-align: -.12em;
   border-radius: 999px; background: #315bd6; animation: cursor-blink .8s steps(1) infinite;

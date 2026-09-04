@@ -12,7 +12,7 @@ def test_llm_response_format_defaults_to_strict_json_schema() -> None:
     settings = Settings.model_validate({})
 
     assert settings.llm_response_format == "json_schema"
-    assert settings.storage_root == Path("~/.agentloom")
+    assert settings.storage_root == Path(".agentloom")
 
 
 def test_llm_response_format_accepts_json_object() -> None:

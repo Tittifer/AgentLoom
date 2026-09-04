@@ -1,6 +1,7 @@
 """Persistent Queen/Worker Colony runtime and lifecycle commands."""
 
 import asyncio
+import json
 from collections.abc import Coroutine
 from typing import Literal
 from uuid import UUID
@@ -15,6 +16,7 @@ from agentloom.agents.loop import (
     LoopContext,
     ToolExecutionResult,
 )
+from agentloom.colony.message_safety import sanitize_text
 from agentloom.colony.notifier import ColonyEventNotifier
 from agentloom.colony.schemas import (
     ActorType,
@@ -91,6 +93,7 @@ def normalize_message_history(messages: list[MessageRead]) -> tuple[list[LLMMess
             {
                 "role": item.role,
                 "content": item.content,
+                "reasoning_content": item.reasoning_content,
                 "tool_call_id": item.tool_call_id,
                 "tool_calls": item.tool_calls,
             }
@@ -105,6 +108,7 @@ def normalize_message_history(messages: list[MessageRead]) -> tuple[list[LLMMess
                         {
                             "role": tool_item.role,
                             "content": tool_item.content,
+                            "reasoning_content": tool_item.reasoning_content,
                             "tool_call_id": tool_item.tool_call_id,
                             "tool_calls": tool_item.tool_calls,
                         }
@@ -129,6 +133,52 @@ def normalize_message_history(messages: list[MessageRead]) -> tuple[list[LLMMess
     return normalized, repaired_groups
 
 
+def _worker_status_context(
+    workers: list[WorkerRead],
+    messages: list[MessageRead],
+) -> LLMMessage | None:
+    """Build transient, authoritative Worker progress for a Queen model turn."""
+
+    if not workers:
+        return None
+    reported_ids = {
+        worker_id
+        for message in messages
+        if isinstance((worker_id := message.metadata.get("worker_run_id")), str)
+    }
+    pending = [worker for worker in workers if str(worker.id) not in reported_ids]
+    terminal_statuses = {
+        WorkerStatus.COMPLETED,
+        WorkerStatus.PARTIAL,
+        WorkerStatus.FAILED,
+        WorkerStatus.TIMED_OUT,
+        WorkerStatus.CANCELLED,
+    }
+    all_workers_terminal = all(worker.status in terminal_statuses for worker in workers)
+    if not pending:
+        instruction = "所有 Worker 报告均已收到。立即综合全部报告完成最终答复，不得声称仍在等待。"
+    elif all_workers_terminal:
+        instruction = (
+            "所有 Worker 均已结束，不会再有新报告。立即使用现有报告完成最终答复，"
+            "并明确说明无报告的失败项。"
+        )
+    else:
+        instruction = "仍有 Worker 尚未报告；只可等待下列未报告项，不得把已报告项说成未完成。"
+    payload = {
+        "total_workers": len(workers),
+        "received_reports": len(workers) - len(pending),
+        "pending_workers": [
+            {"worker_id": str(worker.id), "task": worker.task, "status": worker.status}
+            for worker in pending
+        ],
+        "instruction": instruction,
+    }
+    return LLMMessage(
+        role="system",
+        content="[WORKER_STATUS]\n" + json.dumps(payload, ensure_ascii=False),
+    )
+
+
 class FileAgentLoopStore(AgentLoopStore):
     """Persist AgentLoop messages, checkpoints, and events locally."""
 
@@ -150,6 +200,13 @@ class FileAgentLoopStore(AgentLoopStore):
         if colony is None or messages is None:
             return None
         normalized, repaired_groups = normalize_message_history(messages)
+        if agent_session.actor_type == "queen":
+            status_context = _worker_status_context(
+                await self._store.list_workers(agent_session.colony_id),
+                messages,
+            )
+            if status_context is not None:
+                normalized.append(status_context)
         if repaired_groups:
             self._logger.warning(
                 "incomplete_tool_history_repaired",
@@ -277,6 +334,13 @@ class FileAgentLoopStore(AgentLoopStore):
         await self._notifier.notify(context.session.colony_id)
 
     async def fail(self, context: LoopContext, error: Exception) -> None:
+        self._logger.error(
+            "agent_session_failed",
+            session_id=str(context.session.id),
+            actor_type=context.session.actor_type,
+            error_type=type(error).__name__,
+            error=sanitize_text(str(error)),
+        )
         await self._store.set_session_status(context.session.id, SessionStatus.FAILED)
         worker = await self._store.get_worker_for_session(context.session.id)
         if worker is not None:
@@ -706,7 +770,19 @@ class ColonyRuntime:
             return
         task = asyncio.create_task(coroutine)
         self._background_tasks.add(task)
-        task.add_done_callback(self._background_tasks.discard)
+        task.add_done_callback(self._background_task_done)
+
+    def _background_task_done(self, task: asyncio.Task[None]) -> None:
+        self._background_tasks.discard(task)
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is not None:
+            self._logger.error(
+                "background_task_failed",
+                error_type=type(error).__name__,
+                error=sanitize_text(str(error)),
+            )
 
     @staticmethod
     def _tool_error(code: str, message: str) -> ToolExecutionResult:

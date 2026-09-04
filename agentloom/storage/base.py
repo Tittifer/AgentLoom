@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 from uuid import uuid4
+
+ATOMIC_REPLACE_ATTEMPTS = 5
+ATOMIC_REPLACE_RETRY_SECONDS = 0.01
 
 
 def utc_now() -> datetime:
@@ -37,7 +41,14 @@ def atomic_write_json(path: Path, value: dict[str, Any]) -> None:
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, path)
+        for attempt in range(ATOMIC_REPLACE_ATTEMPTS):
+            try:
+                os.replace(temporary, path)
+                break
+            except PermissionError:
+                if attempt == ATOMIC_REPLACE_ATTEMPTS - 1:
+                    raise
+                time.sleep(ATOMIC_REPLACE_RETRY_SECONDS * (2**attempt))
     finally:
         temporary.unlink(missing_ok=True)
 

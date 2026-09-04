@@ -48,6 +48,7 @@ class LiteMessage(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     content: str | None = None
+    reasoning_content: str | None = None
     parsed: dict[str, JsonValue] | None = None
     tool_calls: list[LiteToolCall] | None = None
 
@@ -92,6 +93,7 @@ class LiteDelta(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     content: str | None = None
+    reasoning_content: str | None = None
     tool_calls: list[LiteDeltaToolCall] | None = None
 
 
@@ -150,6 +152,7 @@ class LiteLLMProvider:
 
         parameters = self._parameters(request, stream=True)
         content_parts: list[str] = []
+        reasoning_parts: list[str] = []
         tool_calls: dict[int, ToolCallBuffer] = {}
         model = request.model
         usage = LiteUsage()
@@ -175,6 +178,8 @@ class LiteLLMProvider:
                     if delta.content:
                         content_parts.append(delta.content)
                         yield LLMStreamChunk(content_delta=delta.content)
+                    if delta.reasoning_content:
+                        reasoning_parts.append(delta.reasoning_content)
                     if delta.tool_calls:
                         for tool_delta in delta.tool_calls:
                             buffer = tool_calls.setdefault(tool_delta.index, ToolCallBuffer())
@@ -194,6 +199,7 @@ class LiteLLMProvider:
             raise LLMResponseError(f"LiteLLM stream failed: {error}") from error
 
         content = "".join(content_parts) or None
+        reasoning_content = "".join(reasoning_parts) or None
         normalized_calls = [
             _normalize_tool_call(
                 LiteToolCall(
@@ -206,6 +212,7 @@ class LiteLLMProvider:
         yield LLMStreamChunk(
             response=LLMResponse(
                 content=content,
+                reasoning_content=reasoning_content,
                 structured_output=_structured_output(content, request),
                 tool_calls=normalized_calls,
                 input_tokens=usage.prompt_tokens,
@@ -215,9 +222,13 @@ class LiteLLMProvider:
         )
 
     def _parameters(self, request: LLMRequest, *, stream: bool) -> dict[str, object]:
+        fill_missing_reasoning = _requires_reasoning_content(request.model)
         parameters: dict[str, object] = {
             "model": request.model,
-            "messages": [_message_payload(message) for message in request.messages],
+            "messages": [
+                _message_payload(message, fill_missing_reasoning=fill_missing_reasoning)
+                for message in request.messages
+            ],
             "stream": stream,
             "timeout": request.timeout_seconds,
         }
@@ -258,7 +269,11 @@ def _load_default_completion() -> CompletionCallable:
     )
 
 
-def _message_payload(message: object) -> dict[str, object]:
+def _message_payload(
+    message: object,
+    *,
+    fill_missing_reasoning: bool = False,
+) -> dict[str, object]:
     from agentloom.llm.base import LLMMessage
 
     normalized = LLMMessage.model_validate(message)
@@ -266,6 +281,14 @@ def _message_payload(message: object) -> dict[str, object]:
         "role": normalized.role,
         "content": normalized.content,
     }
+    if (
+        fill_missing_reasoning
+        and normalized.role == "assistant"
+        and not normalized.reasoning_content
+    ):
+        payload["reasoning_content"] = " "
+    elif normalized.reasoning_content is not None:
+        payload["reasoning_content"] = normalized.reasoning_content
     if normalized.tool_call_id is not None:
         payload["tool_call_id"] = normalized.tool_call_id
     if normalized.tool_calls:
@@ -283,6 +306,10 @@ def _message_payload(message: object) -> dict[str, object]:
     return payload
 
 
+def _requires_reasoning_content(model: str) -> bool:
+    return any(part.startswith("deepseek") for part in model.lower().split("/"))
+
+
 def _normalize_response(raw_response: object, request: LLMRequest) -> LLMResponse:
     try:
         response = LiteResponse.model_validate(_response_mapping(raw_response))
@@ -295,6 +322,7 @@ def _normalize_response(raw_response: object, request: LLMRequest) -> LLMRespons
 
     return LLMResponse(
         content=message.content,
+        reasoning_content=message.reasoning_content,
         structured_output=structured_output,
         tool_calls=tool_calls,
         input_tokens=response.usage.prompt_tokens,

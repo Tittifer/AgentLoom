@@ -3,6 +3,7 @@ import { FormEvent, useEffect, useRef, useState } from "react";
 import type { MessageRead, SessionRead } from "../api/colonies";
 import type { StreamingAssistantMessage } from "../hooks/useColonyEvents";
 import { formatDateTime } from "../utils/format";
+import { MarkdownContent } from "./MarkdownContent";
 
 interface ChatPanelProps {
   session: SessionRead;
@@ -81,7 +82,11 @@ export function ChatPanel({
                 <strong>{roleText(message.role)}</strong>
                 <time>{formatDateTime(message.created_at)}</time>
               </header>
-              <p>{message.content}</p>
+              {message.role === "assistant" ? (
+                <MarkdownContent content={message.content} />
+              ) : (
+                <p>{message.content}</p>
+              )}
             </div>
           </article>
         ))}
@@ -90,10 +95,10 @@ export function ChatPanel({
             <span className="message-avatar" aria-hidden="true">AL</span>
             <div className="message-surface">
               <header><strong>AgentLoom</strong><span>正在生成</span></header>
-              <p>
-                {streamingMessage.content}
-                <span className="streaming-cursor" aria-hidden="true" />
-              </p>
+              <MarkdownContent
+                content={streamingMessage.content}
+                trailing={<span className="streaming-cursor" aria-hidden="true" />}
+              />
             </div>
           </article>
         ) : null}

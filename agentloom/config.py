@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     )
     log_level: str = Field(default="INFO", validation_alias="AGENTLOOM_LOG_LEVEL")
     storage_root: Path = Field(
-        default=Path("~/.agentloom"),
+        default=Path(".agentloom"),
         validation_alias="AGENTLOOM_HOME",
     )
     llm_provider: Literal["mock", "litellm"] = Field(

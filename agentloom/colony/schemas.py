@@ -5,6 +5,7 @@ from uuid import UUID
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, JsonValue
 
+from agentloom.llm.base import ReasoningContent
 from agentloom.runtime.states import ColonyStatus, SessionStatus, TaskItemStatus, WorkerStatus
 
 JsonObject = dict[str, JsonValue]
@@ -65,6 +66,7 @@ class MessageRead(ColonyModel):
     sequence: int = Field(gt=0)
     role: str
     content: str
+    reasoning_content: ReasoningContent | None = Field(default=None, exclude=True, repr=False)
     tool_call_id: str | None
     tool_calls: list[JsonObject]
     metadata: JsonObject

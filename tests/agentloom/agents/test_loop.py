@@ -3,6 +3,8 @@
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
+from pytest import MonkeyPatch
+
 from agentloom.agents.judge import JudgePipeline
 from agentloom.agents.loop import AgentLoop, LoopContext, ToolExecutionResult
 from agentloom.colony.schemas import ColonyRead, MessageRead, SessionRead
@@ -139,17 +141,28 @@ class FakeTools:
         self.finalized.append(content)
 
 
+class RecordingLogger:
+    def __init__(self) -> None:
+        self.events: list[tuple[str, dict[str, object]]] = []
+
+    def info(self, event: str, **values: object) -> None:
+        self.events.append((event, values))
+
+
 async def test_agent_loop_finishes_visible_response() -> None:
     context = make_context()
     store = FakeStore(context)
     tools = FakeTools()
-    provider = ScriptedMockLLMProvider([LLMResponse(content="完成", model="mock/test")])
+    provider = ScriptedMockLLMProvider(
+        [LLMResponse(content="完成", reasoning_content="内部推理", model="mock/test")]
+    )
     loop = AgentLoop(
         store, provider, tools, JudgePipeline(), default_max_turns=2, timeout_seconds=1
     )
     await loop.run(context.session.id)
     assert store.finished
     assert tools.finalized == ["完成"]
+    assert store.messages[0].reasoning_content == "内部推理"
     assert provider.requests[0].messages[0].role == "system"
     assert [delta for _, delta in store.deltas] == ["完成"]
 
@@ -170,6 +183,57 @@ async def test_agent_loop_executes_tool_and_can_terminate() -> None:
     assert store.messages[-1].role == "tool"
     assert store.checkpoints == ["after_tools"]
     assert store.deltas == []
+
+
+async def test_agent_loop_logs_turn_usage_to_console_logger(monkeypatch: MonkeyPatch) -> None:
+    logger = RecordingLogger()
+
+    def get_logger(*args: object, **kwargs: object) -> RecordingLogger:
+        del args, kwargs
+        return logger
+
+    monkeypatch.setattr("agentloom.agents.loop.structlog.get_logger", get_logger)
+    context = make_context()
+    store = FakeStore(context)
+    provider = ScriptedMockLLMProvider(
+        [
+            LLMResponse(
+                content="完成",
+                reasoning_content="不得写入日志",
+                input_tokens=11,
+                output_tokens=7,
+                model="mock/test",
+            )
+        ]
+    )
+    loop = AgentLoop(
+        store,
+        provider,
+        FakeTools(),
+        JudgePipeline(),
+        default_max_turns=2,
+        timeout_seconds=1,
+    )
+
+    await loop.run(context.session.id)
+
+    assert logger.events == [
+        (
+            "agent_turn_usage",
+            {
+                "session_id": str(context.session.id),
+                "actor_type": "queen",
+                "model": "mock/test",
+                "iteration": 1,
+                "input_tokens": 11,
+                "output_tokens": 7,
+                "tool_calls": 0,
+                "total_input_tokens": 11,
+                "total_output_tokens": 7,
+                "total_tool_calls": 0,
+            },
+        )
+    ]
 
 
 async def test_agent_loop_returns_invalid_tool_arguments_to_model_for_retry() -> None:
@@ -222,6 +286,29 @@ async def test_agent_loop_persists_failure_after_turn_budget() -> None:
     await loop.run(context.session.id)
     assert store.failed is not None
     assert "最大" in str(store.failed) or "turn" in str(store.failed).lower()
+
+
+async def test_agent_loop_persists_mark_running_failure() -> None:
+    context = make_context()
+
+    class MarkRunningFailureStore(FakeStore):
+        async def mark_running(self, context: LoopContext) -> bool:
+            del context
+            raise PermissionError("session metadata is locked")
+
+    store = MarkRunningFailureStore(context)
+    loop = AgentLoop(
+        store,
+        ScriptedMockLLMProvider([]),
+        FakeTools(),
+        JudgePipeline(),
+        default_max_turns=2,
+        timeout_seconds=1,
+    )
+
+    await loop.run(context.session.id)
+
+    assert isinstance(store.failed, PermissionError)
 
 
 async def test_agent_loop_enforces_tool_call_budget() -> None:

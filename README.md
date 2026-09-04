@@ -49,7 +49,7 @@ Copy-Item .env.example .env
 ```dotenv
 AGENTLOOM_ENV=development
 AGENTLOOM_LOG_LEVEL=INFO
-AGENTLOOM_HOME=~/.agentloom
+AGENTLOOM_HOME=.agentloom
 
 AGENTLOOM_LLM_PROVIDER=mock
 AGENTLOOM_LLM_MODEL=mock/schema
@@ -61,7 +61,7 @@ AGENTLOOM_MAX_CONCURRENT_WORKERS=4
 AGENTLOOM_WORKER_TIMEOUT_SECONDS=600
 ```
 
-`AGENTLOOM_HOME` 是本地持久化根目录。每个 Colony 都是其中一个自包含目录；除每个 Colony 的 `tracker/tracker.db` 外，其余运行状态使用 JSON、JSONL 和普通文件保存。
+`AGENTLOOM_HOME` 是本地持久化根目录，默认指向项目目录下的 `.agentloom`。每个 Colony 都是其中一个自包含目录；除每个 Colony 的 `tracker/tracker.db` 外，其余运行状态使用 JSON、JSONL 和普通文件保存。
 
 ### 第三方 OpenAI 兼容模型
 

@@ -76,6 +76,9 @@ async def test_litellm_provider_normalizes_request_response_tools_and_usage() ->
     assert completion.parameters["stream"] is False
     assert completion.parameters["timeout"] == 1
     assert "tools" in completion.parameters
+    messages = completion.parameters["messages"]
+    assert isinstance(messages, list)
+    assert "reasoning_content" not in messages[0]
     assert completion.parameters["response_format"] == {
         "type": "json_schema",
         "json_schema": {
@@ -90,6 +93,63 @@ async def test_litellm_provider_normalizes_request_response_tools_and_usage() ->
     assert response.tool_calls[0].arguments == {"query": "value"}
     assert response.input_tokens == 11
     assert response.output_tokens == 7
+
+
+async def test_litellm_provider_round_trips_reasoning_content() -> None:
+    completion = RecordingCompletion(
+        {
+            "model": "provider/model-version",
+            "choices": [
+                {
+                    "message": {
+                        "content": "完成",
+                        "reasoning_content": "  provider reasoning  ",
+                    }
+                }
+            ],
+        }
+    )
+    reasoning_request = request().model_copy(
+        update={
+            "messages": [
+                LLMMessage(
+                    role="assistant",
+                    content="处理中",
+                    reasoning_content="  previous reasoning  ",
+                ),
+                LLMMessage(role="user", content="继续"),
+            ]
+        }
+    )
+
+    response = await LiteLLMProvider(completion).complete(reasoning_request)
+
+    messages = completion.parameters["messages"]
+    assert isinstance(messages, list)
+    assert messages[0]["reasoning_content"] == "  previous reasoning  "
+    assert response.reasoning_content == "  provider reasoning  "
+
+
+async def test_litellm_provider_fills_missing_reasoning_for_openai_routed_deepseek() -> None:
+    completion = RecordingCompletion(
+        {"choices": [{"message": {"content": "完成"}}]},
+    )
+    deepseek_request = request().model_copy(
+        update={
+            "model": "openai/deepseek-v4-flash",
+            "messages": [
+                LLMMessage(role="assistant", content="阶段性结果"),
+                LLMMessage(role="user", content="继续"),
+            ],
+        }
+    )
+
+    await LiteLLMProvider(completion).complete(deepseek_request)
+
+    messages = completion.parameters["messages"]
+    assert isinstance(messages, list)
+    assert messages[0]["reasoning_content"] == " "
+    assert "reasoning_content" not in messages[1]
 
 
 async def test_litellm_provider_supports_json_object_compatibility() -> None:
@@ -176,9 +236,10 @@ async def test_litellm_provider_converts_timeout() -> None:
 
 async def test_litellm_provider_streams_native_text_deltas_and_terminal_usage() -> None:
     async def chunks():  # type: ignore[no-untyped-def]
+        yield {"choices": [{"delta": {"reasoning_content": "  first "}}]}
         yield {
             "model": "provider/model-version",
-            "choices": [{"delta": {"content": '{"answer":"'}}],
+            "choices": [{"delta": {"reasoning_content": "second  ", "content": '{"answer":"'}}],
         }
         yield {"choices": [{"delta": {"content": "完成"}}]}
         yield {
@@ -198,6 +259,7 @@ async def test_litellm_provider_streams_native_text_deltas_and_terminal_usage() 
     response = streamed[-1].response
     assert response is not None
     assert response.content == '{"answer":"完成"}'
+    assert response.reasoning_content == "  first second  "
     assert response.structured_output == {"answer": "完成"}
     assert response.input_tokens == 13
     assert response.output_tokens == 4
