@@ -6,7 +6,7 @@ AgentLoom 是一个基于 Hive Colony 思路实现的持久化多智能体协作
 
 - Queen 多轮会话：用户可以持续补充信息、调整目标或追问结果。
 - 动态 Worker：Queen 通过 `run_worker` 即时创建一个或多个并行 Worker。
-- 独立 AgentLoop：Queen 保持一个长期运行循环，每个 Worker 创建自己的循环实例；两类智能体共用相同的模型调用、工具、质量检查、用量统计和持久化协议。
+- 独立 AgentLoop：每个 Queen 会话保持自己的长期循环，每个 Worker 创建自己的循环实例；两类智能体共用相同的模型调用、工具、质量检查、用量统计和持久化协议。
 - 共享状态：任务计划保存在会话文件中，每个 Colony 使用独立的 SQLite Tracker。
 - 可恢复执行：消息、会话游标、Worker 状态和事件均持久化；进程重启会重新排队被中断的执行。
 - 实时工作台：React 界面通过 SSE 展示 Queen、Worker、任务和 Tracker 的变化。

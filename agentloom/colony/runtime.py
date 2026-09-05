@@ -376,14 +376,7 @@ class ColonyRuntime:
         self._settings = settings
         self._tools = tools
         self._provider = provider
-        self._queen_loop = AgentLoop(
-            FileAgentLoopStore(store, notifier),
-            provider,
-            self,
-            JudgePipeline(),
-            default_max_turns=settings.queen_max_turns,
-            timeout_seconds=settings.llm_timeout_seconds,
-        )
+        self._queen_loops: dict[UUID, AgentLoop] = {}
         self._worker_semaphore = asyncio.Semaphore(settings.max_concurrent_workers)
         self._session_locks: dict[UUID, asyncio.Lock] = {}
         self._background_tasks: set[asyncio.Task[None]] = set()
@@ -407,6 +400,7 @@ class ColonyRuntime:
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
+        self._queen_loops.clear()
 
     async def create_colony(self, payload: ColonyCreate) -> ColonyRead:
         colony, queen = await self._storage.create(
@@ -429,9 +423,12 @@ class ColonyRuntime:
         return await self._storage.list_colonies()
 
     async def delete_colony(self, colony_id: UUID) -> None:
+        colony = await self._storage.get(colony_id)
         deleted = await self._storage.delete_colony(colony_id)
         if not deleted:
             raise ColonyNotFoundError(str(colony_id))
+        if colony is not None and colony.queen_session_id is not None:
+            self._queen_loops.pop(colony.queen_session_id, None)
         await self._notifier.notify(colony_id)
 
     async def get_snapshot(self, colony_id: UUID) -> ColonySnapshot:
@@ -761,6 +758,23 @@ class ColonyRuntime:
         await self._notifier.notify(context.session.colony_id)
         return item
 
+    def _build_queen_loop(self) -> AgentLoop:
+        return AgentLoop(
+            FileAgentLoopStore(self._storage, self._notifier),
+            self._provider,
+            self,
+            JudgePipeline(),
+            default_max_turns=self._settings.queen_max_turns,
+            timeout_seconds=self._settings.llm_timeout_seconds,
+        )
+
+    def _get_queen_loop(self, session_id: UUID) -> AgentLoop:
+        loop = self._queen_loops.get(session_id)
+        if loop is None:
+            loop = self._build_queen_loop()
+            self._queen_loops[session_id] = loop
+        return loop
+
     def _build_worker_loop(self) -> AgentLoop:
         return AgentLoop(
             FileAgentLoopStore(self._storage, self._notifier),
@@ -772,7 +786,7 @@ class ColonyRuntime:
         )
 
     async def _run_queen(self, session_id: UUID) -> None:
-        await self._run_serial(session_id, self._queen_loop)
+        await self._run_serial(session_id, self._get_queen_loop(session_id))
 
     async def _run_serial(self, session_id: UUID, loop: AgentLoop) -> None:
         lock = self._session_locks.setdefault(session_id, asyncio.Lock())

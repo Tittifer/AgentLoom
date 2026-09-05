@@ -208,6 +208,7 @@ async def test_each_worker_runs_with_an_independent_agent_loop(
         Settings(environment="test", storage_root=tmp_path),
         create_builtin_tool_registry(),
     )
+    queen_loop = runtime._get_queen_loop(queen.id)  # pyright: ignore[reportPrivateUsage]
     built_loops: list[AgentLoop] = []
     runs: list[tuple[UUID, AgentLoop]] = []
     original_build_worker_loop = runtime._build_worker_loop  # pyright: ignore[reportPrivateUsage]
@@ -231,7 +232,24 @@ async def test_each_worker_runs_with_an_independent_agent_loop(
         worker.worker_session_id for worker in workers
     }
     assert {id(loop) for _, loop in runs} == {id(loop) for loop in built_loops}
-    assert all(loop is not runtime._queen_loop for loop in built_loops)  # pyright: ignore[reportPrivateUsage]
+    assert all(loop is not queen_loop for loop in built_loops)
+
+
+def test_each_queen_session_has_an_independent_reusable_agent_loop(tmp_path: Path) -> None:
+    runtime = ColonyRuntime(
+        LocalColonyStore(tmp_path),
+        SchemaMockLLMProvider(),
+        ColonyEventNotifier(),
+        Settings(environment="test", storage_root=tmp_path),
+        create_builtin_tool_registry(),
+    )
+    first_session_id = uuid4()
+    second_session_id = uuid4()
+
+    first_loop = runtime._get_queen_loop(first_session_id)  # pyright: ignore[reportPrivateUsage]
+
+    assert runtime._get_queen_loop(first_session_id) is first_loop  # pyright: ignore[reportPrivateUsage]
+    assert runtime._get_queen_loop(second_session_id) is not first_loop  # pyright: ignore[reportPrivateUsage]
 
 
 async def test_runtime_exposes_actor_tools_and_executes_builtin(tmp_path: Path) -> None:
