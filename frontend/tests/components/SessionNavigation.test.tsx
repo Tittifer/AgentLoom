@@ -10,8 +10,8 @@ const colony: ColonyRead = {
   id: "colony-1",
   name: "城市对比",
   description: "",
-  queen_profile: "general",
-  model: "mock/schema",
+  queen_id: "queen_general",
+  model: "gpt-5",
   settings: {},
   status: "active",
   queen_session_id: "queen-1",
@@ -24,7 +24,12 @@ describe("SessionNavigation", () => {
     const onCreate = vi.fn();
     render(
       <MemoryRouter initialEntries={["/colonies/colony-1"]}>
-        <SessionNavigation colonies={[colony]} creating={false} onCreate={onCreate} />
+        <SessionNavigation
+          colonies={[colony]}
+          creating={false}
+          onCreate={onCreate}
+          queenId="queen_general"
+        />
       </MemoryRouter>,
     );
 

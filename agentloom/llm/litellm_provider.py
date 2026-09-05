@@ -17,6 +17,7 @@ from agentloom.llm.base import (
     LLMTimeoutError,
     ToolCall,
 )
+from agentloom.llm.model_routing import LLMProtocol, litellm_model_name, protocol_api_base
 
 CompletionCallable = Callable[..., Awaitable[object]]
 ResponseFormat = Literal["json_schema", "json_object"]
@@ -126,9 +127,15 @@ class LiteLLMProvider:
         completion: CompletionCallable | None = None,
         *,
         response_format: ResponseFormat = "json_schema",
+        protocol: LLMProtocol | None = None,
+        base_url: str | None = None,
+        api_key: str | None = None,
     ) -> None:
         self._completion = completion or _load_default_completion()
         self._response_format = response_format
+        self._protocol: LLMProtocol | None = protocol
+        self._base_url = base_url
+        self._api_key = api_key
 
     async def complete(self, request: LLMRequest) -> LLMResponse:
         """Execute one non-streaming completion with normalized errors and output."""
@@ -223,8 +230,13 @@ class LiteLLMProvider:
 
     def _parameters(self, request: LLMRequest, *, stream: bool) -> dict[str, object]:
         fill_missing_reasoning = _requires_reasoning_content(request.model)
+        model = (
+            litellm_model_name(request.model, self._protocol)
+            if self._protocol is not None
+            else request.model
+        )
         parameters: dict[str, object] = {
-            "model": request.model,
+            "model": model,
             "messages": [
                 _message_payload(message, fill_missing_reasoning=fill_missing_reasoning)
                 for message in request.messages
@@ -232,6 +244,10 @@ class LiteLLMProvider:
             "stream": stream,
             "timeout": request.timeout_seconds,
         }
+        if self._protocol is not None and self._base_url is not None:
+            parameters["api_base"] = protocol_api_base(self._base_url, self._protocol)
+        if self._api_key is not None:
+            parameters["api_key"] = self._api_key
         if request.tools:
             parameters["tools"] = [
                 {

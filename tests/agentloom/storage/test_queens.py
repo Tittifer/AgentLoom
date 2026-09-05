@@ -13,22 +13,28 @@ async def test_queen_profile_is_shared_without_sharing_session_state(tmp_path: P
     await store.initialize()
     queen = await store.create(
         QueenCreate(
-            id="research",
-            name="研究 Queen",
+            name="Research",
             system_prompt="负责研究任务。",
-            default_model="mock/schema",
+            model="claude-sonnet-4",
+            base_url="https://api.anthropic.com",
+            api_key="secret-key",
         )
     )
 
-    assert await store.get("research") == queen
+    assert queen.id == "queen_research"
+    assert queen.protocol == "claude"
+    assert await store.get("queen_research") == queen
     assert await store.list() == [queen]
-    assert (tmp_path / "queens" / "research" / "profile.json").is_file()
-    assert (tmp_path / "queens" / "research" / "sessions").is_dir()
+    profile_path = tmp_path / "queens" / "queen_research" / "profile.yaml"
+    assert profile_path.is_file()
+    assert "secret-key" in profile_path.read_text(encoding="utf-8")
+    assert (tmp_path / "queens" / "queen_research" / "sessions").is_dir()
     with pytest.raises(FileExistsError):
         await store.create(
             QueenCreate(
-                id="research",
-                name="重复",
-                default_model="mock/schema",
+                name="Research",
+                model="claude-sonnet-4",
+                base_url="https://api.anthropic.com",
+                api_key="another-key",
             )
         )

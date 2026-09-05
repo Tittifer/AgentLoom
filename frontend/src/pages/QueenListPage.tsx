@@ -22,11 +22,12 @@ export function QueenListPage() {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
     const payload: QueenCreate = {
-      id: String(form.get("id") ?? "").trim(),
       name: String(form.get("name") ?? "").trim(),
       description: String(form.get("description") ?? "").trim(),
       system_prompt: String(form.get("system_prompt") ?? "").trim(),
-      default_model: String(form.get("default_model") ?? "").trim(),
+      model: String(form.get("model") ?? "").trim(),
+      base_url: String(form.get("base_url") ?? "").trim(),
+      api_key: String(form.get("api_key") ?? "").trim(),
       settings: {},
     };
     createMutation.mutate(payload);
@@ -60,22 +61,10 @@ export function QueenListPage() {
           </div>
           <div className="queen-form-grid">
             <label className="form-field">
-              <span>唯一 ID</span>
-              <input
-                disabled={createMutation.isPending}
-                maxLength={100}
-                name="id"
-                pattern="[a-z0-9][a-z0-9_-]{0,99}"
-                placeholder="例如 research"
-                required
-              />
-              <small>仅支持小写字母、数字、下划线和连字符。</small>
-            </label>
-            <label className="form-field">
               <span>名称</span>
               <input disabled={createMutation.isPending} maxLength={100} name="name" required />
             </label>
-            <label className="form-field queen-form-wide">
+            <label className="form-field">
               <span>描述</span>
               <input disabled={createMutation.isPending} maxLength={1000} name="description" />
             </label>
@@ -84,15 +73,39 @@ export function QueenListPage() {
               <textarea disabled={createMutation.isPending} maxLength={20000} name="system_prompt" rows={4} />
             </label>
             <label className="form-field queen-form-wide">
-              <span>默认模型</span>
+              <span>模型名称</span>
               <input
-                defaultValue={query.data?.find((queen) => queen.id === "general")?.default_model ?? ""}
                 disabled={createMutation.isPending}
                 maxLength={200}
-                name="default_model"
-                placeholder="例如 openai/deepseek-v4-flash"
+                name="model"
+                placeholder="例如 deepseek-v4-flash、claude-sonnet-4 或 gemini-2.5-pro"
                 required
               />
+              <small>后端将根据模型名称自动选择 OpenAI、Claude 或 Gemini 协议。</small>
+            </label>
+            <label className="form-field queen-form-wide">
+              <span>服务 Base URL</span>
+              <input
+                disabled={createMutation.isPending}
+                maxLength={2000}
+                name="base_url"
+                placeholder="例如 https://api.example.com"
+                required
+                type="url"
+              />
+              <small>只填写服务根地址，不要添加 /v1、/messages 等接口后缀。</small>
+            </label>
+            <label className="form-field queen-form-wide">
+              <span>API Key</span>
+              <input
+                autoComplete="new-password"
+                disabled={createMutation.isPending}
+                maxLength={10000}
+                name="api_key"
+                required
+                type="password"
+              />
+              <small>密钥仅写入本机 Queen YAML，不会通过 Queen 查询接口返回。</small>
             </label>
           </div>
           {createMutation.isError ? (
@@ -125,7 +138,7 @@ export function QueenListPage() {
               <h2>{queen.name}</h2>
               <p>{queen.description || "查看该 Queen 的会话"}</p>
             </Link>
-            <footer><span>默认模型</span><span>{queen.default_model}</span></footer>
+            <footer><span>{queen.protocol} 协议</span><span>{queen.model}</span></footer>
           </article>
         ))}
       </div>

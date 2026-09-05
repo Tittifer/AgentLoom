@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any, cast
 from uuid import uuid4
 
+import yaml
+
 ATOMIC_REPLACE_ATTEMPTS = 5
 ATOMIC_REPLACE_RETRY_SECONDS = 0.01
 
@@ -39,6 +41,38 @@ def atomic_write_json(path: Path, value: dict[str, Any]) -> None:
         with temporary.open("x", encoding="utf-8", newline="\n") as handle:
             json.dump(value, handle, ensure_ascii=False, separators=(",", ":"))
             handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        for attempt in range(ATOMIC_REPLACE_ATTEMPTS):
+            try:
+                os.replace(temporary, path)
+                break
+            except PermissionError:
+                if attempt == ATOMIC_REPLACE_ATTEMPTS - 1:
+                    raise
+                time.sleep(ATOMIC_REPLACE_RETRY_SECONDS * (2**attempt))
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def read_yaml(path: Path) -> dict[str, Any]:
+    """Read one required YAML mapping."""
+
+    with path.open(encoding="utf-8") as handle:
+        value = cast(object, yaml.safe_load(handle))
+    if not isinstance(value, dict):
+        raise ValueError(f"Expected a YAML mapping in {path}")
+    return cast(dict[str, Any], value)
+
+
+def atomic_write_yaml(path: Path, value: dict[str, Any]) -> None:
+    """Durably replace a YAML document without exposing partial content."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+    try:
+        with temporary.open("x", encoding="utf-8", newline="\n") as handle:
+            yaml.safe_dump(value, handle, allow_unicode=True, sort_keys=False)
             handle.flush()
             os.fsync(handle.fileno())
         for attempt in range(ATOMIC_REPLACE_ATTEMPTS):
@@ -84,7 +118,9 @@ def append_json_line(path: Path, value: dict[str, Any]) -> None:
 __all__ = [
     "append_json_line",
     "atomic_write_json",
+    "atomic_write_yaml",
     "read_json",
     "read_json_lines",
+    "read_yaml",
     "utc_now",
 ]

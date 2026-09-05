@@ -20,15 +20,30 @@ from agentloom.colony.schemas import (
     ColonyRead,
     JsonObject,
     MessageRead,
+    QueenCreate,
     SessionRead,
     WorkerTask,
 )
 from agentloom.config import Settings
-from agentloom.llm.base import LLMMessage, LLMResponse, ToolCall
+from agentloom.llm.base import LLMMessage, LLMProvider, LLMResponse, ToolCall
 from agentloom.llm.mock import SchemaMockLLMProvider, ScriptedMockLLMProvider
 from agentloom.runtime.states import ColonyStatus, SessionStatus, WorkerStatus
 from agentloom.storage import LocalColonyStore
 from agentloom.tools.registry import create_builtin_tool_registry
+
+
+async def create_store(tmp_path: Path) -> LocalColonyStore:
+    store = LocalColonyStore(tmp_path)
+    await store.initialize()
+    await store.create_queen(
+        QueenCreate(
+            name="General",
+            model="mock/schema",
+            base_url="http://localhost:8001",
+            api_key="test-key",
+        )
+    )
+    return store
 
 
 def message(
@@ -104,9 +119,8 @@ def test_conversation_name_comes_from_first_message() -> None:
 
 
 async def test_loop_store_injects_authoritative_worker_report_status(tmp_path: Path) -> None:
-    store = LocalColonyStore(tmp_path)
-    await store.initialize()
-    _, queen = await store.create("Status", "", "general", "mock/schema", {})
+    store = await create_store(tmp_path)
+    _, queen = await store.create("Status", "", "queen_general", {})
     workers = await store.create_workers(
         queen.id,
         [WorkerTask(task="杭州"), WorkerTask(task="成都")],
@@ -193,9 +207,8 @@ async def test_each_worker_runs_with_an_independent_agent_loop(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
 ) -> None:
-    store = LocalColonyStore(tmp_path)
-    await store.initialize()
-    _, queen = await store.create("Independent loops", "", "general", "mock/schema", {})
+    store = await create_store(tmp_path)
+    _, queen = await store.create("Independent loops", "", "queen_general", {})
     workers = await store.create_workers(
         queen.id,
         [WorkerTask(task="杭州"), WorkerTask(task="成都")],
@@ -213,8 +226,8 @@ async def test_each_worker_runs_with_an_independent_agent_loop(
     runs: list[tuple[UUID, AgentLoop]] = []
     original_build_worker_loop = runtime._build_worker_loop  # pyright: ignore[reportPrivateUsage]
 
-    def build_worker_loop() -> AgentLoop:
-        loop = original_build_worker_loop()
+    def build_worker_loop(provider: LLMProvider | None = None) -> AgentLoop:
+        loop = original_build_worker_loop(provider)
         built_loops.append(loop)
         return loop
 
@@ -255,9 +268,8 @@ def test_each_queen_session_has_an_independent_reusable_agent_loop(tmp_path: Pat
 async def test_budget_exhausted_worker_reports_partial_and_wakes_queen(
     tmp_path: Path,
 ) -> None:
-    store = LocalColonyStore(tmp_path)
-    await store.initialize()
-    colony, queen = await store.create("Budget", "", "general", "mock/schema", {})
+    store = await create_store(tmp_path)
+    colony, queen = await store.create("Budget", "", "queen_general", {})
     worker = (
         await store.create_workers(
             queen.id,
@@ -299,9 +311,8 @@ async def test_budget_exhausted_worker_reports_partial_and_wakes_queen(
 
 
 async def test_budget_grace_report_keeps_worker_session_completed(tmp_path: Path) -> None:
-    store = LocalColonyStore(tmp_path)
-    await store.initialize()
-    _, queen = await store.create("Budget report", "", "general", "mock/schema", {})
+    store = await create_store(tmp_path)
+    _, queen = await store.create("Budget report", "", "queen_general", {})
     worker = (await store.create_workers(queen.id, [WorkerTask(task="整理资料")], 30))[0]
     await store.set_session_status(
         worker.worker_session_id,
@@ -352,9 +363,8 @@ async def test_budget_grace_report_keeps_worker_session_completed(tmp_path: Path
 
 
 async def test_failed_worker_synthesizes_report_and_wakes_queen(tmp_path: Path) -> None:
-    store = LocalColonyStore(tmp_path)
-    await store.initialize()
-    _, queen = await store.create("Failed worker", "", "general", "mock/schema", {})
+    store = await create_store(tmp_path)
+    _, queen = await store.create("Failed worker", "", "queen_general", {})
     worker = (await store.create_workers(queen.id, [WorkerTask(task="整理资料")], 30))[0]
     runtime = ColonyRuntime(
         store,
@@ -400,9 +410,8 @@ async def test_timed_out_worker_synthesizes_report_and_wakes_queen(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
 ) -> None:
-    store = LocalColonyStore(tmp_path)
-    await store.initialize()
-    _, queen = await store.create("Timed out worker", "", "general", "mock/schema", {})
+    store = await create_store(tmp_path)
+    _, queen = await store.create("Timed out worker", "", "queen_general", {})
     worker = (await store.create_workers(queen.id, [WorkerTask(task="调研城市")], 30))[0]
     runtime = ColonyRuntime(
         store,

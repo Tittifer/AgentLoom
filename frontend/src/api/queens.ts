@@ -5,18 +5,21 @@ export interface QueenRead {
   name: string;
   description: string;
   system_prompt: string;
-  default_model: string;
+  model: string;
+  protocol: "openai" | "claude" | "gemini";
+  base_url: string;
   settings: Record<string, unknown>;
   created_at: string;
   updated_at: string;
 }
 
 export interface QueenCreate {
-  id: string;
   name: string;
   description: string;
   system_prompt: string;
-  default_model: string;
+  model: string;
+  base_url: string;
+  api_key: string;
   settings: Record<string, unknown>;
 }
 

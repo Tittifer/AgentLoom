@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from uuid import uuid4
 
-from agentloom.colony.schemas import TaskItemCreate, TrackerUpsert, WorkerTask
+from agentloom.colony.schemas import QueenCreate, TaskItemCreate, TrackerUpsert, WorkerTask
 from agentloom.llm.base import LLMMessage
 from agentloom.runtime.states import SessionStatus, TaskItemStatus, WorkerStatus
 from agentloom.storage import LocalColonyStore
@@ -13,23 +13,31 @@ from agentloom.storage import LocalColonyStore
 async def create_store(tmp_path: Path) -> LocalColonyStore:
     store = LocalColonyStore(tmp_path)
     await store.initialize()
+    await store.create_queen(
+        QueenCreate(
+            name="General",
+            model="mock/schema",
+            base_url="http://localhost:8001",
+            api_key="test-key",
+        )
+    )
     return store
 
 
 async def test_colony_state_uses_files_and_one_tracker_database(tmp_path: Path) -> None:
     store = await create_store(tmp_path)
-    colony, queen = await store.create("Research", "", "general", "mock/schema", {})
+    colony, queen = await store.create("Research", "", "queen_general", {})
 
     colony_dir = tmp_path / "colonies" / str(colony.id)
     assert (colony_dir / "metadata.json").is_file()
-    assert (tmp_path / "queens" / "general" / "profile.json").is_file()
-    assert (tmp_path / "queens" / "general" / "sessions" / f"{queen.id}.json").is_file()
+    assert (tmp_path / "queens" / "queen_general" / "profile.yaml").is_file()
+    assert (tmp_path / "queens" / "queen_general" / "sessions" / f"{queen.id}.json").is_file()
     assert (colony_dir / "sessions" / str(queen.id) / "meta.json").is_file()
     assert (colony_dir / "tracker" / "tracker.db").is_file()
     assert (colony_dir / "artifacts").is_dir()
     assert await store.get_queen_session(colony.id) == queen
-    assert queen.queen_id == "general"
-    assert await store.list_queen_sessions("general") == [queen]
+    assert queen.queen_id == "queen_general"
+    assert await store.list_queen_sessions("queen_general") == [queen]
     assert await store.list_colonies() == [colony]
 
     message_id = uuid4()
@@ -62,7 +70,7 @@ async def test_reasoning_content_is_persisted_but_not_publicly_serialized(
     tmp_path: Path,
 ) -> None:
     store = await create_store(tmp_path)
-    colony, queen = await store.create("Reasoning", "", "general", "mock/schema", {})
+    colony, queen = await store.create("Reasoning", "", "queen_general", {})
     reasoning = "  internal reasoning  "
 
     message = await store.append_message(
@@ -90,7 +98,7 @@ async def test_reasoning_content_is_persisted_but_not_publicly_serialized(
 
 async def test_workers_tasks_status_and_delete_are_persisted(tmp_path: Path) -> None:
     store = await create_store(tmp_path)
-    colony, queen = await store.create("Work", "", "general", "mock/schema", {})
+    colony, queen = await store.create("Work", "", "queen_general", {})
 
     workers = await store.create_workers(
         queen.id,
@@ -132,7 +140,7 @@ async def test_workers_tasks_status_and_delete_are_persisted(tmp_path: Path) -> 
 
 async def test_recovery_requeues_running_workers_and_queens(tmp_path: Path) -> None:
     store = await create_store(tmp_path)
-    colony, queen = await store.create("Recovery", "", "general", "mock/schema", {})
+    colony, queen = await store.create("Recovery", "", "queen_general", {})
     worker = (await store.create_workers(queen.id, [WorkerTask(task="A")], 30))[0]
     await store.mark_worker_running(worker.id)
     worker_cursor = {

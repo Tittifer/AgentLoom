@@ -1,26 +1,23 @@
-"""Tests for application environment settings."""
+"""Tests for code-defined application settings."""
 
 from pathlib import Path
 
-import pytest
-from pydantic import ValidationError
+from pytest import MonkeyPatch
 
-from agentloom.config import Settings
-
-
-def test_llm_response_format_defaults_to_strict_json_schema() -> None:
-    settings = Settings.model_validate({})
-
-    assert settings.llm_response_format == "json_schema"
-    assert settings.storage_root == Path(".agentloom")
+from agentloom.config import PROJECT_ROOT, Settings
 
 
-def test_llm_response_format_accepts_json_object() -> None:
-    settings = Settings.model_validate({"llm_response_format": "json_object"})
+def test_storage_defaults_to_project_root_without_reading_environment(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AGENTLOOM_HOME", "ignored")
+    monkeypatch.setenv("AGENTLOOM_LLM_MODEL", "ignored")
 
-    assert settings.llm_response_format == "json_object"
+    settings = Settings()
+
+    assert settings.storage_root == PROJECT_ROOT / ".agentloom"
+    assert not hasattr(settings, "llm_model")
 
 
-def test_llm_response_format_rejects_unknown_values() -> None:
-    with pytest.raises(ValidationError):
-        Settings.model_validate({"llm_response_format": "plain_text"})
+def test_storage_root_can_be_isolated_by_tests(tmp_path: Path) -> None:
+    assert Settings(storage_root=tmp_path).storage_root == tmp_path

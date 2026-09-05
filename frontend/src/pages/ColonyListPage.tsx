@@ -5,7 +5,7 @@ import { createColony, deleteColony, listColonies } from "../api/colonies";
 import { formatDateTime, formatError, statusText } from "../utils/format";
 
 export function ColonyListPage() {
-  const { queenId = "general" } = useParams();
+  const { queenId = "" } = useParams();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const query = useQuery({ queryKey: ["colonies"], queryFn: listColonies });

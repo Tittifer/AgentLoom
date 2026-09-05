@@ -168,6 +168,25 @@ async def test_litellm_provider_supports_json_object_compatibility() -> None:
     assert response.structured_output == {"answer": "done"}
 
 
+async def test_litellm_provider_uses_queen_connection_configuration() -> None:
+    completion = RecordingCompletion(
+        {"choices": [{"message": {"content": '{"answer":"done"}'}}]}
+    )
+
+    await LiteLLMProvider(
+        completion,
+        protocol="openai",
+        base_url="https://api.example.com",
+        api_key="queen-key",
+    ).complete(
+        request().model_copy(update={"model": "deepseek-v4-flash"})
+    )
+
+    assert completion.parameters["model"] == "openai/deepseek-v4-flash"
+    assert completion.parameters["api_base"] == "https://api.example.com/v1"
+    assert completion.parameters["api_key"] == "queen-key"
+
+
 async def test_litellm_provider_normalizes_invalid_tool_arguments() -> None:
     invalid_json_completion = RecordingCompletion(
         {

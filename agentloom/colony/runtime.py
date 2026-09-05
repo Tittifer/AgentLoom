@@ -39,6 +39,7 @@ from agentloom.colony.schemas import (
 )
 from agentloom.config import Settings
 from agentloom.llm.base import LLMMessage, LLMProvider, ToolCall, ToolDefinition
+from agentloom.llm.factory import create_queen_llm_provider
 from agentloom.runtime.states import SessionStatus, WorkerStatus
 from agentloom.storage import LocalColonyStore, TrackerVersionConflictError
 from agentloom.tools.base import ToolContext, ToolError
@@ -404,7 +405,7 @@ class ColonyRuntime:
     def __init__(
         self,
         store: LocalColonyStore,
-        provider: LLMProvider,
+        provider: LLMProvider | None,
         notifier: ColonyEventNotifier,
         settings: Settings,
         tools: ToolRegistry,
@@ -413,7 +414,7 @@ class ColonyRuntime:
         self._notifier = notifier
         self._settings = settings
         self._tools = tools
-        self._provider = provider
+        self._provider_override = provider
         self._queen_loops: dict[UUID, AgentLoop] = {}
         self._worker_semaphore = asyncio.Semaphore(settings.max_concurrent_workers)
         self._session_locks: dict[UUID, asyncio.Lock] = {}
@@ -425,7 +426,6 @@ class ColonyRuntime:
         """Recover queued/running sessions after an application restart."""
 
         self._stopping = False
-        await self._storage.ensure_default_queen(self._settings.llm_model)
         worker_ids, queen_ids = await self._storage.recover_interrupted()
         for worker_id in worker_ids:
             self._schedule(self._run_worker(worker_id))
@@ -449,7 +449,6 @@ class ColonyRuntime:
             payload.name,
             payload.description,
             payload.queen_id,
-            payload.model or queen.default_model,
             payload.settings,
         )
         await self._storage.append_event(
@@ -725,7 +724,9 @@ class ColonyRuntime:
                 payload={"task": worker.task},
             )
             await self._notifier.notify(worker.colony_id)
-            worker_loop = self._build_worker_loop()
+            worker_loop = self._build_worker_loop(
+                await self._provider_for_session(worker.worker_session_id)
+            )
             try:
                 await asyncio.wait_for(
                     self._run_serial(worker.worker_session_id, worker_loop),
@@ -895,27 +896,37 @@ class ColonyRuntime:
         await self._notifier.notify(context.session.colony_id)
         return item
 
-    def _build_queen_loop(self) -> AgentLoop:
+    def _build_queen_loop(self, provider: LLMProvider | None = None) -> AgentLoop:
+        selected_provider = provider or self._provider_override
+        if selected_provider is None:
+            raise RuntimeError("Queen provider has not been resolved")
         return AgentLoop(
             FileAgentLoopStore(self._storage, self._notifier),
-            self._provider,
+            selected_provider,
             self,
             JudgePipeline(),
             default_max_turns=self._settings.queen_max_turns,
             timeout_seconds=self._settings.llm_timeout_seconds,
         )
 
-    def _get_queen_loop(self, session_id: UUID) -> AgentLoop:
+    def _get_queen_loop(
+        self,
+        session_id: UUID,
+        provider: LLMProvider | None = None,
+    ) -> AgentLoop:
         loop = self._queen_loops.get(session_id)
         if loop is None:
-            loop = self._build_queen_loop()
+            loop = self._build_queen_loop(provider)
             self._queen_loops[session_id] = loop
         return loop
 
-    def _build_worker_loop(self) -> AgentLoop:
+    def _build_worker_loop(self, provider: LLMProvider | None = None) -> AgentLoop:
+        selected_provider = provider or self._provider_override
+        if selected_provider is None:
+            raise RuntimeError("Worker provider has not been resolved")
         return AgentLoop(
             FileAgentLoopStore(self._storage, self._notifier),
-            self._provider,
+            selected_provider,
             self,
             JudgePipeline(),
             default_max_turns=DEFAULT_WORKER_MAX_TURNS,
@@ -923,7 +934,19 @@ class ColonyRuntime:
         )
 
     async def _run_queen(self, session_id: UUID) -> None:
-        await self._run_serial(session_id, self._get_queen_loop(session_id))
+        provider = await self._provider_for_session(session_id)
+        await self._run_serial(session_id, self._get_queen_loop(session_id, provider))
+
+    async def _provider_for_session(self, session_id: UUID) -> LLMProvider:
+        if self._provider_override is not None:
+            return self._provider_override
+        session = await self._storage.get_session(session_id)
+        if session is None:
+            raise SessionNotFoundError(str(session_id))
+        queen = await self._storage.get_queen_runtime_config(session.queen_id)
+        if queen is None:
+            raise QueenNotFoundError(session.queen_id)
+        return create_queen_llm_provider(queen)
 
     async def _run_serial(self, session_id: UUID, loop: AgentLoop) -> None:
         lock = self._session_locks.setdefault(session_id, asyncio.Lock())

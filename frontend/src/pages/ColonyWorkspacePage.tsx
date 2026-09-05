@@ -56,7 +56,7 @@ export function ColonyWorkspacePage() {
     mutationFn: () => createColony({
       name: "新会话",
       description: "",
-      queen_id: colonyQuery.data?.colony.queen_id ?? "general",
+      queen_id: colonyQuery.data?.colony.queen_id ?? "",
       settings: {},
     }),
     onSuccess: async (colony) => {

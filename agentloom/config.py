@@ -1,75 +1,46 @@
-"""Typed application configuration loaded from environment variables."""
+"""Code-defined AgentLoom application settings."""
 
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import BaseModel, Field
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
-class Settings(BaseSettings):
-    """Runtime settings for the AgentLoom API."""
+class Settings(BaseModel):
+    """Runtime settings with no environment-file dependency."""
 
-    environment: Literal["development", "test", "production"] = Field(
-        default="development",
-        validation_alias="AGENTLOOM_ENV",
-    )
-    log_level: str = Field(default="INFO", validation_alias="AGENTLOOM_LOG_LEVEL")
-    storage_root: Path = Field(
-        default=Path(".agentloom"),
-        validation_alias="AGENTLOOM_HOME",
-    )
-    llm_provider: Literal["mock", "litellm"] = Field(
-        default="mock",
-        validation_alias="AGENTLOOM_LLM_PROVIDER",
-    )
-    llm_model: str = Field(
-        default="mock/schema",
-        min_length=1,
-        validation_alias="AGENTLOOM_LLM_MODEL",
-    )
-    llm_response_format: Literal["json_schema", "json_object"] = Field(
-        default="json_schema",
-        validation_alias="AGENTLOOM_LLM_RESPONSE_FORMAT",
-    )
+    environment: Literal["development", "test", "production"] = "development"
+    log_level: str = "INFO"
+    storage_root: Path = Field(default=PROJECT_ROOT / ".agentloom")
     llm_timeout_seconds: float = Field(
         default=60,
         gt=0,
         le=600,
-        validation_alias="AGENTLOOM_LLM_TIMEOUT_SECONDS",
     )
     queen_max_turns: int = Field(
         default=20,
         ge=1,
         le=100,
-        validation_alias="AGENTLOOM_QUEEN_MAX_TURNS",
     )
     max_concurrent_workers: int = Field(
         default=4,
         ge=1,
         le=50,
-        validation_alias="AGENTLOOM_MAX_CONCURRENT_WORKERS",
     )
     worker_timeout_seconds: int = Field(
         default=600,
         ge=1,
         le=3600,
-        validation_alias="AGENTLOOM_WORKER_TIMEOUT_SECONDS",
     )
     app_name: str = "AgentLoom API"
     app_version: str = "0.1.0"
 
-    model_config = SettingsConfigDict(
-        env_file=".env",
-        env_file_encoding="utf-8",
-        extra="ignore",
-        populate_by_name=True,
-    )
-
 
 @lru_cache
 def get_settings() -> Settings:
-    """Return one immutable settings instance for the process."""
+    """Return one code-defined settings instance for the process."""
 
     return Settings()

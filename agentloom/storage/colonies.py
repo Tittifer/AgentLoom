@@ -16,6 +16,7 @@ from agentloom.colony.schemas import (
     MessageRead,
     QueenCreate,
     QueenRead,
+    QueenRuntimeConfig,
     SessionRead,
     TaskItemCreate,
     TaskItemRead,
@@ -90,12 +91,9 @@ class LocalColonyStore:
         name: str,
         description: str,
         queen_id: str,
-        model: str,
         settings: Mapping[str, object],
     ) -> tuple[ColonyRead, SessionRead]:
         queen_identity = await self._queens.get(queen_id)
-        if queen_identity is None and queen_id == "general":
-            queen_identity = await self._queens.ensure_default(model)
         if queen_identity is None:
             raise KeyError(queen_id)
         async with self._root_lock:
@@ -110,7 +108,7 @@ class LocalColonyStore:
                 description=description,
                 status=ColonyStatus.ACTIVE,
                 queen_id=queen_id,
-                model=model,
+                model=queen_identity.model,
                 settings=merged,
                 queen_session_id=queen_session_id,
                 created_at=now,
@@ -143,14 +141,14 @@ class LocalColonyStore:
     async def create_queen(self, payload: QueenCreate) -> QueenRead:
         return await self._queens.create(payload)
 
-    async def ensure_default_queen(self, model: str) -> QueenRead:
-        return await self._queens.ensure_default(model)
-
     async def list_queens(self) -> list[QueenRead]:
         return await self._queens.list()
 
     async def get_queen(self, queen_id: str) -> QueenRead | None:
         return await self._queens.get(queen_id)
+
+    async def get_queen_runtime_config(self, queen_id: str) -> QueenRuntimeConfig | None:
+        return await self._queens.get_runtime_config(queen_id)
 
     async def list_queen_sessions(self, queen_id: str) -> list[SessionRead]:
         sessions: list[SessionRead] = []

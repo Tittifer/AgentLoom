@@ -11,6 +11,7 @@ from agentloom.api.schemas import HealthResponse
 from agentloom.bootstrap import create_colony_runtime
 from agentloom.colony.notifier import ColonyEventNotifier
 from agentloom.config import Settings, get_settings
+from agentloom.llm.base import LLMProvider
 from agentloom.logging import configure_logging
 from agentloom.storage import LocalColonyStore
 
@@ -21,7 +22,10 @@ async def health() -> HealthResponse:
     return HealthResponse(status="ok")
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
+def create_app(
+    settings: Settings | None = None,
+    provider: LLMProvider | None = None,
+) -> FastAPI:
     """Create an application instance with explicit runtime settings."""
 
     app_settings = settings or get_settings()
@@ -29,7 +33,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     logger = structlog.get_logger(__name__)
     storage = LocalColonyStore(app_settings.storage_root)
     event_notifier = ColonyEventNotifier()
-    colony_runtime = create_colony_runtime(storage, event_notifier, app_settings)
+    colony_runtime = create_colony_runtime(storage, event_notifier, app_settings, provider)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncGenerator[None, None]:

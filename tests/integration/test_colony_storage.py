@@ -3,14 +3,27 @@
 import asyncio
 from pathlib import Path
 
-from agentloom.colony.schemas import TaskItemCreate, TrackerUpsert, WorkerTask
+from agentloom.colony.schemas import QueenCreate, TaskItemCreate, TrackerUpsert, WorkerTask
 from agentloom.storage import LocalColonyStore
 
 
-async def test_concurrent_colony_writes_have_unique_events(tmp_path: Path) -> None:
+async def create_store(tmp_path: Path) -> LocalColonyStore:
     store = LocalColonyStore(tmp_path)
     await store.initialize()
-    colony, queen = await store.create("Concurrent", "", "general", "mock/schema", {})
+    await store.create_queen(
+        QueenCreate(
+            name="General",
+            model="mock/schema",
+            base_url="http://localhost:8001",
+            api_key="test-key",
+        )
+    )
+    return store
+
+
+async def test_concurrent_colony_writes_have_unique_events(tmp_path: Path) -> None:
+    store = await create_store(tmp_path)
+    colony, queen = await store.create("Concurrent", "", "queen_general", {})
 
     async def update_tracker() -> None:
         await store.upsert_tracker(
@@ -48,9 +61,8 @@ async def test_concurrent_colony_writes_have_unique_events(tmp_path: Path) -> No
 
 
 async def test_new_store_instance_reads_existing_state(tmp_path: Path) -> None:
-    first = LocalColonyStore(tmp_path)
-    await first.initialize()
-    colony, queen = await first.create("Persistent", "", "general", "mock/schema", {})
+    first = await create_store(tmp_path)
+    colony, queen = await first.create("Persistent", "", "queen_general", {})
     await first.create_task_item(colony.id, queen.id, TaskItemCreate(title="Survives"))
 
     reopened = LocalColonyStore(tmp_path)

@@ -5,7 +5,7 @@ AgentLoom 是一个基于 Hive Colony 思路实现的持久化多智能体协作
 ## 核心能力
 
 - Queen 多轮会话：用户可以持续补充信息、调整目标或追问结果。
-- Queen 身份管理：身份、系统提示词、默认模型和设置保存在独立 Profile 中，会话只引用稳定的 `queen_id`。
+- Queen 身份管理：身份、系统提示词、模型协议与连接配置保存在独立 YAML Profile 中，会话只引用稳定的 `queen_id`。
 - 会话隔离：同一 Queen 下的不同会话不共享消息、预算、Worker、Task 或 Tracker。
 - 动态 Worker：Queen 通过 `run_worker` 即时创建一个或多个并行 Worker。
 - 独立 AgentLoop：每个 Queen 会话保持自己的长期循环，每个 Worker 创建自己的循环实例；两类智能体共用相同的模型调用、工具、质量检查、用量统计和持久化协议。
@@ -14,7 +14,7 @@ AgentLoom 是一个基于 Hive Colony 思路实现的持久化多智能体协作
 - 预算安全收尾：工作预算耗尽后进入受限 Grace 阶段；Worker 保证向 Queen 汇报，Queen 保持可继续对话。
 - 终态报告兜底：Worker 异常或超时仍会生成结构化失败报告并唤醒 Queen，避免批量任务永久等待。
 - 实时工作台：React 界面通过 SSE 展示 Queen、Worker、任务和 Tracker 的变化。
-- 模型兼容：离线开发使用 MockLLM，真实模型通过 LiteLLM 接入 OpenAI 兼容接口或其他提供商。
+- 模型兼容：根据 Queen 的模型名称自动选择 OpenAI、Claude 或 Gemini 协议，并通过 LiteLLM 调用。
 
 ## 目录结构
 
@@ -42,42 +42,11 @@ dev.py                    前后端一键启动脚本
 
 ## 环境变量
 
-先复制示例文件：
+AgentLoom 不读取 `.env`。持久化根目录固定为项目根目录下的 `.agentloom`。
 
-```powershell
-Copy-Item .env.example .env
-```
+首次启动后在 Queen 页面创建 Queen，并填写模型名称、没有 API 路径后缀的服务 Base URL 和 API Key。后端根据模型名称自动选择协议：`claude-*` 使用 Claude 协议，`gemini-*` 使用 Gemini 协议，其他模型使用 OpenAI 兼容协议。OpenAI 兼容协议会自动给 Base URL 添加 `/v1`。
 
-主要配置如下：
-
-```dotenv
-AGENTLOOM_ENV=development
-AGENTLOOM_LOG_LEVEL=INFO
-AGENTLOOM_HOME=.agentloom
-
-AGENTLOOM_LLM_PROVIDER=mock
-AGENTLOOM_LLM_MODEL=mock/schema
-AGENTLOOM_LLM_RESPONSE_FORMAT=json_schema
-AGENTLOOM_LLM_TIMEOUT_SECONDS=60
-
-AGENTLOOM_QUEEN_MAX_TURNS=20
-AGENTLOOM_MAX_CONCURRENT_WORKERS=4
-AGENTLOOM_WORKER_TIMEOUT_SECONDS=600
-```
-
-`AGENTLOOM_HOME` 是本地持久化根目录，默认指向项目目录下的 `.agentloom`。Queen 身份保存在 `queens/<queen_id>/profile.json`，旗下 Session 引用保存在 `sessions/`；每个 Colony 是一个自包含目录。除每个 Colony 的 `tracker/tracker.db` 外，其余运行状态使用 JSON、JSONL 和普通文件保存。
-
-### 第三方 OpenAI 兼容模型
-
-```dotenv
-AGENTLOOM_LLM_PROVIDER=litellm
-AGENTLOOM_LLM_MODEL=openai/你的模型名称
-AGENTLOOM_LLM_RESPONSE_FORMAT=json_object
-OPENAI_BASE_URL=https://你的服务地址/v1
-OPENAI_API_KEY=你的密钥
-```
-
-如果提供商完整支持严格 JSON Schema，可将 `AGENTLOOM_LLM_RESPONSE_FORMAT` 改成 `json_schema`。不要提交 `.env` 或真实 API 密钥。
+Queen 配置保存在 `queens/<queen_id>/profile.yaml`，`queen_id` 由后端根据名称自动生成。API Key 只保存在本机 YAML 中，不会通过 Queen 查询接口返回；`.agentloom/` 已被 Git 忽略。旗下 Session 引用保存在 `sessions/`，每个 Colony 是一个自包含目录。除每个 Colony 的 `tracker/tracker.db` 外，其余运行状态使用 JSON、JSONL 和普通文件保存。
 
 ## 安装和启动
 

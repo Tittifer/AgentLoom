@@ -23,7 +23,6 @@ export interface ColonyCreate {
   name: string;
   description: string;
   queen_id: string;
-  model?: string;
   settings: Record<string, unknown>;
 }
 
