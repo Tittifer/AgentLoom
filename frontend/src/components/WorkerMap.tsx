@@ -35,15 +35,18 @@ export function WorkerMap({ queen, workers, onSelect, embedded = false }: Worker
       </header>
 
       <div className="colony-map">
-        <div className={`queen-node status-ring-${queen.status}`}>
+        <div className={`queen-node${workers.length > 0 ? " has-workers" : ""} status-ring-${queen.status}`}>
           <span className="node-avatar">主</span>
           <div>
-            <small>主智能体</small>
+            <small>主节点 · Queen</small>
             <strong>任务协调者</strong>
             <em>{statusText(queen.status)}</em>
           </div>
         </div>
-        <div className="worker-node-grid">
+        <div className={`worker-node-grid${workers.length > 0 ? " has-workers" : ""}`}>
+          {workers.length > 0 ? (
+            <span className="worker-branch-label" aria-hidden="true">任务分派</span>
+          ) : null}
           {workers.length === 0 ? (
             <div className="map-placeholder">
               <strong>当前由主智能体处理</strong>
@@ -58,12 +61,18 @@ export function WorkerMap({ queen, workers, onSelect, embedded = false }: Worker
               title={worker.task}
               type="button"
             >
-              <span className="node-avatar">{index + 1}</span>
+              <span className="node-avatar" aria-hidden="true">{index + 1}</span>
               <span className="worker-node-copy">
-                <small>协作节点 {index + 1}</small>
-                <strong>{trimTask(worker.task)}</strong>
-                <em><i aria-hidden="true" />{statusText(worker.status)}</em>
+                <span className="worker-node-meta">
+                  <small>从节点 {index + 1}</small>
+                  <span className="worker-node-status">
+                    <i aria-hidden="true" />
+                    {statusText(worker.status)}
+                  </span>
+                </span>
+                <strong>{taskSummary(worker.task)}</strong>
               </span>
+              <span className="worker-node-arrow" aria-hidden="true">›</span>
             </button>
           ))}
         </div>
@@ -72,6 +81,9 @@ export function WorkerMap({ queen, workers, onSelect, embedded = false }: Worker
   );
 }
 
-function trimTask(task: string) {
-  return task.length > 42 ? `${task.slice(0, 42)}…` : task;
+function taskSummary(task: string): string {
+  const normalized = task.replace(/\s+/g, " ").trim();
+  if (!normalized) return "未命名任务";
+  const headline = normalized.split(/[：:\n。！？]/, 1)[0].trim();
+  return headline.length > 24 ? `${headline.slice(0, 24)}…` : headline;
 }

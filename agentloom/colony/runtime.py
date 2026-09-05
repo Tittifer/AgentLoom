@@ -55,6 +55,7 @@ class SessionConflictError(ValueError):
 
 
 UNTITLED_COLONY_NAME = "新会话"
+DEFAULT_WORKER_MAX_TURNS = 8
 
 
 class ToolInput(BaseModel):
@@ -374,9 +375,9 @@ class ColonyRuntime:
         self._notifier = notifier
         self._settings = settings
         self._tools = tools
-        self._store = FileAgentLoopStore(store, notifier)
-        self._loop = AgentLoop(
-            self._store,
+        self._provider = provider
+        self._queen_loop = AgentLoop(
+            FileAgentLoopStore(store, notifier),
             provider,
             self,
             JudgePipeline(),
@@ -397,7 +398,7 @@ class ColonyRuntime:
         for worker_id in worker_ids:
             self._schedule(self._run_worker(worker_id))
         for session_id in queen_ids:
-            self._schedule(self._run_serial(session_id))
+            self._schedule(self._run_queen(session_id))
 
     async def stop(self) -> None:
         self._stopping = True
@@ -491,7 +492,7 @@ class ColonyRuntime:
             payload={"message_id": str(message.id), "role": "user"},
         )
         await self._notifier.notify(agent_session.colony_id)
-        self._schedule(self._run_serial(session_id))
+        self._schedule(self._run_queen(session_id))
         return message
 
     async def list_workers(self, colony_id: UUID) -> list[WorkerRead]:
@@ -652,9 +653,10 @@ class ColonyRuntime:
                 payload={"task": worker.task},
             )
             await self._notifier.notify(worker.colony_id)
+            worker_loop = self._build_worker_loop()
             try:
                 await asyncio.wait_for(
-                    self._run_serial(worker.worker_session_id),
+                    self._run_serial(worker.worker_session_id, worker_loop),
                     timeout=worker.timeout_seconds,
                 )
             except TimeoutError:
@@ -708,7 +710,7 @@ class ColonyRuntime:
             payload={"status": report.status, "summary": report.summary},
         )
         await self._notifier.notify(context.session.colony_id)
-        self._schedule(self._run_serial(worker.queen_session_id))
+        self._schedule(self._run_queen(worker.queen_session_id))
 
     async def _tracker_upsert(
         self, context: LoopContext, payload: TrackerUpsert
@@ -759,10 +761,23 @@ class ColonyRuntime:
         await self._notifier.notify(context.session.colony_id)
         return item
 
-    async def _run_serial(self, session_id: UUID) -> None:
+    def _build_worker_loop(self) -> AgentLoop:
+        return AgentLoop(
+            FileAgentLoopStore(self._storage, self._notifier),
+            self._provider,
+            self,
+            JudgePipeline(),
+            default_max_turns=DEFAULT_WORKER_MAX_TURNS,
+            timeout_seconds=self._settings.llm_timeout_seconds,
+        )
+
+    async def _run_queen(self, session_id: UUID) -> None:
+        await self._run_serial(session_id, self._queen_loop)
+
+    async def _run_serial(self, session_id: UUID, loop: AgentLoop) -> None:
         lock = self._session_locks.setdefault(session_id, asyncio.Lock())
         async with lock:
-            await self._loop.run(session_id)
+            await loop.run(session_id)
 
     def _schedule(self, coroutine: Coroutine[object, object, None]) -> None:
         if self._stopping:

@@ -4,11 +4,11 @@ import asyncio
 import json
 from datetime import UTC, datetime
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from pytest import MonkeyPatch
 
-from agentloom.agents.loop import LoopContext
+from agentloom.agents.loop import AgentLoop, LoopContext
 from agentloom.colony.notifier import ColonyEventNotifier
 from agentloom.colony.runtime import (
     ColonyRuntime,
@@ -187,6 +187,51 @@ async def test_background_task_failures_are_consumed_and_logged(
             {"error_type": "RuntimeError", "error": "token=[REDACTED]"},
         )
     ]
+
+
+async def test_each_worker_runs_with_an_independent_agent_loop(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    store = LocalColonyStore(tmp_path)
+    await store.initialize()
+    _, queen = await store.create("Independent loops", "", "general", "mock/schema", {})
+    workers = await store.create_workers(
+        queen.id,
+        [WorkerTask(task="杭州"), WorkerTask(task="成都")],
+        30,
+    )
+    runtime = ColonyRuntime(
+        store,
+        SchemaMockLLMProvider(),
+        ColonyEventNotifier(),
+        Settings(environment="test", storage_root=tmp_path),
+        create_builtin_tool_registry(),
+    )
+    built_loops: list[AgentLoop] = []
+    runs: list[tuple[UUID, AgentLoop]] = []
+    original_build_worker_loop = runtime._build_worker_loop  # pyright: ignore[reportPrivateUsage]
+
+    def build_worker_loop() -> AgentLoop:
+        loop = original_build_worker_loop()
+        built_loops.append(loop)
+        return loop
+
+    async def run_serial(session_id: UUID, loop: AgentLoop) -> None:
+        runs.append((session_id, loop))
+
+    monkeypatch.setattr(runtime, "_build_worker_loop", build_worker_loop)
+    monkeypatch.setattr(runtime, "_run_serial", run_serial)
+
+    await asyncio.gather(*(runtime._run_worker(worker.id) for worker in workers))  # pyright: ignore[reportPrivateUsage]
+
+    assert len(built_loops) == 2
+    assert built_loops[0] is not built_loops[1]
+    assert {session_id for session_id, _ in runs} == {
+        worker.worker_session_id for worker in workers
+    }
+    assert {id(loop) for _, loop in runs} == {id(loop) for loop in built_loops}
+    assert all(loop is not runtime._queen_loop for loop in built_loops)  # pyright: ignore[reportPrivateUsage]
 
 
 async def test_runtime_exposes_actor_tools_and_executes_builtin(tmp_path: Path) -> None:
