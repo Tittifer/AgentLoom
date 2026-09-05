@@ -45,6 +45,7 @@ def default_colony_settings() -> dict[str, JsonValue]:
         "worker_max_turns": 8,
         "worker_timeout_seconds": 600,
         "max_tool_calls": 100,
+        "grace_turns": 1,
     }
 
 
@@ -480,7 +481,7 @@ class LocalColonyStore:
                 park_reason=None,
                 task={"description": task.task, "data": task.data},
                 cursor={"iteration": 0, "phase": "queued"},
-                budget={"max_turns": 8, "max_tool_calls": 30},
+                budget={"max_turns": 8, "max_tool_calls": 30, "grace_turns": 2},
                 usage={"input_tokens": 0, "output_tokens": 0, "tool_calls": 0},
                 created_at=now,
                 updated_at=now,
@@ -542,11 +543,14 @@ class LocalColonyStore:
         session = self._read_session_sync(colony_id, worker.worker_session_id)
         if session is None:
             raise RuntimeError(f"Worker {worker_id} has no session")
+        cursor = dict(session.cursor)
+        if cursor.get("phase") in {"queued", "idle"}:
+            cursor["phase"] = "running"
         self._write_session_sync(
             session.model_copy(
                 update={
                     "status": SessionStatus.RUNNING,
-                    "cursor": {"iteration": 0, "phase": "running"},
+                    "cursor": cursor,
                     "updated_at": now,
                 }
             )

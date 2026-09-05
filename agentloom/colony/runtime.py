@@ -13,6 +13,7 @@ from agentloom.agents.judge import JudgePipeline
 from agentloom.agents.loop import (
     AgentLoop,
     AgentLoopStore,
+    BudgetReason,
     LoopContext,
     ToolExecutionResult,
 )
@@ -299,13 +300,38 @@ class FileAgentLoopStore(AgentLoopStore):
         iteration: int,
         phase: str,
         usage: dict[str, int],
+        *,
+        budget_tool_calls: int = 0,
+        budget_reason: BudgetReason | None = None,
+        grace_turn: int = 0,
     ) -> None:
+        cursor: dict[str, object] = {
+            "iteration": iteration,
+            "phase": phase,
+            "budget_tool_calls": budget_tool_calls,
+        }
+        if budget_reason is not None:
+            cursor["budget_reason"] = budget_reason
+            cursor["grace_turn"] = grace_turn
         await self._store.set_session_status(
             context.session.id,
             SessionStatus.RUNNING,
-            cursor={"iteration": iteration, "phase": phase},
+            cursor=cursor,
             usage=usage,
         )
+        if phase == "budget_grace" and budget_reason is not None and grace_turn == 0:
+            await self._store.append_event(
+                context.session.colony_id,
+                "session.budget_grace_started",
+                session_id=context.session.id,
+                payload={
+                    "actor_type": context.session.actor_type,
+                    "reason": budget_reason,
+                    "iteration": iteration,
+                    "budget_tool_calls": budget_tool_calls,
+                },
+            )
+            await self._notifier.notify(context.session.colony_id)
 
     async def finish(self, context: LoopContext, content: str, usage: dict[str, int]) -> None:
         del content
@@ -620,6 +646,22 @@ class ColonyRuntime:
                 WorkerReport(status="success", summary=content, data={}),
             )
 
+    async def finalize_budget_exhausted(
+        self,
+        context: LoopContext,
+        content: str,
+        reason: BudgetReason,
+    ) -> None:
+        if context.session.actor_type == "worker":
+            await self._report_worker(
+                context,
+                WorkerReport(
+                    status="partial",
+                    summary=content,
+                    data={"budget_reason": reason},
+                ),
+            )
+
     async def _spawn_workers(
         self, context: LoopContext, tasks: list[WorkerTask], timeout: int
     ) -> list[WorkerRead]:
@@ -670,6 +712,7 @@ class ColonyRuntime:
                     payload={"timeout_seconds": worker.timeout_seconds},
                 )
                 await self._notifier.notify(worker.colony_id)
+            await self._ensure_worker_terminal_report(worker.worker_session_id)
 
     async def _report_worker(self, context: LoopContext, report: WorkerReport) -> None:
         status_map = {
@@ -677,10 +720,11 @@ class ColonyRuntime:
             "partial": WorkerStatus.PARTIAL,
             "failed": WorkerStatus.FAILED,
         }
+        report_payload = report.model_dump(mode="json")
         worker = await self._storage.finish_worker(
             context.session.id,
             status_map[report.status],
-            report=report.model_dump(mode="json"),
+            report=report_payload,
             error=(
                 {"code": "WORKER_REPORTED_FAILURE", "message": report.summary}
                 if report.status == "failed"
@@ -689,9 +733,66 @@ class ColonyRuntime:
         )
         if worker is None:
             raise SessionConflictError("Worker session has no owning worker run")
+        await self._publish_worker_report(worker, report_payload)
+
+    async def _ensure_worker_terminal_report(self, worker_session_id: UUID) -> None:
+        worker = await self._storage.get_worker_for_session(worker_session_id)
+        terminal_statuses = {
+            WorkerStatus.COMPLETED,
+            WorkerStatus.PARTIAL,
+            WorkerStatus.FAILED,
+            WorkerStatus.TIMED_OUT,
+            WorkerStatus.CANCELLED,
+        }
+        if worker is None or worker.report is not None or worker.status not in terminal_statuses:
+            return
+
+        error_message = worker.error.get("message") if worker.error is not None else None
+        safe_error = sanitize_text(error_message) if isinstance(error_message, str) else "未知错误"
+        if worker.status is WorkerStatus.TIMED_OUT:
+            summary = f"Worker 执行超时：{safe_error}"
+        elif worker.status is WorkerStatus.CANCELLED:
+            summary = "Worker 在完成前被取消。"
+        elif worker.status is WorkerStatus.FAILED:
+            summary = f"Worker 执行失败：{safe_error}"
+        else:
+            summary = "Worker 已结束，但没有生成显式报告。"
+
+        data: dict[str, JsonValue] = {
+            "synthetic_report": True,
+            "worker_status": worker.status.value,
+        }
+        error_code = worker.error.get("code") if worker.error is not None else None
+        if isinstance(error_code, str):
+            data["error_code"] = error_code
+        report_payload: dict[str, JsonValue] = {
+            "status": (
+                "partial"
+                if worker.status in {WorkerStatus.COMPLETED, WorkerStatus.PARTIAL}
+                else "failed"
+            ),
+            "summary": summary,
+            "data": data,
+        }
+        saved = await self._storage.finish_worker(
+            worker.worker_session_id,
+            worker.status,
+            report=report_payload,
+            error=worker.error,
+        )
+        if saved is None:
+            raise SessionConflictError("Worker session has no owning worker run")
+        await self._publish_worker_report(saved, report_payload)
+
+    async def _publish_worker_report(
+        self,
+        worker: WorkerRead,
+        report: dict[str, JsonValue],
+    ) -> None:
         queen_message = LLMMessage(
             role="user",
-            content="[WORKER_REPORT]\n" + report.model_dump_json(),
+            content="[WORKER_REPORT]\n"
+            + json.dumps(report, ensure_ascii=False, separators=(",", ":")),
         )
         await self._storage.append_message(
             worker.queen_session_id,
@@ -704,9 +805,12 @@ class ColonyRuntime:
             "worker.reported",
             session_id=worker.worker_session_id,
             worker_run_id=worker.id,
-            payload={"status": report.status, "summary": report.summary},
+            payload={
+                "status": report.get("status", "failed"),
+                "summary": report.get("summary", "Worker 未生成报告。"),
+            },
         )
-        await self._notifier.notify(context.session.colony_id)
+        await self._notifier.notify(worker.colony_id)
         self._schedule(self._run_queen(worker.queen_session_id))
 
     async def _tracker_upsert(

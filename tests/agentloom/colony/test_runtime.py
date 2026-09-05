@@ -24,8 +24,8 @@ from agentloom.colony.schemas import (
     WorkerTask,
 )
 from agentloom.config import Settings
-from agentloom.llm.base import LLMMessage, ToolCall
-from agentloom.llm.mock import SchemaMockLLMProvider
+from agentloom.llm.base import LLMMessage, LLMResponse, ToolCall
+from agentloom.llm.mock import SchemaMockLLMProvider, ScriptedMockLLMProvider
 from agentloom.runtime.states import ColonyStatus, SessionStatus, WorkerStatus
 from agentloom.storage import LocalColonyStore
 from agentloom.tools.registry import create_builtin_tool_registry
@@ -250,6 +250,192 @@ def test_each_queen_session_has_an_independent_reusable_agent_loop(tmp_path: Pat
 
     assert runtime._get_queen_loop(first_session_id) is first_loop  # pyright: ignore[reportPrivateUsage]
     assert runtime._get_queen_loop(second_session_id) is not first_loop  # pyright: ignore[reportPrivateUsage]
+
+
+async def test_budget_exhausted_worker_reports_partial_and_wakes_queen(
+    tmp_path: Path,
+) -> None:
+    store = LocalColonyStore(tmp_path)
+    await store.initialize()
+    colony, queen = await store.create("Budget", "", "general", "mock/schema", {})
+    worker = (
+        await store.create_workers(
+            queen.id,
+            [WorkerTask(task="整理资料")],
+            30,
+        )
+    )[0]
+    worker_session = await store.get_session(worker.worker_session_id)
+    assert worker_session is not None
+    runtime = ColonyRuntime(
+        store,
+        SchemaMockLLMProvider(),
+        ColonyEventNotifier(),
+        Settings(environment="test", storage_root=tmp_path),
+        create_builtin_tool_registry(),
+    )
+    runtime._stopping = True  # pyright: ignore[reportPrivateUsage]
+
+    await runtime.finalize_budget_exhausted(
+        LoopContext(session=worker_session, colony=colony, messages=[]),
+        "工具预算已耗尽，已保留当前进度。",
+        "tool_calls",
+    )
+
+    saved_worker = await store.get_worker_for_session(worker.worker_session_id)
+    assert saved_worker is not None
+    assert saved_worker.status is WorkerStatus.PARTIAL
+    assert saved_worker.report == {
+        "status": "partial",
+        "summary": "工具预算已耗尽，已保留当前进度。",
+        "data": {"budget_reason": "tool_calls"},
+    }
+    saved_queen = await store.get_session(queen.id)
+    assert saved_queen is not None
+    assert saved_queen.status is SessionStatus.QUEUED
+    queen_messages = await store.list_messages(queen.id)
+    assert queen_messages is not None
+    assert queen_messages[-1].content.startswith("[WORKER_REPORT]\n")
+
+
+async def test_budget_grace_report_keeps_worker_session_completed(tmp_path: Path) -> None:
+    store = LocalColonyStore(tmp_path)
+    await store.initialize()
+    _, queen = await store.create("Budget report", "", "general", "mock/schema", {})
+    worker = (await store.create_workers(queen.id, [WorkerTask(task="整理资料")], 30))[0]
+    await store.set_session_status(
+        worker.worker_session_id,
+        SessionStatus.QUEUED,
+        cursor={
+            "iteration": 8,
+            "phase": "budget_grace",
+            "budget_reason": "model_turns",
+            "budget_tool_calls": 2,
+            "grace_turn": 0,
+        },
+    )
+    provider = ScriptedMockLLMProvider(
+        [
+            LLMResponse(
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="report",
+                        name="report_to_parent",
+                        arguments={
+                            "status": "partial",
+                            "summary": "已完成资料整理，剩余对比待补充。",
+                            "data": {},
+                        },
+                    )
+                ],
+                model="mock/test",
+            )
+        ]
+    )
+    runtime = ColonyRuntime(
+        store,
+        provider,
+        ColonyEventNotifier(),
+        Settings(environment="test", storage_root=tmp_path),
+        create_builtin_tool_registry(),
+    )
+    runtime._stopping = True  # pyright: ignore[reportPrivateUsage]
+
+    await runtime._build_worker_loop().run(worker.worker_session_id)  # pyright: ignore[reportPrivateUsage]
+
+    saved_worker = await store.get_worker_for_session(worker.worker_session_id)
+    saved_session = await store.get_session(worker.worker_session_id)
+    assert saved_worker is not None and saved_worker.status is WorkerStatus.PARTIAL
+    assert saved_session is not None and saved_session.status is SessionStatus.COMPLETED
+    assert saved_session.cursor == {"iteration": 0, "phase": "completed"}
+
+
+async def test_failed_worker_synthesizes_report_and_wakes_queen(tmp_path: Path) -> None:
+    store = LocalColonyStore(tmp_path)
+    await store.initialize()
+    _, queen = await store.create("Failed worker", "", "general", "mock/schema", {})
+    worker = (await store.create_workers(queen.id, [WorkerTask(task="整理资料")], 30))[0]
+    runtime = ColonyRuntime(
+        store,
+        ScriptedMockLLMProvider([]),
+        ColonyEventNotifier(),
+        Settings(environment="test", storage_root=tmp_path),
+        create_builtin_tool_registry(),
+    )
+    runtime._stopping = True  # pyright: ignore[reportPrivateUsage]
+
+    await runtime._run_worker(worker.id)  # pyright: ignore[reportPrivateUsage]
+    await runtime._ensure_worker_terminal_report(  # pyright: ignore[reportPrivateUsage]
+        worker.worker_session_id
+    )
+
+    saved_worker = await store.get_worker_for_session(worker.worker_session_id)
+    assert saved_worker is not None
+    assert saved_worker.status is WorkerStatus.FAILED
+    assert saved_worker.report is not None
+    assert saved_worker.report["status"] == "failed"
+    assert saved_worker.report["data"] == {
+        "synthetic_report": True,
+        "worker_status": "failed",
+        "error_code": "AGENT_LOOP_FAILED",
+    }
+    saved_queen = await store.get_session(queen.id)
+    assert saved_queen is not None and saved_queen.status is SessionStatus.QUEUED
+    queen_messages = await store.list_messages(queen.id)
+    assert queen_messages is not None and len(queen_messages) == 1
+    assert queen_messages[0].metadata == {"worker_run_id": str(worker.id)}
+    report = json.loads(queen_messages[0].content.removeprefix("[WORKER_REPORT]\n"))
+    assert report == saved_worker.report
+
+    queen_context = await FileAgentLoopStore(store, ColonyEventNotifier()).load(queen.id)
+    assert queen_context is not None
+    worker_status = json.loads(queen_context.messages[-1].content.removeprefix("[WORKER_STATUS]\n"))
+    assert worker_status["received_reports"] == 1
+    assert worker_status["pending_workers"] == []
+    assert "不得声称仍在等待" in worker_status["instruction"]
+
+
+async def test_timed_out_worker_synthesizes_report_and_wakes_queen(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    store = LocalColonyStore(tmp_path)
+    await store.initialize()
+    _, queen = await store.create("Timed out worker", "", "general", "mock/schema", {})
+    worker = (await store.create_workers(queen.id, [WorkerTask(task="调研城市")], 30))[0]
+    runtime = ColonyRuntime(
+        store,
+        SchemaMockLLMProvider(),
+        ColonyEventNotifier(),
+        Settings(environment="test", storage_root=tmp_path),
+        create_builtin_tool_registry(),
+    )
+    runtime._stopping = True  # pyright: ignore[reportPrivateUsage]
+
+    async def time_out(session_id: UUID, loop: AgentLoop) -> None:
+        del session_id, loop
+        raise TimeoutError
+
+    monkeypatch.setattr(runtime, "_run_serial", time_out)
+
+    await runtime._run_worker(worker.id)  # pyright: ignore[reportPrivateUsage]
+
+    saved_worker = await store.get_worker_for_session(worker.worker_session_id)
+    assert saved_worker is not None
+    assert saved_worker.status is WorkerStatus.TIMED_OUT
+    assert saved_worker.report is not None
+    assert saved_worker.report["status"] == "failed"
+    assert saved_worker.report["data"] == {
+        "synthetic_report": True,
+        "worker_status": "timed_out",
+        "error_code": "WORKER_TIMEOUT",
+    }
+    saved_queen = await store.get_session(queen.id)
+    assert saved_queen is not None and saved_queen.status is SessionStatus.QUEUED
+    queen_messages = await store.list_messages(queen.id)
+    assert queen_messages is not None and len(queen_messages) == 1
+    assert queen_messages[0].content.startswith("[WORKER_REPORT]\n")
 
 
 async def test_runtime_exposes_actor_tools_and_executes_builtin(tmp_path: Path) -> None:

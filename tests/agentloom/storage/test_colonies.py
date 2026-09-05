@@ -104,6 +104,8 @@ async def test_workers_tasks_status_and_delete_are_persisted(tmp_path: Path) -> 
     worker_session = await store.get_session(running.worker_session_id)
     assert worker_session is not None and worker_session.status is SessionStatus.COMPLETED
     assert worker_session.budget["max_tool_calls"] == 30
+    assert worker_session.budget["grace_turns"] == 2
+    assert queen.budget["grace_turns"] == 1
 
     task = await store.create_task_item(
         colony.id,
@@ -128,6 +130,18 @@ async def test_recovery_requeues_running_workers_and_queens(tmp_path: Path) -> N
     colony, queen = await store.create("Recovery", "", "general", "mock/schema", {})
     worker = (await store.create_workers(queen.id, [WorkerTask(task="A")], 30))[0]
     await store.mark_worker_running(worker.id)
+    worker_cursor = {
+        "iteration": 3,
+        "phase": "budget_grace",
+        "budget_reason": "tool_calls",
+        "budget_tool_calls": 30,
+        "grace_turn": 1,
+    }
+    await store.set_session_status(
+        worker.worker_session_id,
+        SessionStatus.RUNNING,
+        cursor=worker_cursor,
+    )
     await store.set_session_status(queen.id, SessionStatus.RUNNING)
 
     worker_ids, queen_ids = await store.recover_interrupted()
@@ -138,3 +152,8 @@ async def test_recovery_requeues_running_workers_and_queens(tmp_path: Path) -> N
     recovered_queen = await store.get_session(queen.id)
     assert recovered_worker.status is WorkerStatus.QUEUED
     assert recovered_queen is not None and recovered_queen.status is SessionStatus.QUEUED
+
+    await store.mark_worker_running(worker.id)
+    resumed_session = await store.get_session(worker.worker_session_id)
+    assert resumed_session is not None
+    assert resumed_session.cursor == worker_cursor
