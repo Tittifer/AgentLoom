@@ -8,7 +8,7 @@ from agentloom.colony.schemas import ColonyCreate, MessageCreate, TrackerUpsert,
 
 def test_colony_create_applies_defaults() -> None:
     payload = ColonyCreate(name="研究空间")
-    assert payload.queen_profile == "general"
+    assert payload.queen_id == "general"
     assert payload.settings == {}
 
 

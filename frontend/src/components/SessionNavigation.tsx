@@ -6,12 +6,14 @@ import { statusText } from "../utils/format";
 
 interface SessionNavigationProps {
   colonies: ColonyRead[];
+  queenId: string;
   creating: boolean;
   onCreate: () => void;
 }
 
 export function SessionNavigation({
   colonies,
+  queenId,
   creating,
   onCreate,
 }: SessionNavigationProps) {
@@ -62,7 +64,7 @@ export function SessionNavigation({
         ))}
       </nav>
 
-      <NavLink className="all-sessions-link" to="/colonies">
+      <NavLink className="all-sessions-link" to={`/queens/${queenId}`}>
         <span aria-hidden="true">⌂</span>
         <strong>管理全部会话</strong>
       </NavLink>

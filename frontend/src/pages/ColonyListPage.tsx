@@ -1,10 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 
 import { createColony, deleteColony, listColonies } from "../api/colonies";
 import { formatDateTime, formatError, statusText } from "../utils/format";
 
 export function ColonyListPage() {
+  const { queenId = "general" } = useParams();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const query = useQuery({ queryKey: ["colonies"], queryFn: listColonies });
@@ -18,7 +19,7 @@ export function ColonyListPage() {
     mutationFn: () => createColony({
       name: "新会话",
       description: "",
-      queen_profile: "general",
+      queen_id: queenId,
       settings: {},
     }),
     onSuccess: async (colony) => {
@@ -64,7 +65,7 @@ export function ColonyListPage() {
       {createMutation.isError ? (
         <div className="panel error-panel"><p>{formatError(createMutation.error)}</p></div>
       ) : null}
-      {query.data?.length === 0 ? (
+      {query.data?.filter((colony) => colony.queen_id === queenId).length === 0 ? (
         <div className="empty-state">
           <div className="empty-icon" aria-hidden="true">蜂</div>
           <h2>开始第一次对话</h2>
@@ -80,7 +81,7 @@ export function ColonyListPage() {
         </div>
       ) : null}
       <div className="colony-card-grid">
-        {query.data?.map((colony) => (
+        {query.data?.filter((colony) => colony.queen_id === queenId).map((colony) => (
           <article className="colony-card" key={colony.id}>
             <header>
               <span className="colony-avatar">Q</span>

@@ -14,6 +14,7 @@ from agentloom.colony.notifier import ColonyEventNotifier, TransientColonyEvent
 from agentloom.colony.runtime import (
     ColonyNotFoundError,
     ColonyRuntime,
+    QueenNotFoundError,
     SessionConflictError,
     SessionNotFoundError,
 )
@@ -104,8 +105,14 @@ async def stream_colony_events(
     response_model=ColonyRead,
     status_code=status.HTTP_201_CREATED,
 )
-async def create_colony(payload: ColonyCreate, runtime: RuntimeDependency) -> ColonyRead:
-    return await runtime.create_colony(payload)
+async def create_colony(
+    payload: ColonyCreate,
+    runtime: RuntimeDependency,
+) -> ColonyRead | JSONResponse:
+    try:
+        return await runtime.create_colony(payload)
+    except QueenNotFoundError:
+        return error_response(404, "QUEEN_NOT_FOUND", "Queen 不存在")
 
 
 @router.get("/colonies", response_model=list[ColonyRead])

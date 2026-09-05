@@ -10,7 +10,7 @@ import structlog
 from pydantic import JsonValue
 
 from agentloom.agents.judge import JudgePipeline
-from agentloom.colony.schemas import ActorType, ColonyRead, MessageRead, SessionRead
+from agentloom.colony.schemas import ActorType, ColonyRead, MessageRead, QueenRead, SessionRead
 from agentloom.llm.base import (
     LLMMessage,
     LLMProvider,
@@ -32,6 +32,7 @@ class LoopContext:
     session: SessionRead
     colony: ColonyRead
     messages: list[LLMMessage]
+    queen: QueenRead | None = None
 
 
 @dataclass(frozen=True)
@@ -597,10 +598,14 @@ class AgentLoop:
     @staticmethod
     def _system_message(context: LoopContext) -> LLMMessage:
         if context.session.actor_type == "queen":
-            content = (
+            runtime_prompt = (
                 "你是 AgentLoom Colony 的 Queen。持续与用户协作，维护计划和共享 Tracker。"
                 "当任务可并行时调用 run_worker；Worker 报告会作为用户消息回到当前会话。"
                 "不要虚构工具结果，最终回复必须使用中文。"
+            )
+            identity_prompt = context.queen.system_prompt if context.queen is not None else ""
+            content = (
+                f"{identity_prompt}\n\n{runtime_prompt}" if identity_prompt else runtime_prompt
             )
         else:
             content = (

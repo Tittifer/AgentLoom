@@ -56,7 +56,7 @@ export function ColonyWorkspacePage() {
     mutationFn: () => createColony({
       name: "新会话",
       description: "",
-      queen_profile: "general",
+      queen_id: colonyQuery.data?.colony.queen_id ?? "general",
       settings: {},
     }),
     onSuccess: async (colony) => {
@@ -83,8 +83,11 @@ export function ColonyWorkspacePage() {
     <section className="workspace-page" aria-labelledby="workspace-title">
       <div className="workspace-shell">
         <SessionNavigation
-          colonies={coloniesQuery.data ?? [snapshot.colony]}
+          colonies={(coloniesQuery.data ?? [snapshot.colony]).filter(
+            (colony) => colony.queen_id === snapshot.colony.queen_id
+          )}
           creating={createMutation.isPending}
+          queenId={snapshot.colony.queen_id}
           onCreate={() => createMutation.mutate()}
         />
         <div className="conversation-workspace">

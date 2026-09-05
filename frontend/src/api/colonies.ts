@@ -22,7 +22,7 @@ export type WorkerStatus =
 export interface ColonyCreate {
   name: string;
   description: string;
-  queen_profile: string;
+  queen_id: string;
   model?: string;
   settings: Record<string, unknown>;
 }
@@ -39,6 +39,7 @@ export interface ColonyRead extends ColonyCreate {
 export interface SessionRead {
   id: string;
   colony_id: string;
+  queen_id: string;
   parent_session_id: string | null;
   actor_type: "queen" | "worker";
   status: SessionStatus;

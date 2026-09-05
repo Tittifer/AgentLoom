@@ -7,13 +7,13 @@ function App() {
   return (
     <div className="app-shell">
       <header className="app-header">
-        <NavLink className="brand" to="/colonies">
+        <NavLink className="brand" to="/queens">
           <span className="brand-mark" aria-hidden="true">AL</span>
           <span><strong>AgentLoom</strong><small>多智能体协作助手</small></span>
         </NavLink>
         <nav aria-label="主导航">
-          <NavLink className={({ isActive }) => isActive ? "nav-link active" : "nav-link"} to="/colonies">
-            会话
+          <NavLink className={({ isActive }) => isActive ? "nav-link active" : "nav-link"} to="/queens">
+            Queen
           </NavLink>
         </nav>
       </header>

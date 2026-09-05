@@ -26,6 +26,8 @@ from agentloom.colony.schemas import (
     ColonyRead,
     ColonySnapshot,
     MessageRead,
+    QueenCreate,
+    QueenRead,
     SessionRead,
     TaskItemCreate,
     TaskItemRead,
@@ -53,6 +55,10 @@ class SessionNotFoundError(LookupError):
 
 class SessionConflictError(ValueError):
     """Raised when a session cannot accept the requested transition."""
+
+
+class QueenNotFoundError(LookupError):
+    """Raised when a Queen identity does not exist."""
 
 
 UNTITLED_COLONY_NAME = "新会话"
@@ -198,8 +204,9 @@ class FileAgentLoopStore(AgentLoopStore):
         if agent_session is None:
             return None
         colony = await self._store.get(agent_session.colony_id)
+        queen = await self._store.get_queen(agent_session.queen_id)
         messages = await self._store.list_messages(session_id)
-        if colony is None or messages is None:
+        if colony is None or queen is None or messages is None:
             return None
         normalized, repaired_groups = normalize_message_history(messages)
         if agent_session.actor_type == "queen":
@@ -215,7 +222,12 @@ class FileAgentLoopStore(AgentLoopStore):
                 session_id=str(session_id),
                 repaired_groups=repaired_groups,
             )
-        return LoopContext(session=agent_session, colony=colony, messages=normalized)
+        return LoopContext(
+            session=agent_session,
+            colony=colony,
+            messages=normalized,
+            queen=queen,
+        )
 
     async def mark_running(self, context: LoopContext) -> bool:
         current = await self._store.get_session(context.session.id)
@@ -413,6 +425,7 @@ class ColonyRuntime:
         """Recover queued/running sessions after an application restart."""
 
         self._stopping = False
+        await self._storage.ensure_default_queen(self._settings.llm_model)
         worker_ids, queen_ids = await self._storage.recover_interrupted()
         for worker_id in worker_ids:
             self._schedule(self._run_worker(worker_id))
@@ -429,21 +442,41 @@ class ColonyRuntime:
         self._queen_loops.clear()
 
     async def create_colony(self, payload: ColonyCreate) -> ColonyRead:
-        colony, queen = await self._storage.create(
+        queen = await self._storage.get_queen(payload.queen_id)
+        if queen is None:
+            raise QueenNotFoundError(payload.queen_id)
+        colony, queen_session = await self._storage.create(
             payload.name,
             payload.description,
-            payload.queen_profile,
-            payload.model or self._settings.llm_model,
+            payload.queen_id,
+            payload.model or queen.default_model,
             payload.settings,
         )
         await self._storage.append_event(
             colony.id,
             "colony.created",
-            session_id=queen.id,
+            session_id=queen_session.id,
             payload={"name": colony.name},
         )
         await self._notifier.notify(colony.id)
         return colony
+
+    async def create_queen(self, payload: QueenCreate) -> QueenRead:
+        return await self._storage.create_queen(payload)
+
+    async def list_queens(self) -> list[QueenRead]:
+        return await self._storage.list_queens()
+
+    async def get_queen(self, queen_id: str) -> QueenRead:
+        queen = await self._storage.get_queen(queen_id)
+        if queen is None:
+            raise QueenNotFoundError(queen_id)
+        return queen
+
+    async def list_queen_sessions(self, queen_id: str) -> list[SessionRead]:
+        if await self._storage.get_queen(queen_id) is None:
+            raise QueenNotFoundError(queen_id)
+        return await self._storage.list_queen_sessions(queen_id)
 
     async def list_colonies(self) -> list[ColonyRead]:
         return await self._storage.list_colonies()
@@ -931,6 +964,7 @@ __all__ = [
     "ColonyNotFoundError",
     "ColonyRuntime",
     "FileAgentLoopStore",
+    "QueenNotFoundError",
     "SessionConflictError",
     "SessionNotFoundError",
 ]

@@ -22,10 +22,14 @@ async def test_colony_state_uses_files_and_one_tracker_database(tmp_path: Path) 
 
     colony_dir = tmp_path / "colonies" / str(colony.id)
     assert (colony_dir / "metadata.json").is_file()
+    assert (tmp_path / "queens" / "general" / "profile.json").is_file()
+    assert (tmp_path / "queens" / "general" / "sessions" / f"{queen.id}.json").is_file()
     assert (colony_dir / "sessions" / str(queen.id) / "meta.json").is_file()
     assert (colony_dir / "tracker" / "tracker.db").is_file()
     assert (colony_dir / "artifacts").is_dir()
     assert await store.get_queen_session(colony.id) == queen
+    assert queen.queen_id == "general"
+    assert await store.list_queen_sessions("general") == [queen]
     assert await store.list_colonies() == [colony]
 
     message_id = uuid4()
@@ -122,6 +126,7 @@ async def test_workers_tasks_status_and_delete_are_persisted(tmp_path: Path) -> 
     assert await store.delete_colony(colony.id)
     assert await store.get(colony.id) is None
     assert await store.get_session(queen.id) is None
+    assert not (tmp_path / "queens" / "general" / "sessions" / f"{queen.id}.json").exists()
     assert any((tmp_path / "trash").iterdir())
 
 

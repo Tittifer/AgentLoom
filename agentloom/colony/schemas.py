@@ -3,7 +3,7 @@
 from typing import Literal
 from uuid import UUID
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, JsonValue
+from pydantic import AliasChoices, AwareDatetime, BaseModel, ConfigDict, Field, JsonValue
 
 from agentloom.llm.base import ReasoningContent
 from agentloom.runtime.states import ColonyStatus, SessionStatus, TaskItemStatus, WorkerStatus
@@ -19,10 +19,29 @@ class ColonyModel(BaseModel):
     model_config = ConfigDict(extra="forbid", from_attributes=True, str_strip_whitespace=True)
 
 
+class QueenCreate(ColonyModel):
+    id: str = Field(pattern=r"^[a-z0-9][a-z0-9_-]{0,99}$")
+    name: str = Field(min_length=1, max_length=100)
+    description: str = Field(default="", max_length=1_000)
+    system_prompt: str = Field(default="", max_length=20_000)
+    default_model: str = Field(min_length=1, max_length=200)
+    settings: JsonObject = Field(default_factory=dict)
+
+
+class QueenRead(QueenCreate):
+    created_at: AwareDatetime
+    updated_at: AwareDatetime
+
+
 class ColonyCreate(ColonyModel):
     name: str = Field(min_length=1, max_length=200)
     description: str = ""
-    queen_profile: str = Field(default="general", min_length=1, max_length=100)
+    queen_id: str = Field(
+        default="general",
+        min_length=1,
+        max_length=100,
+        validation_alias=AliasChoices("queen_id", "queen_profile"),
+    )
     model: str | None = Field(default=None, min_length=1, max_length=200)
     settings: JsonObject = Field(default_factory=dict)
 
@@ -32,7 +51,7 @@ class ColonyRead(ColonyModel):
     name: str
     description: str
     status: ColonyStatus
-    queen_profile: str
+    queen_id: str
     model: str
     settings: JsonObject
     queen_session_id: UUID | None = None
@@ -43,6 +62,7 @@ class ColonyRead(ColonyModel):
 class SessionRead(ColonyModel):
     id: UUID
     colony_id: UUID
+    queen_id: str
     parent_session_id: UUID | None
     actor_type: ActorType
     status: SessionStatus
@@ -176,6 +196,8 @@ __all__ = [
     "JsonObject",
     "MessageCreate",
     "MessageRead",
+    "QueenCreate",
+    "QueenRead",
     "ReportStatus",
     "SessionRead",
     "TaskItemCreate",

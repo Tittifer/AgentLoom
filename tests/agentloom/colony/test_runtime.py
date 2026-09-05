@@ -488,7 +488,7 @@ def make_context() -> LoopContext:
             name="测试",
             description="",
             status=ColonyStatus.ACTIVE,
-            queen_profile="general",
+            queen_id="general",
             model="mock/schema",
             settings={},
             queen_session_id=session_id,
@@ -498,6 +498,7 @@ def make_context() -> LoopContext:
         session=SessionRead(
             id=session_id,
             colony_id=colony_id,
+            queen_id="general",
             parent_session_id=None,
             actor_type="queen",
             status=SessionStatus.IDLE,

@@ -1,10 +1,12 @@
 # AgentLoom
 
-AgentLoom 是一个基于 Hive Colony 思路实现的持久化多智能体协作应用。每个 Colony 拥有一个长期存在的 Queen 会话；Queen 持续与用户对话、维护任务计划和共享 Tracker，并按实际需要动态派生多个并行 Worker。系统不再预先生成固定 DAG，也不要求用户手动填写 Context JSON。
+AgentLoom 是一个基于 Hive Colony 思路实现的持久化多智能体协作应用。Queen 身份与会话分离：同一个 Queen 可以拥有多条彼此隔离的 Colony 会话；每个 Colony 会话持续维护自己的消息、任务、Tracker 和 Worker。Queen 按实际需要动态派生多个并行 Worker，系统不预先生成固定 DAG，也不要求用户手动填写 Context JSON。
 
 ## 核心能力
 
 - Queen 多轮会话：用户可以持续补充信息、调整目标或追问结果。
+- Queen 身份管理：身份、系统提示词、默认模型和设置保存在独立 Profile 中，会话只引用稳定的 `queen_id`。
+- 会话隔离：同一 Queen 下的不同会话不共享消息、预算、Worker、Task 或 Tracker。
 - 动态 Worker：Queen 通过 `run_worker` 即时创建一个或多个并行 Worker。
 - 独立 AgentLoop：每个 Queen 会话保持自己的长期循环，每个 Worker 创建自己的循环实例；两类智能体共用相同的模型调用、工具、质量检查、用量统计和持久化协议。
 - 共享状态：任务计划保存在会话文件中，每个 Colony 使用独立的 SQLite Tracker。
@@ -21,7 +23,7 @@ agentloom/                 FastAPI 后端包
   agents/                 AgentLoop 实现与 Judge
   api/routes/colonies.py  Colony、会话和 SSE API
   colony/                 Colony DTO、通知器和运行时
-  storage/                文件存储与每 Colony SQLite Tracker
+  storage/                Queen Profile、会话文件与每 Colony SQLite Tracker
   llm/                    Mock 与 LiteLLM 适配器
   tools/                  有界只读工具注册表
 frontend/                 React Colony 工作台
@@ -63,7 +65,7 @@ AGENTLOOM_MAX_CONCURRENT_WORKERS=4
 AGENTLOOM_WORKER_TIMEOUT_SECONDS=600
 ```
 
-`AGENTLOOM_HOME` 是本地持久化根目录，默认指向项目目录下的 `.agentloom`。每个 Colony 都是其中一个自包含目录；除每个 Colony 的 `tracker/tracker.db` 外，其余运行状态使用 JSON、JSONL 和普通文件保存。
+`AGENTLOOM_HOME` 是本地持久化根目录，默认指向项目目录下的 `.agentloom`。Queen 身份保存在 `queens/<queen_id>/profile.json`，旗下 Session 引用保存在 `sessions/`；每个 Colony 是一个自包含目录。除每个 Colony 的 `tracker/tracker.db` 外，其余运行状态使用 JSON、JSONL 和普通文件保存。
 
 ### 第三方 OpenAI 兼容模型
 
@@ -124,6 +126,10 @@ GET  /api/colonies/{colony_id}/workers
 GET  /api/colonies/{colony_id}/tasks
 GET  /api/colonies/{colony_id}/tracker
 GET  /api/colonies/{colony_id}/events
+POST /api/queens
+GET  /api/queens
+GET  /api/queens/{queen_id}
+GET  /api/queens/{queen_id}/sessions
 ```
 
 SSE 事件先追加到 Colony 的 `events.jsonl`，再通知客户端；客户端可用 `after` 序号重放断线期间的事件。

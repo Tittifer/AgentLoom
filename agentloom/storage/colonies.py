@@ -14,6 +14,8 @@ from agentloom.colony.schemas import (
     ColonyEventRead,
     ColonyRead,
     MessageRead,
+    QueenCreate,
+    QueenRead,
     SessionRead,
     TaskItemCreate,
     TaskItemRead,
@@ -31,6 +33,7 @@ from agentloom.storage.base import (
     read_json_lines,
     utc_now,
 )
+from agentloom.storage.queens import LocalQueenStore
 from agentloom.storage.tracker import SQLiteTrackerStore
 
 JSON_OBJECT = TypeAdapter(dict[str, JsonValue])
@@ -57,6 +60,7 @@ class LocalColonyStore:
         self._colonies = self.root / "colonies"
         self._trash = self.root / "trash"
         self._tracker = SQLiteTrackerStore()
+        self._queens = LocalQueenStore(self.root)
         self._locks: dict[UUID, asyncio.Lock] = {}
         self._root_lock = asyncio.Lock()
 
@@ -64,6 +68,7 @@ class LocalColonyStore:
         """Create and validate the writable storage root."""
 
         await asyncio.to_thread(self._initialize_sync)
+        await self._queens.initialize()
 
     async def close(self) -> None:
         """Close the store; operations use no persistent file handles."""
@@ -84,31 +89,37 @@ class LocalColonyStore:
         self,
         name: str,
         description: str,
-        queen_profile: str,
+        queen_id: str,
         model: str,
         settings: Mapping[str, object],
     ) -> tuple[ColonyRead, SessionRead]:
+        queen_identity = await self._queens.get(queen_id)
+        if queen_identity is None and queen_id == "general":
+            queen_identity = await self._queens.ensure_default(model)
+        if queen_identity is None:
+            raise KeyError(queen_id)
         async with self._root_lock:
             merged = default_colony_settings()
             merged.update(JSON_OBJECT.validate_python(dict(settings)))
             now = utc_now()
             colony_id = uuid4()
-            queen_id = uuid4()
+            queen_session_id = uuid4()
             colony = ColonyRead(
                 id=colony_id,
                 name=name,
                 description=description,
                 status=ColonyStatus.ACTIVE,
-                queen_profile=queen_profile,
+                queen_id=queen_id,
                 model=model,
                 settings=merged,
-                queen_session_id=queen_id,
+                queen_session_id=queen_session_id,
                 created_at=now,
                 updated_at=now,
             )
             queen = SessionRead(
-                id=queen_id,
+                id=queen_session_id,
                 colony_id=colony_id,
+                queen_id=queen_id,
                 parent_session_id=None,
                 actor_type="queen",
                 status=SessionStatus.IDLE,
@@ -122,15 +133,44 @@ class LocalColonyStore:
                 ended_at=None,
             )
             await asyncio.to_thread(self._create_sync, colony, queen)
+            await self._queens.add_session_reference(queen_id, queen.id, colony.id)
             await self._tracker.initialize(self._tracker_path(colony_id))
             return colony, queen
 
     async def list_colonies(self) -> list[ColonyRead]:
         return await asyncio.to_thread(self._list_colonies_sync)
 
+    async def create_queen(self, payload: QueenCreate) -> QueenRead:
+        return await self._queens.create(payload)
+
+    async def ensure_default_queen(self, model: str) -> QueenRead:
+        return await self._queens.ensure_default(model)
+
+    async def list_queens(self) -> list[QueenRead]:
+        return await self._queens.list()
+
+    async def get_queen(self, queen_id: str) -> QueenRead | None:
+        return await self._queens.get(queen_id)
+
+    async def list_queen_sessions(self, queen_id: str) -> list[SessionRead]:
+        sessions: list[SessionRead] = []
+        for colony in await self.list_colonies():
+            if colony.queen_id != queen_id or colony.queen_session_id is None:
+                continue
+            session = await self.get_session(colony.queen_session_id)
+            if session is not None:
+                sessions.append(session)
+        return sorted(sessions, key=lambda item: item.created_at, reverse=True)
+
     async def delete_colony(self, colony_id: UUID) -> bool:
         async with self._lock(colony_id):
-            return await asyncio.to_thread(self._delete_colony_sync, colony_id)
+            colony = await self.get(colony_id)
+            deleted = await asyncio.to_thread(self._delete_colony_sync, colony_id)
+            if deleted and colony is not None and colony.queen_session_id is not None:
+                await self._queens.remove_session_reference(
+                    colony.queen_id, colony.queen_session_id
+                )
+            return deleted
 
     async def get(self, colony_id: UUID) -> ColonyRead | None:
         return await asyncio.to_thread(self._get_colony_sync, colony_id)
@@ -468,6 +508,9 @@ class LocalColonyStore:
         timeout_seconds: int,
     ) -> list[WorkerRead]:
         now = utc_now()
+        parent = self._read_session_sync(colony_id, queen_session_id)
+        if parent is None:
+            raise RuntimeError(f"Queen session {queen_session_id} does not exist")
         workers: list[WorkerRead] = []
         for task in tasks:
             session_id = uuid4()
@@ -475,6 +518,7 @@ class LocalColonyStore:
             session = SessionRead(
                 id=session_id,
                 colony_id=colony_id,
+                queen_id=parent.queen_id,
                 parent_session_id=queen_session_id,
                 actor_type="worker",
                 status=SessionStatus.QUEUED,
