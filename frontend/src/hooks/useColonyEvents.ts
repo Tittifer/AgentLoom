@@ -3,6 +3,9 @@ import { useQueryClient } from "@tanstack/react-query";
 
 const EVENT_TYPES = [
   "colony.created",
+  "colony.suggested",
+  "colony.suggestion.dismissed",
+  "session.created",
   "message.created",
   "message.completed",
   "session.started",
@@ -39,16 +42,36 @@ export function useColonyEvents(
   queenSessionId?: string,
   persistedMessageIds: readonly string[] = [],
 ) {
+  return useScopedEvents("colonies", colonyId, queenSessionId, persistedMessageIds);
+}
+
+export function useSessionEvents(
+  sessionId: string | undefined,
+  persistedMessageIds: readonly string[] = [],
+) {
+  return useScopedEvents("sessions", sessionId, sessionId, persistedMessageIds);
+}
+
+function useScopedEvents(
+  scope: "colonies" | "sessions",
+  resourceId: string | undefined,
+  queenSessionId?: string,
+  persistedMessageIds: readonly string[] = [],
+) {
   const queryClient = useQueryClient();
   const [streamingMessage, setStreamingMessage] = useState<ActiveStreamingMessage | null>(null);
 
   useEffect(() => {
-    if (!colonyId) return undefined;
-    const source = new EventSource(`/api/colonies/${colonyId}/events?after=0`);
+    if (!resourceId) return undefined;
+    const source = new EventSource(`/api/${scope}/${resourceId}/events?after=0`);
 
     const listeners = EVENT_TYPES.map((type) => {
       const listener = () => {
-        void queryClient.invalidateQueries({ queryKey: ["colony", colonyId] });
+        if (scope === "colonies") {
+          void queryClient.invalidateQueries({ queryKey: ["colony", resourceId] });
+        } else {
+          void queryClient.invalidateQueries({ queryKey: ["session", resourceId] });
+        }
         if (queenSessionId) {
           void queryClient.invalidateQueries({ queryKey: ["messages", queenSessionId] });
         }
@@ -82,7 +105,7 @@ export function useColonyEvents(
       source.removeEventListener("message.stream.cancelled", cancelListener);
       source.close();
     };
-  }, [colonyId, queenSessionId, queryClient]);
+  }, [scope, resourceId, queenSessionId, queryClient]);
 
   if (!streamingMessage) return null;
   if (

@@ -3,7 +3,6 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "react-router-dom";
 
 import {
-  createColony,
   deleteColony,
   getColony,
   listColonies,
@@ -11,6 +10,7 @@ import {
   submitMessage,
   type WorkerRead,
 } from "../api/colonies";
+import { createQueenSession } from "../api/queens";
 import { ChatPanel } from "../components/ChatPanel";
 import { ColonySidebar } from "../components/ColonySidebar";
 import { SessionNavigation } from "../components/SessionNavigation";
@@ -53,15 +53,10 @@ export function ColonyWorkspacePage() {
     },
   });
   const createMutation = useMutation({
-    mutationFn: () => createColony({
-      name: "新会话",
-      description: "",
-      queen_id: colonyQuery.data?.colony.queen_id ?? "",
-      settings: {},
-    }),
-    onSuccess: async (colony) => {
-      await queryClient.invalidateQueries({ queryKey: ["colonies"] });
-      navigate(`/colonies/${colony.id}`);
+    mutationFn: () => createQueenSession(colonyQuery.data?.colony.queen_id ?? ""),
+    onSuccess: async (session) => {
+      await queryClient.invalidateQueries({ queryKey: ["queen-sessions"] });
+      navigate(`/sessions/${session.id}`);
     },
   });
   const streamingMessage = useColonyEvents(

@@ -10,7 +10,7 @@ import structlog
 from pydantic import JsonValue
 
 from agentloom.agents.judge import JudgePipeline
-from agentloom.colony.schemas import ActorType, ColonyRead, MessageRead, QueenRead, SessionRead
+from agentloom.colony.schemas import ColonyRead, MessageRead, QueenRead, SessionRead
 from agentloom.llm.base import (
     LLMContextLengthError,
     LLMMessage,
@@ -31,7 +31,7 @@ DEFAULT_GRACE_TURNS = {"queen": 1, "worker": 2}
 @dataclass(frozen=True)
 class LoopContext:
     session: SessionRead
-    colony: ColonyRead
+    colony: ColonyRead | None
     messages: list[LLMMessage]
     queen: QueenRead | None = None
     recalled_memory: str = ""
@@ -92,7 +92,7 @@ class AgentLoopStore(Protocol):
 
 
 class AgentToolExecutor(Protocol):
-    def definitions(self, actor_type: ActorType) -> list[ToolDefinition]: ...
+    def definitions(self, context: LoopContext) -> list[ToolDefinition]: ...
 
     async def execute(
         self,
@@ -249,7 +249,7 @@ class AgentLoop:
 
             in_grace = budget_reason is not None
             iteration = last_work_iteration + grace_turn + 1 if in_grace else next_work_iteration
-            definitions = self._tools.definitions(context.session.actor_type)
+            definitions = self._tools.definitions(context)
             if in_grace:
                 allowed_names = (
                     GRACE_TERMINAL_TOOL_NAMES
@@ -431,7 +431,13 @@ class AgentLoop:
         iteration: int,
     ) -> tuple[LLMResponse, UUID]:
         request = LLMRequest(
-            model=context.colony.model,
+            model=(
+                context.queen.model
+                if context.queen is not None
+                else context.colony.model
+                if context.colony is not None
+                else ""
+            ),
             messages=messages,
             tools=definitions,
             timeout_seconds=self._timeout_seconds,
@@ -660,11 +666,19 @@ class AgentLoop:
     @staticmethod
     def _system_message(context: LoopContext) -> LLMMessage:
         if context.session.actor_type == "queen":
-            runtime_prompt = (
-                "你是 AgentLoom Colony 的 Queen。持续与用户协作，维护计划和共享 Tracker。"
-                "当任务可并行时调用 run_worker；Worker 报告会作为用户消息回到当前会话。"
-                "不要虚构工具结果，最终回复必须使用中文。"
-            )
+            if context.session.operating_phase == "independent":
+                runtime_prompt = (
+                    "你是 AgentLoom 的独立 Queen，先直接帮助用户验证工作方法。"
+                    "你当前没有 Colony、Tracker 或 Worker；不得假装已经派生 Worker。"
+                    "只有当任务确实适合并行、周期性或长期运行时，才调用 suggest_colony 提出建议；"
+                    "该工具只请求用户确认，不会直接创建 Colony。最终回复必须使用中文。"
+                )
+            else:
+                runtime_prompt = (
+                    "你是 AgentLoom Colony 的 Queen。持续与用户协作，维护计划和共享 Tracker。"
+                    "当任务可并行时调用 run_worker；Worker 报告会作为用户消息回到当前会话。"
+                    "不要虚构工具结果，最终回复必须使用中文。"
+                )
             identity_prompt = context.queen.system_prompt if context.queen is not None else ""
             content = (
                 f"{identity_prompt}\n\n{runtime_prompt}" if identity_prompt else runtime_prompt

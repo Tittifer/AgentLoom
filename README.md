@@ -1,10 +1,11 @@
 # AgentLoom
 
-AgentLoom 是一个基于 Hive Colony 思路实现的持久化多智能体协作应用。Queen 身份与会话分离：同一个 Queen 可以拥有多条彼此隔离的 Colony 会话；每个 Colony 会话持续维护自己的消息、任务、Tracker 和 Worker。Queen 按实际需要动态派生多个并行 Worker，系统不预先生成固定 DAG，也不要求用户手动填写 Context JSON。
+AgentLoom 是一个基于 Hive Colony 思路实现的持久化多智能体协作应用。Queen 身份与会话分离：新会话先以独立 DM 运行；只有当 Queen 判断任务需要并行协作并得到用户确认后，才会分叉为 Colony。每个 Colony 持续维护自己的消息、任务、Tracker 和 Worker。
 
 ## 核心能力
 
 - Queen 多轮会话：用户可以持续补充信息、调整目标或追问结果。
+- Colony 显式分叉：独立 Queen 只能提交建议；用户确认后系统复制完整对话、初始化任务和 Tracker，并锁定源 DM。
 - Queen 身份管理：身份、系统提示词、模型协议与连接配置保存在独立 YAML Profile 中，会话只引用稳定的 `queen_id`。
 - 会话隔离：同一 Queen 下的不同会话不共享消息、预算、Worker、Task 或 Tracker。
 - 动态 Worker：Queen 通过 `run_worker` 即时创建一个或多个并行 Worker。
@@ -49,7 +50,7 @@ AgentLoom 不读取 `.env`。持久化根目录固定为项目根目录下的 `.
 
 首次启动后在 Queen 页面创建 Queen，并填写模型名称、没有 API 路径后缀的服务 Base URL 和 API Key。后端根据模型名称自动选择协议：`claude-*` 使用 Claude 协议，`gemini-*` 使用 Gemini 协议，其他模型使用 OpenAI 兼容协议。OpenAI 兼容协议会自动给 Base URL 添加 `/v1`。
 
-Queen 配置保存在 `queens/<queen_id>/profile.yaml`，`queen_id` 由后端根据名称自动生成。API Key 只保存在本机 YAML 中，不会通过 Queen 查询接口返回；`.agentloom/` 已被 Git 忽略。旗下 Session 引用保存在 `sessions/`，每个 Colony 是一个自包含目录。除每个 Colony 的 `tracker/tracker.db` 外，其余运行状态使用 JSON、JSONL 和普通文件保存。
+Queen 配置保存在 `queens/<queen_id>/profile.yaml`，`queen_id` 由后端根据名称自动生成。API Key 只保存在本机 YAML 中，不会通过 Queen 查询接口返回；`.agentloom/` 已被 Git 忽略。独立 DM 保存在 `queens/<queen_id>/sessions/<session_id>/`，每个 Colony 则是 `colonies/<colony_id>/` 下的自包含目录。除每个 Colony 的 `tracker/tracker.db` 外，其余运行状态使用 JSON、JSONL 和普通文件保存。
 
 长期记忆保存在 `.agentloom/memories/global/*.md` 和 `.agentloom/memories/agents/queens/<queen_id>/*.md`。每条记忆包含 YAML frontmatter 和 Markdown 正文，单文件最多 4096 字节。Worker 不自动继承这些记忆；可以通过顶部“记忆”页面查看、编辑或删除。
 
@@ -82,11 +83,11 @@ uv run --locked python dev.py
 
 ## 使用流程
 
-1. 点击“新建会话”后会直接进入工作区；发送第一条消息时，系统会据此生成会话名称并使用默认协作配置。
-2. 主智能体可以创建任务项、写入共享状态，并按需要派生多个并行协作节点。
-3. 协作节点独立执行任务并向主智能体汇报；内部工具消息和结构化数据不会显示在用户对话中。
-4. 主智能体综合协作结果后回复用户，用户可以继续补充信息或调整要求。
-5. 不再需要的会话可以从会话列表或会话页面删除。
+1. 点击“新建会话”后进入独立 Queen DM，此时不创建 Tracker 或 Worker。
+2. Queen 先直接处理目标；当任务适合并行、周期性或长期运行时，在右侧提交 Colony 建议。
+3. 用户可以修改名称和目标后确认，也可暂不创建。确认后会话全链路复制到新 Colony，源 DM 转为只读并保留跳转关系。
+4. Colony Queen 可创建任务、写入共享 Tracker，并按需要派生多个并行 Worker。
+5. Worker 独立执行并向 Queen 汇报，Queen 综合结果后回复用户。
 
 ## 主要 API
 
@@ -106,9 +107,13 @@ POST /api/queens
 GET  /api/queens
 GET  /api/queens/{queen_id}
 GET  /api/queens/{queen_id}/sessions
+POST /api/queens/{queen_id}/sessions
+POST /api/sessions/{session_id}/fork-colony
+POST /api/sessions/{session_id}/dismiss-colony-suggestion
+GET  /api/sessions/{session_id}/events
 ```
 
-SSE 事件先追加到 Colony 的 `events.jsonl`，再通知客户端；客户端可用 `after` 序号重放断线期间的事件。
+SSE 事件先追加到 Colony 或独立 DM 的 `events.jsonl`，再通知客户端；客户端可用 `after` 序号重放断线期间的事件。
 
 ## 测试与检查
 

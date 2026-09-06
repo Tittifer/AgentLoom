@@ -5,7 +5,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
-from agentloom.colony.schemas import QueenCreate, TaskItemCreate, TrackerUpsert, WorkerTask
+from agentloom.colony.schemas import (
+    ColonyForkCreate,
+    ColonySuggestion,
+    QueenCreate,
+    TaskItemCreate,
+    TrackerUpsert,
+    WorkerTask,
+)
 from agentloom.context.schemas import CompactionCheckpoint
 from agentloom.llm.base import LLMMessage
 from agentloom.runtime.states import SessionStatus, TaskItemStatus, WorkerStatus
@@ -66,6 +73,64 @@ async def test_colony_state_uses_files_and_one_tracker_database(tmp_path: Path) 
         TrackerUpsert(namespace="research", entry_key="A", data={"done": False}),
     )
     assert await store.list_tracker(colony.id) == [tracker]
+
+
+async def test_dm_session_is_stored_under_queen_without_colony(tmp_path: Path) -> None:
+    store = await create_store(tmp_path)
+
+    session = await store.create_dm_session("queen_general")
+
+    assert session.colony_id is None
+    assert session.session_kind == "dm"
+    assert session.operating_phase == "independent"
+    assert (
+        tmp_path / "queens" / "queen_general" / "sessions" / str(session.id) / "meta.json"
+    ).is_file()
+    assert await store.list_colonies() == []
+    assert list((tmp_path / "colonies").iterdir()) == []
+    assert await store.list_queen_sessions("queen_general") == [session]
+
+
+async def test_dm_fork_preserves_transcript_and_locks_source(tmp_path: Path) -> None:
+    store = await create_store(tmp_path)
+    source = await store.create_dm_session("queen_general")
+    await store.append_message(source.id, LLMMessage(role="user", content="调研两个城市"))
+    await store.append_message(source.id, LLMMessage(role="assistant", content="建议并行调研"))
+    suggestion = ColonySuggestion(
+        id=uuid4(),
+        suggested_name="城市调研",
+        reason="子任务可并行",
+        goal="对比两个城市",
+        handoff="保留已确认的偏好",
+        proposed_tasks=["调研 A", "调研 B"],
+        created_at=datetime.now(UTC),
+    )
+    await store.set_colony_suggestion(source.id, suggestion)
+
+    colony, target = await store.fork_dm_session(
+        source.id,
+        ColonyForkCreate(
+            suggestion_id=suggestion.id,
+            name=suggestion.suggested_name,
+            description=suggestion.goal,
+        ),
+    )
+
+    locked = await store.get_session(source.id)
+    copied = await store.list_messages(target.id)
+    original = await store.list_messages(source.id)
+    assert locked is not None and locked.status is SessionStatus.FORKED
+    assert locked.forked_to_colony_id == colony.id
+    assert locked.forked_to_session_id == target.id
+    assert locked.pending_colony_suggestion is not None
+    assert locked.pending_colony_suggestion.status == "accepted"
+    assert target.colony_id == colony.id
+    assert target.session_kind == "colony"
+    assert target.operating_phase == "colony"
+    assert copied is not None and original is not None
+    assert [item.content for item in copied] == [item.content for item in original]
+    assert all(item.session_id == target.id for item in copied)
+    assert (tmp_path / "colonies" / str(colony.id) / "tracker" / "tracker.db").is_file()
 
 
 async def test_reasoning_content_is_persisted_but_not_publicly_serialized(

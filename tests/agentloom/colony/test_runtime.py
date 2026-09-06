@@ -20,6 +20,7 @@ from agentloom.colony.runtime import (
     normalize_message_history,
 )
 from agentloom.colony.schemas import (
+    ColonyForkCreate,
     ColonyRead,
     JsonObject,
     MessageRead,
@@ -545,6 +546,61 @@ async def test_runtime_spills_and_pages_large_tool_results(tmp_path: Path) -> No
     assert isinstance(loaded.value, dict)
     assert loaded.value["truncated"] is True
     assert "content" in loaded.value
+
+
+async def test_independent_queen_suggests_then_user_forks_colony(tmp_path: Path) -> None:
+    store = await create_store(tmp_path)
+    session = await store.create_dm_session("queen_general")
+    context = await FileAgentLoopStore(store, ColonyEventNotifier()).load(session.id)
+    assert context is not None and context.colony is None
+    runtime = ColonyRuntime(
+        store,
+        SchemaMockLLMProvider(),
+        ColonyEventNotifier(),
+        Settings(environment="test", storage_root=tmp_path),
+        create_builtin_tool_registry(),
+    )
+
+    tool_names = {definition.name for definition in runtime.definitions(context)}
+    assert "suggest_colony" in tool_names
+    assert "run_worker" not in tool_names
+    assert "tracker_upsert" not in tool_names
+    result = await runtime.execute(
+        context,
+        ToolCall(
+            id="suggest",
+            name="suggest_colony",
+            arguments={
+                "suggested_name": "城市对比",
+                "reason": "适合并行调研",
+                "goal": "比较两个城市",
+                "handoff": "用户偏好文化和美食",
+                "proposed_tasks": ["调研成都", "调研杭州"],
+            },
+        ),
+    )
+    assert isinstance(result.value, dict)
+    suggestion_id = result.value["id"]
+    assert isinstance(suggestion_id, str)
+
+    colony = await runtime.fork_session_into_colony(
+        session.id,
+        ColonyForkCreate(
+            suggestion_id=UUID(suggestion_id),
+            name="城市对比",
+            description="比较两个城市",
+        ),
+    )
+
+    source = await store.get_session(session.id)
+    target = await store.get_queen_session(colony.id)
+    tasks = await store.list_tasks(colony.id)
+    assert source is not None and source.status is SessionStatus.FORKED
+    assert target is not None and target.operating_phase == "colony"
+    assert [task.title for task in tasks] == ["调研成都", "调研杭州"]
+    target_messages = await store.list_messages(target.id)
+    assert target_messages is not None
+    assert target_messages[-1].content.startswith("[COLONY_FORK]\n")
 
 
 async def test_file_loop_store_loads_compacted_context_without_hiding_transcript(

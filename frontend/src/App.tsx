@@ -2,7 +2,7 @@ import { NavLink, Outlet, useLocation } from "react-router-dom";
 
 function App() {
   const location = useLocation();
-  const isWorkspace = /^\/colonies\/[^/]+$/.test(location.pathname);
+  const isWorkspace = /^\/(?:colonies|sessions)\/[^/]+$/.test(location.pathname);
 
   return (
     <div className="app-shell">

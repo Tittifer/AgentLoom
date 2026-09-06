@@ -163,5 +163,6 @@ function isVisibleConversationMessage(message: MessageRead): boolean {
 function sessionStatusText(status: SessionRead["status"]): string {
   if (status === "queued" || status === "running") return "思考中";
   if (status === "failed") return "需要重试";
+  if (status === "forked") return "已创建 Colony";
   return "已就绪";
 }

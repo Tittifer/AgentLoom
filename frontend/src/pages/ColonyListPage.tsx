@@ -1,34 +1,44 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "react-router-dom";
 
-import { createColony, deleteColony, listColonies } from "../api/colonies";
+import { deleteColony, listColonies } from "../api/colonies";
+import { createQueenSession, listQueenSessions } from "../api/queens";
 import { formatDateTime, formatError, statusText } from "../utils/format";
 
 export function ColonyListPage() {
   const { queenId = "" } = useParams();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const query = useQuery({ queryKey: ["colonies"], queryFn: listColonies });
+  const sessionsQuery = useQuery({
+    queryKey: ["queen-sessions", queenId],
+    queryFn: () => listQueenSessions(queenId),
+    enabled: Boolean(queenId),
+  });
+  const coloniesQuery = useQuery({ queryKey: ["colonies"], queryFn: listColonies });
   const deleteMutation = useMutation({
     mutationFn: deleteColony,
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["colonies"] });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["colonies"] }),
+        queryClient.invalidateQueries({ queryKey: ["queen-sessions", queenId] }),
+      ]);
     },
   });
   const createMutation = useMutation({
-    mutationFn: () => createColony({
-      name: "新会话",
-      description: "",
-      queen_id: queenId,
-      settings: {},
-    }),
-    onSuccess: async (colony) => {
-      await queryClient.invalidateQueries({ queryKey: ["colonies"] });
-      navigate(`/colonies/${colony.id}`);
+    mutationFn: () => createQueenSession(queenId),
+    onSuccess: async (session) => {
+      await queryClient.invalidateQueries({ queryKey: ["queen-sessions", queenId] });
+      navigate(`/sessions/${session.id}`);
     },
   });
+  const colonyById = new Map(
+    (coloniesQuery.data ?? [])
+      .filter((colony) => colony.queen_id === queenId)
+      .map((colony) => [colony.id, colony]),
+  );
+  const sessions = sessionsQuery.data ?? [];
 
-  function removeSession(colonyId: string, name: string) {
+  function removeColony(colonyId: string, name: string) {
     if (window.confirm(`确定删除会话“${name}”吗？删除后无法恢复。`)) {
       deleteMutation.mutate(colonyId);
     }
@@ -38,9 +48,9 @@ export function ColonyListPage() {
     <section aria-labelledby="colonies-title">
       <div className="page-heading">
         <div>
-          <span className="eyebrow">会话列表</span>
+          <span className="eyebrow">Queen 会话</span>
           <h1 id="colonies-title">我的会话</h1>
-          <p>从一次对话开始，让多个智能体在后台协作完成复杂目标。</p>
+          <p>先与 Queen 独立对话；需要并行协作时，由 Queen 提议并经你确认后创建 Colony。</p>
         </div>
         <button
           className="primary-button"
@@ -52,24 +62,25 @@ export function ColonyListPage() {
         </button>
       </div>
 
-      {query.isLoading ? <div className="panel loading-panel">正在加载会话…</div> : null}
-      {query.isError ? (
+      {sessionsQuery.isLoading || coloniesQuery.isLoading ? (
+        <div className="panel loading-panel">正在加载会话…</div>
+      ) : null}
+      {sessionsQuery.isError || coloniesQuery.isError ? (
         <div className="panel error-panel">
           <h2>无法加载会话</h2>
-          <p>{formatError(query.error)}</p>
+          <p>{formatError(sessionsQuery.error ?? coloniesQuery.error)}</p>
         </div>
       ) : null}
-      {deleteMutation.isError ? (
-        <div className="panel error-panel"><p>{formatError(deleteMutation.error)}</p></div>
+      {deleteMutation.isError || createMutation.isError ? (
+        <div className="panel error-panel">
+          <p>{formatError(deleteMutation.error ?? createMutation.error)}</p>
+        </div>
       ) : null}
-      {createMutation.isError ? (
-        <div className="panel error-panel"><p>{formatError(createMutation.error)}</p></div>
-      ) : null}
-      {query.data?.filter((colony) => colony.queen_id === queenId).length === 0 ? (
+      {!sessionsQuery.isLoading && sessions.length === 0 ? (
         <div className="empty-state">
-          <div className="empty-icon" aria-hidden="true">蜂</div>
+          <div className="empty-icon" aria-hidden="true">Q</div>
           <h2>开始第一次对话</h2>
-          <p>输入目标，AgentLoom 会自动安排协作过程。</p>
+          <p>Queen 会先独立理解和处理目标，不会在创建会话时立即生成 Colony。</p>
           <button
             className="primary-button"
             disabled={createMutation.isPending}
@@ -81,32 +92,45 @@ export function ColonyListPage() {
         </div>
       ) : null}
       <div className="colony-card-grid">
-        {query.data?.filter((colony) => colony.queen_id === queenId).map((colony) => (
-          <article className="colony-card" key={colony.id}>
-            <header>
-              <span className="colony-avatar">Q</span>
-              <div className="card-actions">
-                <span className={`status-pill status-${colony.status}`}>{statusText(colony.status)}</span>
-                <button
-                  aria-label={`删除会话 ${colony.name}`}
-                  className="delete-button"
-                  disabled={deleteMutation.isPending && deleteMutation.variables === colony.id}
-                  onClick={() => removeSession(colony.id, colony.name)}
-                  type="button"
-                >
-                  删除
-                </button>
-              </div>
-            </header>
-            <Link className="colony-card-link" to={`/colonies/${colony.id}`}>
-              <h2>{colony.name}</h2>
-              <p>继续这次协作对话</p>
-            </Link>
-            <footer>
-              <span>最近更新</span><time>{formatDateTime(colony.updated_at)}</time>
-            </footer>
-          </article>
-        ))}
+        {sessions.map((session) => {
+          const colony = session.colony_id ? colonyById.get(session.colony_id) : undefined;
+          const destination = session.forked_to_colony_id;
+          const isDm = session.session_kind === "dm";
+          const href = isDm && !destination
+            ? `/sessions/${session.id}`
+            : `/colonies/${destination ?? session.colony_id}`;
+          const name = colony?.name ?? (destination ? "已转为 Colony" : "独立 Queen 会话");
+          return (
+            <article className="colony-card" key={session.id}>
+              <header>
+                <span className="colony-avatar">Q</span>
+                <div className="card-actions">
+                  <span className={`status-pill status-${session.status}`}>
+                    {session.status === "forked" ? "已创建 Colony" : statusText(session.status)}
+                  </span>
+                  {colony ? (
+                    <button
+                      aria-label={`删除会话 ${name}`}
+                      className="delete-button"
+                      disabled={deleteMutation.isPending && deleteMutation.variables === colony.id}
+                      onClick={() => removeColony(colony.id, name)}
+                      type="button"
+                    >
+                      删除
+                    </button>
+                  ) : null}
+                </div>
+              </header>
+              <Link className="colony-card-link" to={href}>
+                <h2>{name}</h2>
+                <p>{isDm ? "独立对话" : "Colony 协作会话"}</p>
+              </Link>
+              <footer>
+                <span>最近更新</span><time>{formatDateTime(session.updated_at)}</time>
+              </footer>
+            </article>
+          );
+        })}
       </div>
     </section>
   );

@@ -13,6 +13,8 @@ from agentloom.runtime.states import ColonyStatus, SessionStatus, TaskItemStatus
 
 JsonObject = dict[str, JsonValue]
 ActorType = Literal["queen", "worker"]
+SessionKind = Literal["dm", "colony"]
+OperatingPhase = Literal["independent", "colony"]
 ReportStatus = Literal["success", "partial", "failed"]
 
 
@@ -86,16 +88,39 @@ class ColonyRead(ColonyModel):
     model: str
     settings: JsonObject
     queen_session_id: UUID | None = None
+    source_session_id: UUID | None = None
     created_at: AwareDatetime
     updated_at: AwareDatetime
 
 
+class ColonySuggestion(ColonyModel):
+    id: UUID
+    suggested_name: str = Field(min_length=1, max_length=200)
+    reason: str = Field(min_length=1, max_length=2_000)
+    goal: str = Field(min_length=1, max_length=4_000)
+    handoff: str = Field(min_length=1, max_length=20_000)
+    proposed_tasks: list[str] = Field(default_factory=list, max_length=100)
+    status: Literal["pending", "accepted", "dismissed"] = "pending"
+    created_at: AwareDatetime
+
+
+class ColonyForkCreate(ColonyModel):
+    suggestion_id: UUID
+    name: str = Field(min_length=1, max_length=200)
+    description: str = Field(default="", max_length=2_000)
+
+
 class SessionRead(ColonyModel):
     id: UUID
-    colony_id: UUID
+    colony_id: UUID | None = None
     queen_id: str
     parent_session_id: UUID | None
     actor_type: ActorType
+    session_kind: SessionKind = "colony"
+    operating_phase: OperatingPhase = "colony"
+    pending_colony_suggestion: ColonySuggestion | None = None
+    forked_to_colony_id: UUID | None = None
+    forked_to_session_id: UUID | None = None
     status: SessionStatus
     park_reason: str | None
     task: JsonObject
@@ -201,7 +226,7 @@ class TaskItemRead(ColonyModel):
 
 class ColonyEventRead(ColonyModel):
     id: UUID
-    colony_id: UUID
+    colony_id: UUID | None = None
     session_id: UUID | None
     worker_run_id: UUID | None
     sequence: int = Field(gt=0)
@@ -222,15 +247,19 @@ __all__ = [
     "ActorType",
     "ColonyCreate",
     "ColonyEventRead",
+    "ColonyForkCreate",
     "ColonyRead",
+    "ColonySuggestion",
     "ColonySnapshot",
     "JsonObject",
     "MessageCreate",
     "MessageRead",
+    "OperatingPhase",
     "QueenCreate",
     "QueenRead",
     "QueenRuntimeConfig",
     "ReportStatus",
+    "SessionKind",
     "SessionRead",
     "TaskItemCreate",
     "TaskItemRead",

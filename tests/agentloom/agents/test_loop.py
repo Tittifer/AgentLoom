@@ -150,11 +150,11 @@ class FakeTools:
         self.finalized: list[str] = []
         self.budget_finalized: list[tuple[str, BudgetReason]] = []
 
-    def definitions(self, actor_type):  # type: ignore[no-untyped-def]
+    def definitions(self, context: LoopContext):
         definitions = [
             ToolDefinition(name="lookup", description="查询", parameters={"type": "object"})
         ]
-        if actor_type == "worker":
+        if context.session.actor_type == "worker":
             definitions.extend(
                 [
                     ToolDefinition(

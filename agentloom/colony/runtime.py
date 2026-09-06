@@ -4,7 +4,7 @@ import asyncio
 import json
 from collections.abc import Coroutine
 from typing import Literal
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import structlog
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError
@@ -24,8 +24,10 @@ from agentloom.colony.schemas import (
     ActorType,
     ColonyCreate,
     ColonyEventRead,
+    ColonyForkCreate,
     ColonyRead,
     ColonySnapshot,
+    ColonySuggestion,
     MessageRead,
     QueenCreate,
     QueenRead,
@@ -48,6 +50,7 @@ from agentloom.memory.coordinator import MemoryCoordinator
 from agentloom.memory.store import LocalMemoryStore
 from agentloom.runtime.states import SessionStatus, WorkerStatus
 from agentloom.storage import LocalColonyStore, TrackerVersionConflictError
+from agentloom.storage.base import utc_now
 from agentloom.tools.base import ToolContext, ToolError
 from agentloom.tools.registry import ToolRegistry
 
@@ -100,6 +103,14 @@ class LoadToolResultInput(ToolInput):
     filename: str = Field(min_length=1, max_length=200)
     offset: int = Field(default=0, ge=0)
     limit: int = Field(default=10_000, ge=1, le=20_000)
+
+
+class SuggestColonyInput(ToolInput):
+    suggested_name: str = Field(min_length=1, max_length=200)
+    reason: str = Field(min_length=1, max_length=2_000)
+    goal: str = Field(min_length=1, max_length=4_000)
+    handoff: str = Field(min_length=1, max_length=20_000)
+    proposed_tasks: list[str] = Field(default_factory=list, max_length=100)
 
 
 def normalize_message_history(messages: list[MessageRead]) -> tuple[list[LLMMessage], int]:
@@ -231,10 +242,16 @@ class FileAgentLoopStore(AgentLoopStore):
         agent_session = await self._store.get_session(session_id)
         if agent_session is None:
             return None
-        colony = await self._store.get(agent_session.colony_id)
+        colony = (
+            await self._store.get(agent_session.colony_id)
+            if agent_session.colony_id is not None
+            else None
+        )
         queen = await self._store.get_queen(agent_session.queen_id)
         messages = await self._store.list_messages(session_id)
-        if colony is None or queen is None or messages is None:
+        if queen is None or messages is None:
+            return None
+        if agent_session.session_kind == "colony" and colony is None:
             return None
         compaction = await self._store.get_compaction_checkpoint(session_id)
         normalized, repaired_groups = normalize_message_history(
@@ -248,7 +265,7 @@ class FileAgentLoopStore(AgentLoopStore):
                     content="[CONTEXT_COMPACTION]\n" + compaction.summary,
                 ),
             )
-        if agent_session.actor_type == "queen":
+        if agent_session.actor_type == "queen" and agent_session.colony_id is not None:
             status_context = _worker_status_context(
                 await self._store.list_workers(agent_session.colony_id),
                 messages,
@@ -274,19 +291,19 @@ class FileAgentLoopStore(AgentLoopStore):
     async def mark_running(self, context: LoopContext) -> bool:
         current = await self._store.get_session(context.session.id)
         if current is None or current.status in {
+            SessionStatus.FORKED,
             SessionStatus.COMPLETED,
             SessionStatus.FAILED,
             SessionStatus.CANCELLED,
         }:
             return False
         await self._store.set_session_status(current.id, SessionStatus.RUNNING)
-        await self._store.append_event(
-            current.colony_id,
+        await self._store.append_session_event(
+            current.id,
             "session.started",
-            session_id=current.id,
             payload={"actor_type": current.actor_type},
         )
-        await self._notifier.notify(context.session.colony_id)
+        await self._notifier.notify(self._stream_id(context))
         return True
 
     async def append_message(
@@ -303,13 +320,12 @@ class FileAgentLoopStore(AgentLoopStore):
         )
         if saved is None:
             raise SessionNotFoundError(str(context.session.id))
-        await self._store.append_event(
-            context.session.colony_id,
+        await self._store.append_session_event(
+            context.session.id,
             event_type,
-            session_id=context.session.id,
             payload={"message_id": str(saved.id), "role": saved.role},
         )
-        await self._notifier.notify(context.session.colony_id)
+        await self._notifier.notify(self._stream_id(context))
         return saved
 
     async def publish_message_delta(
@@ -321,10 +337,14 @@ class FileAgentLoopStore(AgentLoopStore):
         if context.session.actor_type != "queen":
             return
         await self._notifier.publish(
-            context.session.colony_id,
+            self._stream_id(context),
             "message.delta",
             {
-                "colony_id": str(context.session.colony_id),
+                "colony_id": (
+                    str(context.session.colony_id)
+                    if context.session.colony_id is not None
+                    else None
+                ),
                 "session_id": str(context.session.id),
                 "message_id": str(message_id),
                 "delta": delta,
@@ -339,10 +359,14 @@ class FileAgentLoopStore(AgentLoopStore):
         if context.session.actor_type != "queen":
             return
         await self._notifier.publish(
-            context.session.colony_id,
+            self._stream_id(context),
             "message.stream.cancelled",
             {
-                "colony_id": str(context.session.colony_id),
+                "colony_id": (
+                    str(context.session.colony_id)
+                    if context.session.colony_id is not None
+                    else None
+                ),
                 "session_id": str(context.session.id),
                 "message_id": str(message_id),
             },
@@ -374,10 +398,9 @@ class FileAgentLoopStore(AgentLoopStore):
             usage=usage,
         )
         if phase == "budget_grace" and budget_reason is not None and grace_turn == 0:
-            await self._store.append_event(
-                context.session.colony_id,
+            await self._store.append_session_event(
+                context.session.id,
                 "session.budget_grace_started",
-                session_id=context.session.id,
                 payload={
                     "actor_type": context.session.actor_type,
                     "reason": budget_reason,
@@ -385,7 +408,7 @@ class FileAgentLoopStore(AgentLoopStore):
                     "budget_tool_calls": budget_tool_calls,
                 },
             )
-            await self._notifier.notify(context.session.colony_id)
+            await self._notifier.notify(self._stream_id(context))
 
     async def finish(self, context: LoopContext, content: str, usage: dict[str, int]) -> None:
         del content
@@ -399,10 +422,9 @@ class FileAgentLoopStore(AgentLoopStore):
                 cursor={"iteration": 0, "phase": "idle"},
                 usage=usage,
             )
-            await self._store.append_event(
-                current.colony_id,
+            await self._store.append_session_event(
+                current.id,
                 "session.idle",
-                session_id=current.id,
                 payload={"actor_type": "queen"},
             )
         else:
@@ -412,7 +434,7 @@ class FileAgentLoopStore(AgentLoopStore):
                 cursor={"iteration": 0, "phase": "completed"},
                 usage=usage,
             )
-        await self._notifier.notify(context.session.colony_id)
+        await self._notifier.notify(self._stream_id(context))
 
     async def fail(self, context: LoopContext, error: Exception) -> None:
         self._logger.error(
@@ -430,14 +452,17 @@ class FileAgentLoopStore(AgentLoopStore):
                 WorkerStatus.FAILED,
                 error={"code": "AGENT_LOOP_FAILED", "message": str(error)},
             )
-        await self._store.append_event(
-            context.session.colony_id,
+        await self._store.append_session_event(
+            context.session.id,
             "session.failed",
-            session_id=context.session.id,
             worker_run_id=worker.id if worker is not None else None,
             payload={"message": str(error)},
         )
-        await self._notifier.notify(context.session.colony_id)
+        await self._notifier.notify(self._stream_id(context))
+
+    @staticmethod
+    def _stream_id(context: LoopContext) -> UUID:
+        return context.session.colony_id or context.session.id
 
 
 class FileContextManager(AgentContextManager):
@@ -519,7 +544,13 @@ class FileContextManager(AgentContextManager):
         try:
             summary = await self._compactor.summarize(
                 old_normalized,
-                context.colony.model,
+                (
+                    context.queen.model
+                    if context.queen is not None
+                    else context.colony.model
+                    if context.colony is not None
+                    else ""
+                ),
                 provider,
                 policy,
             )
@@ -682,6 +713,18 @@ class ColonyRuntime:
     async def create_queen(self, payload: QueenCreate) -> QueenRead:
         return await self._storage.create_queen(payload)
 
+    async def create_queen_session(self, queen_id: str) -> SessionRead:
+        if await self._storage.get_queen(queen_id) is None:
+            raise QueenNotFoundError(queen_id)
+        session = await self._storage.create_dm_session(queen_id)
+        await self._storage.append_session_event(
+            session.id,
+            "session.created",
+            payload={"session_kind": "dm"},
+        )
+        await self._notifier.notify(session.id)
+        return session
+
     async def list_queens(self) -> list[QueenRead]:
         return await self._storage.list_queens()
 
@@ -695,6 +738,64 @@ class ColonyRuntime:
         if await self._storage.get_queen(queen_id) is None:
             raise QueenNotFoundError(queen_id)
         return await self._storage.list_queen_sessions(queen_id)
+
+    async def fork_session_into_colony(
+        self, session_id: UUID, payload: ColonyForkCreate
+    ) -> ColonyRead:
+        try:
+            colony, target = await self._storage.fork_dm_session(session_id, payload)
+        except KeyError as error:
+            raise SessionNotFoundError(str(session_id)) from error
+        except ValueError as error:
+            raise SessionConflictError(str(error)) from error
+        source = await self._storage.get_session(session_id)
+        suggestion = source.pending_colony_suggestion if source is not None else None
+        if suggestion is not None:
+            await self._storage.append_message(
+                target.id,
+                LLMMessage(
+                    role="user",
+                    content=(
+                        "[COLONY_FORK]\n"
+                        f"目标：{suggestion.goal}\n"
+                        f"创建原因：{suggestion.reason}\n"
+                        f"工作交接：{suggestion.handoff}"
+                    ),
+                ),
+                metadata={"source_session_id": str(session_id), "system_generated": True},
+            )
+            for position, title in enumerate(suggestion.proposed_tasks):
+                await self._storage.create_task_item(
+                    colony.id,
+                    target.id,
+                    TaskItemCreate(title=title, position=position),
+                )
+        await self._storage.append_event(
+            colony.id,
+            "colony.created",
+            session_id=target.id,
+            payload={"name": colony.name, "source_session_id": str(session_id)},
+        )
+        await self._notifier.notify(colony.id)
+        return colony
+
+    async def dismiss_colony_suggestion(self, session_id: UUID) -> SessionRead:
+        session = await self.get_session(session_id)
+        suggestion = session.pending_colony_suggestion
+        if suggestion is None or suggestion.status != "pending":
+            raise SessionConflictError("当前没有待处理的 Colony 建议")
+        updated = await self._storage.set_colony_suggestion(
+            session_id, suggestion.model_copy(update={"status": "dismissed"})
+        )
+        if updated is None:
+            raise SessionNotFoundError(str(session_id))
+        await self._storage.append_session_event(
+            session_id,
+            "colony.suggestion.dismissed",
+            payload={"suggestion_id": str(suggestion.id)},
+        )
+        await self._notifier.notify(session_id)
+        return updated
 
     async def list_colonies(self) -> list[ColonyRead]:
         return await self._storage.list_colonies()
@@ -740,32 +841,36 @@ class ColonyRuntime:
         if agent_session.actor_type != "queen":
             raise SessionConflictError("User messages can only be sent to a queen session")
         if agent_session.status in {
+            SessionStatus.FORKED,
             SessionStatus.COMPLETED,
             SessionStatus.FAILED,
             SessionStatus.CANCELLED,
         }:
             raise SessionConflictError("Session is terminal")
-        colony = await self._storage.get(agent_session.colony_id)
-        if colony is None:
+        colony = (
+            await self._storage.get(agent_session.colony_id)
+            if agent_session.colony_id is not None
+            else None
+        )
+        if agent_session.session_kind == "colony" and colony is None:
             raise ColonyNotFoundError(str(agent_session.colony_id))
         message = await self._storage.append_message(
             session_id, LLMMessage(role="user", content=content)
         )
         if message is None:
             raise SessionNotFoundError(str(session_id))
-        if colony.name == UNTITLED_COLONY_NAME:
+        if colony is not None and colony.name == UNTITLED_COLONY_NAME:
             await self._storage.rename_colony(
-                agent_session.colony_id,
+                colony.id,
                 conversation_name_from_message(content),
             )
         await self._storage.set_session_status(session_id, SessionStatus.QUEUED)
-        await self._storage.append_event(
-            agent_session.colony_id,
+        await self._storage.append_session_event(
+            agent_session.id,
             "message.created",
-            session_id=session_id,
             payload={"message_id": str(message.id), "role": "user"},
         )
-        await self._notifier.notify(agent_session.colony_id)
+        await self._notifier.notify(agent_session.colony_id or agent_session.id)
         self._schedule(self._run_queen(session_id))
         return message
 
@@ -791,7 +896,14 @@ class ColonyRuntime:
     ) -> list[ColonyEventRead] | None:
         return await self._storage.list_events_after(colony_id, sequence)
 
-    def definitions(self, actor_type: ActorType) -> list[ToolDefinition]:
+    async def list_session_events_after(
+        self, session_id: UUID, sequence: int
+    ) -> list[ColonyEventRead] | None:
+        return await self._storage.list_session_events_after(session_id, sequence)
+
+    def definitions(self, context: LoopContext | ActorType) -> list[ToolDefinition]:
+        actor_type = context.session.actor_type if isinstance(context, LoopContext) else context
+        phase = context.session.operating_phase if isinstance(context, LoopContext) else "colony"
         common = [
             ToolDefinition(
                 name="tracker_upsert",
@@ -821,6 +933,19 @@ class ColonyRuntime:
         ]
         builtins = self._tools.definitions()
         if actor_type == "queen":
+            if phase == "independent":
+                return [
+                    *builtins,
+                    common[-1],
+                    ToolDefinition(
+                        name="suggest_colony",
+                        description=(
+                            "当工作适合并行、周期性或长期运行时，向用户提出创建 Colony 的建议。"
+                            "该工具不会直接创建 Colony。"
+                        ),
+                        parameters=SuggestColonyInput.model_json_schema(),
+                    ),
+                ]
             return [
                 *common,
                 *builtins,
@@ -844,9 +969,23 @@ class ColonyRuntime:
         try:
             if tool_call.argument_error is not None:
                 return self._tool_error("TOOL_ARGUMENTS_INVALID", tool_call.argument_error)
+            if tool_call.name == "suggest_colony":
+                if (
+                    context.session.actor_type != "queen"
+                    or context.session.operating_phase != "independent"
+                ):
+                    return self._tool_error(
+                        "TOOL_NOT_ALLOWED", "只有独立阶段的 Queen 可以建议创建 Colony"
+                    )
+                payload = SuggestColonyInput.model_validate(tool_call.arguments)
+                suggestion = await self._suggest_colony(context, payload)
+                return ToolExecutionResult(suggestion.model_dump(mode="json"))
             if tool_call.name == "run_worker":
-                if context.session.actor_type != "queen":
-                    return self._tool_error("TOOL_NOT_ALLOWED", "Worker 不能派生其他 Worker")
+                if (
+                    context.session.actor_type != "queen"
+                    or context.session.operating_phase != "colony"
+                ):
+                    return self._tool_error("TOOL_NOT_ALLOWED", "只有 Colony Queen 可以派生 Worker")
                 payload = RunWorkersInput.model_validate(tool_call.arguments)
                 workers = await self._spawn_workers(context, payload.tasks, payload.timeout)
                 return ToolExecutionResult(
@@ -866,10 +1005,14 @@ class ColonyRuntime:
                 )
                 return ToolExecutionResult({"status": "reported"}, terminate=True)
             if tool_call.name == "tracker_upsert":
+                if context.session.colony_id is None:
+                    return self._tool_error("TOOL_NOT_ALLOWED", "独立会话没有 Tracker")
                 payload = TrackerUpsert.model_validate(tool_call.arguments)
                 entry = await self._tracker_upsert(context, payload)
                 return ToolExecutionResult(entry.model_dump(mode="json"))
             if tool_call.name == "tracker_query":
+                if context.session.colony_id is None:
+                    return self._tool_error("TOOL_NOT_ALLOWED", "独立会话没有 Tracker")
                 payload = TrackerQueryInput.model_validate(tool_call.arguments)
                 entries = await self.list_tracker(context.session.colony_id, payload.namespace)
                 return ToolExecutionResult(
@@ -880,10 +1023,14 @@ class ColonyRuntime:
                     )
                 )
             if tool_call.name == "task_create":
+                if context.session.colony_id is None:
+                    return self._tool_error("TOOL_NOT_ALLOWED", "独立会话没有 Colony 任务计划")
                 payload = TaskItemCreate.model_validate(tool_call.arguments)
                 item = await self._task_create(context, payload)
                 return ToolExecutionResult(item.model_dump(mode="json"))
             if tool_call.name == "task_update":
+                if context.session.colony_id is None:
+                    return self._tool_error("TOOL_NOT_ALLOWED", "独立会话没有 Colony 任务计划")
                 payload = TaskUpdateInput.model_validate(tool_call.arguments)
                 item = await self._task_update(context, payload)
                 return ToolExecutionResult(item.model_dump(mode="json"))
@@ -946,6 +1093,32 @@ class ColonyRuntime:
             "hint": "使用 load_tool_result 分页读取完整结果。",
         }
 
+    async def _suggest_colony(
+        self, context: LoopContext, payload: SuggestColonyInput
+    ) -> ColonySuggestion:
+        current = context.session.pending_colony_suggestion
+        if current is not None and current.status == "pending":
+            raise SessionConflictError("当前已有待用户处理的 Colony 建议")
+        suggestion = ColonySuggestion(
+            id=uuid4(),
+            **payload.model_dump(),
+            created_at=utc_now(),
+        )
+        updated = await self._storage.set_colony_suggestion(context.session.id, suggestion)
+        if updated is None:
+            raise SessionNotFoundError(str(context.session.id))
+        await self._storage.append_session_event(
+            context.session.id,
+            "colony.suggested",
+            payload={
+                "suggestion_id": str(suggestion.id),
+                "suggested_name": suggestion.suggested_name,
+                "reason": suggestion.reason,
+            },
+        )
+        await self._notifier.notify(context.session.id)
+        return suggestion
+
     async def finalize_text(self, context: LoopContext, content: str) -> None:
         if context.session.actor_type == "worker":
             await self._report_worker(
@@ -972,16 +1145,17 @@ class ColonyRuntime:
     async def _spawn_workers(
         self, context: LoopContext, tasks: list[WorkerTask], timeout: int
     ) -> list[WorkerRead]:
+        colony_id = self._require_colony_id(context)
         workers = await self._storage.create_workers(context.session.id, tasks, timeout)
         for worker in workers:
             await self._storage.append_event(
-                context.session.colony_id,
+                colony_id,
                 "worker.queued",
                 session_id=worker.worker_session_id,
                 worker_run_id=worker.id,
                 payload={"task": worker.task},
             )
-        await self._notifier.notify(context.session.colony_id)
+        await self._notifier.notify(colony_id)
         for worker in workers:
             self._schedule(self._run_worker(worker.id))
         return workers
@@ -1125,11 +1299,10 @@ class ColonyRuntime:
     async def _tracker_upsert(
         self, context: LoopContext, payload: TrackerUpsert
     ) -> TrackerEntryRead:
-        entry = await self._storage.upsert_tracker(
-            context.session.colony_id, context.session.id, payload
-        )
+        colony_id = self._require_colony_id(context)
+        entry = await self._storage.upsert_tracker(colony_id, context.session.id, payload)
         await self._storage.append_event(
-            context.session.colony_id,
+            colony_id,
             "tracker.updated",
             session_id=context.session.id,
             payload={
@@ -1138,38 +1311,45 @@ class ColonyRuntime:
                 "version": entry.version,
             },
         )
-        await self._notifier.notify(context.session.colony_id)
+        await self._notifier.notify(colony_id)
         return entry
 
     async def _task_create(self, context: LoopContext, payload: TaskItemCreate) -> TaskItemRead:
-        item = await self._storage.create_task_item(
-            context.session.colony_id, context.session.id, payload
-        )
+        colony_id = self._require_colony_id(context)
+        item = await self._storage.create_task_item(colony_id, context.session.id, payload)
         await self._storage.append_event(
-            context.session.colony_id,
+            colony_id,
             "task.created",
             session_id=context.session.id,
             payload={"task_id": str(item.id), "title": item.title},
         )
-        await self._notifier.notify(context.session.colony_id)
+        await self._notifier.notify(colony_id)
         return item
 
     async def _task_update(self, context: LoopContext, payload: TaskUpdateInput) -> TaskItemRead:
         from agentloom.runtime.states import TaskItemStatus
 
+        colony_id = self._require_colony_id(context)
         item = await self._storage.update_task_status(
             payload.task_id, TaskItemStatus(payload.status)
         )
-        if item is None or item.colony_id != context.session.colony_id:
+        if item is None or item.colony_id != colony_id:
             raise ValueError("任务项不存在")
         await self._storage.append_event(
-            context.session.colony_id,
+            colony_id,
             "task.updated",
             session_id=context.session.id,
             payload={"task_id": str(item.id), "status": item.status},
         )
-        await self._notifier.notify(context.session.colony_id)
+        await self._notifier.notify(colony_id)
         return item
+
+    @staticmethod
+    def _require_colony_id(context: LoopContext) -> UUID:
+        colony_id = context.session.colony_id
+        if colony_id is None:
+            raise ValueError("当前会话尚未创建 Colony")
+        return colony_id
 
     def _build_queen_loop(self, provider: LLMProvider | None = None) -> AgentLoop:
         selected_provider = provider or self._provider_override

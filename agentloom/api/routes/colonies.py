@@ -21,6 +21,7 @@ from agentloom.colony.runtime import (
 from agentloom.colony.schemas import (
     ColonyCreate,
     ColonyEventRead,
+    ColonyForkCreate,
     ColonyRead,
     ColonySnapshot,
     MessageCreate,
@@ -51,7 +52,7 @@ def error_response(status_code: int, code: str, message: str) -> JSONResponse:
 def format_sse_event(event: ColonyEventRead) -> str:
     data = {
         **event.payload,
-        "colony_id": str(event.colony_id),
+        "colony_id": str(event.colony_id) if event.colony_id else None,
         "session_id": str(event.session_id) if event.session_id else None,
         "worker_run_id": str(event.worker_run_id) if event.worker_run_id else None,
         "created_at": event.created_at.isoformat(),
@@ -100,6 +101,36 @@ async def stream_colony_events(
                 yield format_transient_sse_event(update)
 
 
+async def stream_session_events(
+    request: Request,
+    runtime: ColonyRuntime,
+    notifier: ColonyEventNotifier,
+    session_id: UUID,
+    after: int,
+    heartbeat_seconds: float = SSE_HEARTBEAT_SECONDS,
+) -> AsyncGenerator[str, None]:
+    cursor = after
+    async with notifier.subscribe(session_id) as updates:
+        while not await request.is_disconnected():
+            events = await runtime.list_session_events_after(session_id, cursor)
+            if events is None:
+                return
+            if events:
+                for event in events:
+                    if await request.is_disconnected():
+                        return
+                    cursor = event.sequence
+                    yield format_sse_event(event)
+                continue
+            try:
+                update = await asyncio.wait_for(updates.get(), timeout=heartbeat_seconds)
+            except TimeoutError:
+                yield ": heartbeat\n\n"
+                continue
+            if update is not None:
+                yield format_transient_sse_event(update)
+
+
 @router.post(
     "/colonies",
     response_model=ColonyRead,
@@ -113,6 +144,48 @@ async def create_colony(
         return await runtime.create_colony(payload)
     except QueenNotFoundError:
         return error_response(404, "QUEEN_NOT_FOUND", "Queen 不存在")
+
+
+@router.post(
+    "/sessions/{session_id}/fork-colony",
+    response_model=ColonyRead,
+    status_code=status.HTTP_201_CREATED,
+    responses={
+        status.HTTP_404_NOT_FOUND: {"model": ApiError},
+        status.HTTP_409_CONFLICT: {"model": ApiError},
+    },
+)
+async def fork_session_into_colony(
+    session_id: UUID,
+    payload: ColonyForkCreate,
+    runtime: RuntimeDependency,
+) -> ColonyRead | JSONResponse:
+    try:
+        return await runtime.fork_session_into_colony(session_id, payload)
+    except SessionNotFoundError:
+        return error_response(404, "SESSION_NOT_FOUND", "会话不存在")
+    except SessionConflictError as error:
+        return error_response(409, "SESSION_CONFLICT", str(error))
+
+
+@router.post(
+    "/sessions/{session_id}/dismiss-colony-suggestion",
+    response_model=SessionRead,
+    responses={
+        status.HTTP_404_NOT_FOUND: {"model": ApiError},
+        status.HTTP_409_CONFLICT: {"model": ApiError},
+    },
+)
+async def dismiss_colony_suggestion(
+    session_id: UUID,
+    runtime: RuntimeDependency,
+) -> SessionRead | JSONResponse:
+    try:
+        return await runtime.dismiss_colony_suggestion(session_id)
+    except SessionNotFoundError:
+        return error_response(404, "SESSION_NOT_FOUND", "会话不存在")
+    except SessionConflictError as error:
+        return error_response(409, "SESSION_CONFLICT", str(error))
 
 
 @router.get("/colonies", response_model=list[ColonyRead])
@@ -254,6 +327,27 @@ async def get_colony_events(
     notifier = cast(ColonyEventNotifier, request.app.state.colony_event_notifier)
     return StreamingResponse(
         stream_colony_events(request, runtime, notifier, colony_id, after),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@router.get(
+    "/sessions/{session_id}/events",
+    response_class=StreamingResponse,
+    response_model=None,
+)
+async def get_session_events(
+    session_id: UUID,
+    request: Request,
+    runtime: RuntimeDependency,
+    after: EventSequence = 0,
+) -> StreamingResponse | JSONResponse:
+    if await runtime.list_session_events_after(session_id, after) is None:
+        return error_response(404, "SESSION_NOT_FOUND", "会话不存在")
+    notifier = cast(ColonyEventNotifier, request.app.state.colony_event_notifier)
+    return StreamingResponse(
+        stream_session_events(request, runtime, notifier, session_id, after),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )

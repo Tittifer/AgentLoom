@@ -8,7 +8,8 @@ export type SessionStatus =
   | "parked"
   | "completed"
   | "failed"
-  | "cancelled";
+  | "cancelled"
+  | "forked";
 export type WorkerStatus =
   | "queued"
   | "running"
@@ -31,16 +32,39 @@ export interface ColonyRead extends ColonyCreate {
   status: ColonyStatus;
   model: string;
   queen_session_id: string;
+  source_session_id: string | null;
   created_at: string;
   updated_at: string;
 }
 
+export interface ColonySuggestion {
+  id: string;
+  suggested_name: string;
+  reason: string;
+  goal: string;
+  handoff: string;
+  proposed_tasks: string[];
+  status: "pending" | "accepted" | "dismissed";
+  created_at: string;
+}
+
+export interface ColonyForkCreate {
+  suggestion_id: string;
+  name: string;
+  description: string;
+}
+
 export interface SessionRead {
   id: string;
-  colony_id: string;
+  colony_id: string | null;
   queen_id: string;
   parent_session_id: string | null;
   actor_type: "queen" | "worker";
+  session_kind: "dm" | "colony";
+  operating_phase: "independent" | "colony";
+  pending_colony_suggestion: ColonySuggestion | null;
+  forked_to_colony_id: string | null;
+  forked_to_session_id: string | null;
   status: SessionStatus;
   park_reason: string | null;
   task: Record<string, unknown>;
@@ -134,6 +158,21 @@ export function getColony(colonyId: string): Promise<ColonySnapshot> {
 
 export function listMessages(sessionId: string): Promise<MessageRead[]> {
   return apiClient.get(`/api/sessions/${sessionId}/messages`);
+}
+
+export function getSession(sessionId: string): Promise<SessionRead> {
+  return apiClient.get(`/api/sessions/${sessionId}`);
+}
+
+export function forkSessionIntoColony(
+  sessionId: string,
+  payload: ColonyForkCreate,
+): Promise<ColonyRead> {
+  return apiClient.post(`/api/sessions/${sessionId}/fork-colony`, payload);
+}
+
+export function dismissColonySuggestion(sessionId: string): Promise<SessionRead> {
+  return apiClient.post(`/api/sessions/${sessionId}/dismiss-colony-suggestion`, {});
 }
 
 export function submitMessage(sessionId: string, content: string): Promise<MessageRead> {

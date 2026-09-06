@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -13,7 +15,9 @@ from pydantic import JsonValue, TypeAdapter
 from agentloom.colony.message_safety import redact_json, sanitize_json, sanitize_text
 from agentloom.colony.schemas import (
     ColonyEventRead,
+    ColonyForkCreate,
     ColonyRead,
+    ColonySuggestion,
     MessageRead,
     QueenCreate,
     QueenRead,
@@ -41,6 +45,13 @@ from agentloom.storage.tracker import SQLiteTrackerStore
 
 JSON_OBJECT = TypeAdapter(dict[str, JsonValue])
 JSON_OBJECTS = TypeAdapter(list[dict[str, JsonValue]])
+
+
+@dataclass(frozen=True)
+class SessionLocation:
+    base: Path
+    session: SessionRead
+    lock_id: UUID
 
 
 def default_colony_settings() -> dict[str, JsonValue]:
@@ -92,6 +103,15 @@ class LocalColonyStore:
                 workers, queens = await asyncio.to_thread(self._recover_colony_sync, colony.id)
                 worker_ids.extend(workers)
                 queen_ids.extend(queens)
+        for queen in await self._queens.list():
+            for session in await asyncio.to_thread(self._list_dm_sessions_sync, queen.id):
+                if session.status is SessionStatus.RUNNING:
+                    session = session.model_copy(
+                        update={"status": SessionStatus.QUEUED, "updated_at": utc_now()}
+                    )
+                    await asyncio.to_thread(self._write_session_sync, session)
+                if session.status is SessionStatus.QUEUED:
+                    queen_ids.append(session.id)
         return worker_ids, queen_ids
 
     async def create(
@@ -160,7 +180,7 @@ class LocalColonyStore:
         return await self._queens.get_runtime_config(queen_id)
 
     async def list_queen_sessions(self, queen_id: str) -> list[SessionRead]:
-        sessions: list[SessionRead] = []
+        sessions = await asyncio.to_thread(self._list_dm_sessions_sync, queen_id)
         for colony in await self.list_colonies():
             if colony.queen_id != queen_id or colony.queen_session_id is None:
                 continue
@@ -168,6 +188,122 @@ class LocalColonyStore:
             if session is not None:
                 sessions.append(session)
         return sorted(sessions, key=lambda item: item.created_at, reverse=True)
+
+    async def create_dm_session(self, queen_id: str) -> SessionRead:
+        queen = await self._queens.get(queen_id)
+        if queen is None:
+            raise KeyError(queen_id)
+        async with self._root_lock:
+            settings = default_colony_settings()
+            settings.update(queen.settings)
+            now = utc_now()
+            session = SessionRead(
+                id=uuid4(),
+                colony_id=None,
+                queen_id=queen_id,
+                parent_session_id=None,
+                actor_type="queen",
+                session_kind="dm",
+                operating_phase="independent",
+                status=SessionStatus.IDLE,
+                park_reason=None,
+                task={},
+                cursor={"iteration": 0, "phase": "idle"},
+                budget=settings,
+                usage={"input_tokens": 0, "output_tokens": 0, "tool_calls": 0},
+                created_at=now,
+                updated_at=now,
+                ended_at=None,
+            )
+            await asyncio.to_thread(self._write_session_sync, session)
+            return session
+
+    async def set_colony_suggestion(
+        self, session_id: UUID, suggestion: ColonySuggestion | None
+    ) -> SessionRead | None:
+        located = await asyncio.to_thread(self._find_session_sync, session_id)
+        if located is None:
+            return None
+        async with self._lock(located.lock_id):
+            current = await asyncio.to_thread(self._read_session_at_sync, located.base)
+            if current is None:
+                return None
+            updated = current.model_copy(
+                update={"pending_colony_suggestion": suggestion, "updated_at": utc_now()}
+            )
+            await asyncio.to_thread(self._write_model, located.base / "meta.json", updated)
+            return updated
+
+    async def fork_dm_session(
+        self, source_session_id: UUID, payload: ColonyForkCreate
+    ) -> tuple[ColonyRead, SessionRead]:
+        async with self._root_lock:
+            located = await asyncio.to_thread(self._find_session_sync, source_session_id)
+            if located is None:
+                raise KeyError(str(source_session_id))
+            source = located.session
+            suggestion = source.pending_colony_suggestion
+            if source.session_kind != "dm" or source.operating_phase != "independent":
+                raise ValueError("只有独立 Queen 会话可以创建 Colony")
+            if source.forked_to_colony_id is not None or source.status is SessionStatus.FORKED:
+                raise ValueError("该会话已经创建过 Colony")
+            if source.status is not SessionStatus.IDLE:
+                raise ValueError("Queen 当前仍在运行，请等待本轮完成后再创建 Colony")
+            if suggestion is None or suggestion.id != payload.suggestion_id:
+                raise ValueError("Colony 建议不存在或已失效")
+            if suggestion.status != "pending":
+                raise ValueError("Colony 建议已经处理")
+            queen = await self._queens.get(source.queen_id)
+            if queen is None:
+                raise KeyError(source.queen_id)
+
+            now = utc_now()
+            colony_id = uuid4()
+            target_session_id = uuid4()
+            colony = ColonyRead(
+                id=colony_id,
+                name=payload.name,
+                description=payload.description,
+                status=ColonyStatus.ACTIVE,
+                queen_id=source.queen_id,
+                model=queen.model,
+                settings=source.budget,
+                queen_session_id=target_session_id,
+                source_session_id=source.id,
+                created_at=now,
+                updated_at=now,
+            )
+            target = source.model_copy(
+                update={
+                    "id": target_session_id,
+                    "colony_id": colony_id,
+                    "session_kind": "colony",
+                    "operating_phase": "colony",
+                    "pending_colony_suggestion": None,
+                    "forked_to_colony_id": None,
+                    "forked_to_session_id": None,
+                    "status": SessionStatus.IDLE,
+                    "cursor": {"iteration": 0, "phase": "idle"},
+                    "updated_at": now,
+                    "ended_at": None,
+                }
+            )
+            await asyncio.to_thread(self._fork_dm_session_sync, located.base, colony, target)
+            await self._tracker.initialize(self._tracker_path(colony_id))
+            await self._queens.add_session_reference(source.queen_id, target.id, colony.id)
+            accepted = suggestion.model_copy(update={"status": "accepted"})
+            locked_source = source.model_copy(
+                update={
+                    "pending_colony_suggestion": accepted,
+                    "forked_to_colony_id": colony.id,
+                    "forked_to_session_id": target.id,
+                    "status": SessionStatus.FORKED,
+                    "updated_at": utc_now(),
+                    "ended_at": utc_now(),
+                }
+            )
+            await asyncio.to_thread(self._write_model, located.base / "meta.json", locked_source)
+            return colony, target
 
     async def delete_colony(self, colony_id: UUID) -> bool:
         async with self._lock(colony_id):
@@ -194,7 +330,7 @@ class LocalColonyStore:
     async def get_session(self, session_id: UUID, *, lock: bool = False) -> SessionRead | None:
         del lock
         located = await asyncio.to_thread(self._find_session_sync, session_id)
-        return located[1] if located is not None else None
+        return located.session if located is not None else None
 
     async def get_queen_session(self, colony_id: UUID) -> SessionRead | None:
         colony = await self.get(colony_id)
@@ -214,9 +350,8 @@ class LocalColonyStore:
         located = await asyncio.to_thread(self._find_session_sync, session_id)
         if located is None:
             return False
-        colony_id, _ = located
-        async with self._lock(colony_id):
-            current = await asyncio.to_thread(self._read_session_sync, colony_id, session_id)
+        async with self._lock(located.lock_id):
+            current = await asyncio.to_thread(self._read_session_at_sync, located.base)
             if current is None:
                 return False
             changes: dict[str, object] = {
@@ -229,6 +364,7 @@ class LocalColonyStore:
             if usage is not None:
                 changes["usage"] = JSON_OBJECT.validate_python(dict(usage))
             if status in {
+                SessionStatus.FORKED,
                 SessionStatus.COMPLETED,
                 SessionStatus.FAILED,
                 SessionStatus.CANCELLED,
@@ -237,7 +373,7 @@ class LocalColonyStore:
             updated = current.model_copy(update=changes)
             await asyncio.to_thread(
                 self._write_model,
-                self._session_meta_path(colony_id, session_id),
+                located.base / "meta.json",
                 updated,
             )
             return True
@@ -253,12 +389,11 @@ class LocalColonyStore:
         located = await asyncio.to_thread(self._find_session_sync, session_id)
         if located is None:
             return None
-        colony_id, _ = located
-        async with self._lock(colony_id):
+        async with self._lock(located.lock_id):
             return await asyncio.to_thread(
                 self._append_message_sync,
-                colony_id,
-                session_id,
+                located.base,
+                located.session,
                 message,
                 message_id,
                 metadata,
@@ -268,13 +403,13 @@ class LocalColonyStore:
         located = await asyncio.to_thread(self._find_session_sync, session_id)
         if located is None:
             return None
-        return await asyncio.to_thread(self._list_messages_sync, located[0], session_id)
+        return await asyncio.to_thread(self._list_messages_at_sync, located.base)
 
     async def get_compaction_checkpoint(self, session_id: UUID) -> CompactionCheckpoint | None:
         located = await asyncio.to_thread(self._find_session_sync, session_id)
         if located is None:
             return None
-        return await asyncio.to_thread(self._get_compaction_checkpoint_sync, located[0], session_id)
+        return await asyncio.to_thread(self._get_compaction_checkpoint_at_sync, located.base)
 
     async def save_compaction_checkpoint(
         self, session_id: UUID, checkpoint: CompactionCheckpoint
@@ -282,11 +417,10 @@ class LocalColonyStore:
         located = await asyncio.to_thread(self._find_session_sync, session_id)
         if located is None:
             raise KeyError(str(session_id))
-        colony_id = located[0]
-        async with self._lock(colony_id):
+        async with self._lock(located.lock_id):
             await asyncio.to_thread(
                 atomic_write_json,
-                self._compaction_path(colony_id, session_id),
+                located.base / "context" / "compaction.json",
                 checkpoint.model_dump(mode="json"),
             )
 
@@ -294,12 +428,10 @@ class LocalColonyStore:
         located = await asyncio.to_thread(self._find_session_sync, session_id)
         if located is None:
             raise KeyError(str(session_id))
-        colony_id = located[0]
-        async with self._lock(colony_id):
+        async with self._lock(located.lock_id):
             return await asyncio.to_thread(
                 self._write_tool_spillover_sync,
-                colony_id,
-                session_id,
+                located.base,
                 tool_name,
                 value,
             )
@@ -316,8 +448,7 @@ class LocalColonyStore:
             raise KeyError(str(session_id))
         return await asyncio.to_thread(
             self._read_tool_spillover_sync,
-            located[0],
-            session_id,
+            located.base,
             filename,
             offset,
             limit,
@@ -330,9 +461,13 @@ class LocalColonyStore:
         timeout_seconds: int,
     ) -> list[WorkerRead]:
         located = await asyncio.to_thread(self._find_session_sync, queen_session_id)
-        if located is None or located[1].actor_type != "queen":
+        if (
+            located is None
+            or located.session.actor_type != "queen"
+            or located.session.colony_id is None
+        ):
             return []
-        colony_id = located[0]
+        colony_id = located.session.colony_id
         async with self._lock(colony_id):
             return await asyncio.to_thread(
                 self._create_workers_sync,
@@ -456,6 +591,51 @@ class LocalColonyStore:
         events = [ColonyEventRead.model_validate(record) for record in records]
         return [event for event in events if event.sequence > sequence]
 
+    async def append_session_event(
+        self,
+        session_id: UUID,
+        event_type: str,
+        *,
+        worker_run_id: UUID | None = None,
+        payload: Mapping[str, object] | None = None,
+    ) -> ColonyEventRead | None:
+        located = await asyncio.to_thread(self._find_session_sync, session_id)
+        if located is None:
+            return None
+        if located.session.colony_id is not None:
+            return await self.append_event(
+                located.session.colony_id,
+                event_type,
+                session_id=session_id,
+                worker_run_id=worker_run_id,
+                payload=payload,
+            )
+        async with self._lock(located.lock_id):
+            return await asyncio.to_thread(
+                self._append_event_at_sync,
+                located.base / "events.jsonl",
+                None,
+                event_type,
+                session_id,
+                worker_run_id,
+                payload,
+            )
+
+    async def list_session_events_after(
+        self, session_id: UUID, sequence: int
+    ) -> list[ColonyEventRead] | None:
+        located = await asyncio.to_thread(self._find_session_sync, session_id)
+        if located is None:
+            return None
+        path = (
+            self._events_path(located.session.colony_id)
+            if located.session.colony_id is not None
+            else located.base / "events.jsonl"
+        )
+        records = await asyncio.to_thread(read_json_lines, path)
+        events = [ColonyEventRead.model_validate(record) for record in records]
+        return [event for event in events if event.sequence > sequence]
+
     def _initialize_sync(self) -> None:
         self._colonies.mkdir(parents=True, exist_ok=True)
         self._trash.mkdir(parents=True, exist_ok=True)
@@ -496,23 +676,94 @@ class LocalColonyStore:
         path = self._metadata_path(colony_id)
         return ColonyRead.model_validate(read_json(path)) if path.is_file() else None
 
-    def _find_session_sync(self, session_id: UUID) -> tuple[UUID, SessionRead] | None:
-        if not self._colonies.exists():
-            return None
-        for colony_dir in self._colonies.iterdir():
-            if not (colony_dir / "metadata.json").is_file():
-                continue
-            path = colony_dir / "sessions" / str(session_id) / "meta.json"
-            if path.is_file():
-                return UUID(colony_dir.name), SessionRead.model_validate(read_json(path))
+    def _find_session_sync(self, session_id: UUID) -> SessionLocation | None:
+        if self._colonies.exists():
+            for colony_dir in self._colonies.iterdir():
+                if not (colony_dir / "metadata.json").is_file():
+                    continue
+                base = colony_dir / "sessions" / str(session_id)
+                path = base / "meta.json"
+                if path.is_file():
+                    return SessionLocation(
+                        base=base,
+                        session=SessionRead.model_validate(read_json(path)),
+                        lock_id=UUID(colony_dir.name),
+                    )
+        queens_dir = self.root / "queens"
+        if queens_dir.exists():
+            for queen_dir in queens_dir.iterdir():
+                base = queen_dir / "sessions" / str(session_id)
+                path = base / "meta.json"
+                if path.is_file():
+                    return SessionLocation(
+                        base=base,
+                        session=SessionRead.model_validate(read_json(path)),
+                        lock_id=session_id,
+                    )
         return None
+
+    def _list_dm_sessions_sync(self, queen_id: str) -> list[SessionRead]:
+        directory = self.root / "queens" / queen_id / "sessions"
+        if not directory.is_dir():
+            return []
+        return [
+            SessionRead.model_validate(read_json(path)) for path in directory.glob("*/meta.json")
+        ]
 
     def _read_session_sync(self, colony_id: UUID, session_id: UUID) -> SessionRead | None:
         path = self._session_meta_path(colony_id, session_id)
         return SessionRead.model_validate(read_json(path)) if path.is_file() else None
 
+    @staticmethod
+    def _read_session_at_sync(base: Path) -> SessionRead | None:
+        path = base / "meta.json"
+        return SessionRead.model_validate(read_json(path)) if path.is_file() else None
+
+    def _fork_dm_session_sync(
+        self,
+        source_base: Path,
+        colony: ColonyRead,
+        target: SessionRead,
+    ) -> None:
+        final_dir = self._colony_dir(colony.id)
+        # Keep the staging name short so atomic message writes remain below the
+        # legacy Windows MAX_PATH limit in deeply nested test/user directories.
+        staging = self._colonies / f".tmp-{colony.id.hex[:8]}"
+        staging.mkdir(parents=True, exist_ok=False)
+        try:
+            (staging / "sessions").mkdir()
+            (staging / "workers").mkdir()
+            (staging / "tracker").mkdir()
+            (staging / "artifacts").mkdir()
+            self._write_model(staging / "metadata.json", colony)
+
+            target_base = staging / "sessions" / str(target.id)
+            (target_base / "conversations" / "parts").mkdir(parents=True)
+            (target_base / "conversations" / "partials").mkdir()
+            (target_base / "data").mkdir()
+            self._write_model(target_base / "meta.json", target)
+
+            source_parts = source_base / "conversations" / "parts"
+            for source_path in sorted(source_parts.glob("*.json")):
+                message = MessageRead.model_validate(read_json(source_path)).model_copy(
+                    update={"session_id": target.id}
+                )
+                self._write_model(
+                    target_base / "conversations" / "parts" / source_path.name,
+                    message,
+                )
+            source_spillover = source_base / "spillover"
+            if source_spillover.is_dir():
+                shutil.copytree(source_spillover, target_base / "spillover")
+            final_dir.parent.mkdir(parents=True, exist_ok=True)
+            staging.replace(final_dir)
+        except BaseException:
+            if staging.exists():
+                shutil.rmtree(staging)
+            raise
+
     def _write_session_sync(self, session: SessionRead) -> None:
-        base = self._session_dir(session.colony_id, session.id)
+        base = self._session_base(session)
         (base / "conversations" / "parts").mkdir(parents=True, exist_ok=True)
         (base / "conversations" / "partials").mkdir(parents=True, exist_ok=True)
         (base / "data").mkdir(parents=True, exist_ok=True)
@@ -520,15 +771,15 @@ class LocalColonyStore:
 
     def _append_message_sync(
         self,
-        colony_id: UUID,
-        session_id: UUID,
+        base: Path,
+        session: SessionRead,
         message: LLMMessage,
         message_id: UUID | None,
         metadata: Mapping[str, object] | None,
     ) -> MessageRead | None:
-        if self._read_session_sync(colony_id, session_id) is None:
+        if self._read_session_at_sync(base) is None:
             return None
-        parts = self._parts_dir(colony_id, session_id)
+        parts = base / "conversations" / "parts"
         sequences = [int(path.stem) for path in parts.glob("*.json")]
         sequence = max(sequences, default=0) + 1
         calls = JSON_OBJECTS.validate_python(
@@ -536,7 +787,7 @@ class LocalColonyStore:
         )
         saved = MessageRead(
             id=message_id or uuid4(),
-            session_id=session_id,
+            session_id=session.id,
             sequence=sequence,
             role=message.role,
             content=sanitize_text(message.content),
@@ -554,26 +805,23 @@ class LocalColonyStore:
         atomic_write_json(parts / f"{sequence:010d}.json", payload)
         return saved
 
-    def _list_messages_sync(self, colony_id: UUID, session_id: UUID) -> list[MessageRead]:
+    def _list_messages_at_sync(self, base: Path) -> list[MessageRead]:
         return [
             MessageRead.model_validate(read_json(path))
-            for path in sorted(self._parts_dir(colony_id, session_id).glob("*.json"))
+            for path in sorted((base / "conversations" / "parts").glob("*.json"))
         ]
 
-    def _get_compaction_checkpoint_sync(
-        self, colony_id: UUID, session_id: UUID
-    ) -> CompactionCheckpoint | None:
-        path = self._compaction_path(colony_id, session_id)
+    def _get_compaction_checkpoint_at_sync(self, base: Path) -> CompactionCheckpoint | None:
+        path = base / "context" / "compaction.json"
         return CompactionCheckpoint.model_validate(read_json(path)) if path.is_file() else None
 
     def _write_tool_spillover_sync(
         self,
-        colony_id: UUID,
-        session_id: UUID,
+        base: Path,
         tool_name: str,
         value: JsonValue,
     ) -> str:
-        directory = self._spillover_dir(colony_id, session_id)
+        directory = base / "spillover"
         directory.mkdir(parents=True, exist_ok=True)
         safe_name = (
             "".join(
@@ -592,15 +840,14 @@ class LocalColonyStore:
 
     def _read_tool_spillover_sync(
         self,
-        colony_id: UUID,
-        session_id: UUID,
+        base: Path,
         filename: str,
         offset: int,
         limit: int,
     ) -> dict[str, JsonValue]:
         if Path(filename).name != filename or not filename.endswith(".json"):
             raise ValueError("非法工具结果文件名")
-        path = self._spillover_dir(colony_id, session_id) / filename
+        path = base / "spillover" / filename
         if not path.is_file():
             raise FileNotFoundError(filename)
         serialized = json.dumps(
@@ -863,7 +1110,24 @@ class LocalColonyStore:
         worker_run_id: UUID | None,
         payload: Mapping[str, object] | None,
     ) -> ColonyEventRead:
-        path = self._events_path(colony_id)
+        return self._append_event_at_sync(
+            self._events_path(colony_id),
+            colony_id,
+            event_type,
+            session_id,
+            worker_run_id,
+            payload,
+        )
+
+    @staticmethod
+    def _append_event_at_sync(
+        path: Path,
+        colony_id: UUID | None,
+        event_type: str,
+        session_id: UUID | None,
+        worker_run_id: UUID | None,
+        payload: Mapping[str, object] | None,
+    ) -> ColonyEventRead:
         events = [ColonyEventRead.model_validate(record) for record in read_json_lines(path)]
         sequence = max((event.sequence for event in events), default=0) + 1
         event = ColonyEventRead(
@@ -927,6 +1191,11 @@ class LocalColonyStore:
 
     def _sessions_dir(self, colony_id: UUID) -> Path:
         return self._colony_dir(colony_id) / "sessions"
+
+    def _session_base(self, session: SessionRead) -> Path:
+        if session.colony_id is not None:
+            return self._session_dir(session.colony_id, session.id)
+        return self.root / "queens" / session.queen_id / "sessions" / str(session.id)
 
     def _session_dir(self, colony_id: UUID, session_id: UUID) -> Path:
         return self._sessions_dir(colony_id) / str(session_id)

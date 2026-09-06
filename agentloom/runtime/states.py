@@ -17,6 +17,7 @@ class SessionStatus(StrEnum):
     QUEUED = "queued"
     RUNNING = "running"
     PARKED = "parked"
+    FORKED = "forked"
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
