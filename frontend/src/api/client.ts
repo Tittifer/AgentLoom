@@ -46,6 +46,9 @@ export const apiClient = {
       body: body === undefined ? undefined : JSON.stringify(body),
     });
   },
+  put<TResponse, TBody = unknown>(path: string, body: TBody): Promise<TResponse> {
+    return request<TResponse>(path, { method: "PUT", body: JSON.stringify(body) });
+  },
   delete(path: string): Promise<void> {
     return request<void>(path, { method: "DELETE" });
   },

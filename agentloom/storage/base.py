@@ -87,6 +87,28 @@ def atomic_write_yaml(path: Path, value: dict[str, Any]) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def atomic_write_text(path: Path, value: str) -> None:
+    """Durably replace one UTF-8 text document."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+    try:
+        with temporary.open("x", encoding="utf-8", newline="\n") as handle:
+            handle.write(value)
+            handle.flush()
+            os.fsync(handle.fileno())
+        for attempt in range(ATOMIC_REPLACE_ATTEMPTS):
+            try:
+                os.replace(temporary, path)
+                break
+            except PermissionError:
+                if attempt == ATOMIC_REPLACE_ATTEMPTS - 1:
+                    raise
+                time.sleep(ATOMIC_REPLACE_RETRY_SECONDS * (2**attempt))
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def read_json_lines(path: Path) -> list[dict[str, Any]]:
     """Read an append-only JSONL document."""
 
@@ -118,6 +140,7 @@ def append_json_line(path: Path, value: dict[str, Any]) -> None:
 __all__ = [
     "append_json_line",
     "atomic_write_json",
+    "atomic_write_text",
     "atomic_write_yaml",
     "read_json",
     "read_json_lines",

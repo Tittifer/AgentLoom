@@ -40,6 +40,8 @@ from agentloom.colony.schemas import (
 from agentloom.config import Settings
 from agentloom.llm.base import LLMMessage, LLMProvider, ToolCall, ToolDefinition
 from agentloom.llm.factory import create_queen_llm_provider
+from agentloom.memory.coordinator import MemoryCoordinator
+from agentloom.memory.store import LocalMemoryStore
 from agentloom.runtime.states import SessionStatus, WorkerStatus
 from agentloom.storage import LocalColonyStore, TrackerVersionConflictError
 from agentloom.tools.base import ToolContext, ToolError
@@ -195,9 +197,11 @@ class FileAgentLoopStore(AgentLoopStore):
         self,
         store: LocalColonyStore,
         notifier: ColonyEventNotifier,
+        memory: MemoryCoordinator | None = None,
     ) -> None:
         self._store = store
         self._notifier = notifier
+        self._memory = memory
         self._logger = structlog.get_logger(__name__)
 
     async def load(self, session_id: UUID) -> LoopContext | None:
@@ -228,6 +232,9 @@ class FileAgentLoopStore(AgentLoopStore):
             colony=colony,
             messages=normalized,
             queen=queen,
+            recalled_memory=(
+                self._memory.recalled_memory(session_id) if self._memory is not None else ""
+            ),
         )
 
     async def mark_running(self, context: LoopContext) -> bool:
@@ -409,11 +416,13 @@ class ColonyRuntime:
         notifier: ColonyEventNotifier,
         settings: Settings,
         tools: ToolRegistry,
+        memory: MemoryCoordinator | None = None,
     ) -> None:
         self._storage = store
         self._notifier = notifier
         self._settings = settings
         self._tools = tools
+        self._memory = memory
         self._provider_override = provider
         self._queen_loops: dict[UUID, AgentLoop] = {}
         self._worker_semaphore = asyncio.Semaphore(settings.max_concurrent_workers)
@@ -426,6 +435,8 @@ class ColonyRuntime:
         """Recover queued/running sessions after an application restart."""
 
         self._stopping = False
+        if self._memory is not None:
+            await self._memory.initialize()
         worker_ids, queen_ids = await self._storage.recover_interrupted()
         for worker_id in worker_ids:
             self._schedule(self._run_worker(worker_id))
@@ -439,6 +450,8 @@ class ColonyRuntime:
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
+        if self._memory is not None:
+            await self._memory.stop()
         self._queen_loops.clear()
 
     async def create_colony(self, payload: ColonyCreate) -> ColonyRead:
@@ -459,6 +472,14 @@ class ColonyRuntime:
         )
         await self._notifier.notify(colony.id)
         return colony
+
+    @property
+    def memory_store(self) -> LocalMemoryStore:
+        """Return the configured long-term memory store."""
+
+        if self._memory is None:
+            raise RuntimeError("Memory coordinator is not configured")
+        return self._memory.store
 
     async def create_queen(self, payload: QueenCreate) -> QueenRead:
         return await self._storage.create_queen(payload)
@@ -901,12 +922,13 @@ class ColonyRuntime:
         if selected_provider is None:
             raise RuntimeError("Queen provider has not been resolved")
         return AgentLoop(
-            FileAgentLoopStore(self._storage, self._notifier),
+            FileAgentLoopStore(self._storage, self._notifier, self._memory),
             selected_provider,
             self,
             JudgePipeline(),
             default_max_turns=self._settings.queen_max_turns,
             timeout_seconds=self._settings.llm_timeout_seconds,
+            observer=self._memory,
         )
 
     def _get_queen_loop(
@@ -925,7 +947,7 @@ class ColonyRuntime:
         if selected_provider is None:
             raise RuntimeError("Worker provider has not been resolved")
         return AgentLoop(
-            FileAgentLoopStore(self._storage, self._notifier),
+            FileAgentLoopStore(self._storage, self._notifier, self._memory),
             selected_provider,
             self,
             JudgePipeline(),
@@ -935,6 +957,8 @@ class ColonyRuntime:
 
     async def _run_queen(self, session_id: UUID) -> None:
         provider = await self._provider_for_session(session_id)
+        if self._memory is not None:
+            await self._memory.prepare_recall(session_id, provider)
         await self._run_serial(session_id, self._get_queen_loop(session_id, provider))
 
     async def _provider_for_session(self, session_id: UUID) -> LLMProvider:

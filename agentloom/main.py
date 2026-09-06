@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 import structlog
 from fastapi import FastAPI
 
-from agentloom.api.routes import colony_router, queen_router
+from agentloom.api.routes import colony_router, memory_router, queen_router
 from agentloom.api.schemas import HealthResponse
 from agentloom.bootstrap import create_colony_runtime
 from agentloom.colony.notifier import ColonyEventNotifier
@@ -70,6 +70,7 @@ def create_app(
     application.state.colony_runtime = colony_runtime
     application.include_router(colony_router, prefix="/api")
     application.include_router(queen_router, prefix="/api")
+    application.include_router(memory_router, prefix="/api")
     application.add_api_route(
         "/health",
         health,

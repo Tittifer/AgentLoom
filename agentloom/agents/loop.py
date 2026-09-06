@@ -33,6 +33,7 @@ class LoopContext:
     colony: ColonyRead
     messages: list[LLMMessage]
     queen: QueenRead | None = None
+    recalled_memory: str = ""
 
 
 @dataclass(frozen=True)
@@ -108,6 +109,15 @@ class AgentToolExecutor(Protocol):
     ) -> None: ...
 
 
+class AgentLoopObserver(Protocol):
+    async def on_turn_completed(
+        self,
+        context: LoopContext,
+        response: LLMResponse,
+        provider: LLMProvider,
+    ) -> None: ...
+
+
 class AgentLoop:
     """Stream-independent bounded LLM/tool/judge loop with durable turn boundaries."""
 
@@ -120,6 +130,7 @@ class AgentLoop:
         *,
         default_max_turns: int,
         timeout_seconds: float,
+        observer: AgentLoopObserver | None = None,
     ) -> None:
         self._store = store
         self._provider = provider
@@ -127,6 +138,7 @@ class AgentLoop:
         self._judge = judge
         self._default_max_turns = default_max_turns
         self._timeout_seconds = timeout_seconds
+        self._observer = observer
         self._logger = structlog.get_logger(__name__)
 
     async def run(self, session_id: UUID) -> None:
@@ -144,6 +156,20 @@ class AgentLoop:
 
     async def _run(self, context: LoopContext) -> None:
         messages = [self._system_message(context), *context.messages]
+        if context.recalled_memory:
+            reminder = LLMMessage(
+                role="system",
+                content=(
+                    "<system-reminder>\n以下是与用户本轮请求相关的长期记忆。"
+                    "这些信息可能已经过时，请结合当前上下文核实。\n\n"
+                    f"{context.recalled_memory}\n</system-reminder>"
+                ),
+            )
+            insert_at = max(
+                (index for index, message in enumerate(messages) if message.role == "user"),
+                default=len(messages),
+            )
+            messages.insert(insert_at, reminder)
         usage = self._initial_usage(context.session)
         configured_tool_calls = context.session.budget.get("max_tool_calls")
         max_tool_calls = (
@@ -239,6 +265,8 @@ class AgentLoop:
                 "message.completed",
                 message_id,
             )
+            if self._observer is not None:
+                await self._observer.on_turn_completed(context, response, self._provider)
 
             if response.tool_calls:
                 results, executed_count, tool_budget_exhausted = await self._execute_tool_calls(
@@ -633,6 +661,7 @@ class AgentLoop:
 __all__ = [
     "AgentLoop",
     "AgentLoopStore",
+    "AgentLoopObserver",
     "AgentToolExecutor",
     "BudgetReason",
     "LoopContext",

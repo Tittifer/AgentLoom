@@ -15,6 +15,9 @@ function App() {
           <NavLink className={({ isActive }) => isActive ? "nav-link active" : "nav-link"} to="/queens">
             Queen
           </NavLink>
+          <NavLink className={({ isActive }) => isActive ? "nav-link active" : "nav-link"} to="/memories">
+            记忆
+          </NavLink>
         </nav>
       </header>
       <main className={`page-container${isWorkspace ? " workspace-container" : ""}`}>

@@ -328,6 +328,24 @@ h3 { margin: 1.25rem 0 .5rem; font-size: .9rem; }
 
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 
+.memory-toolbar { display: flex; gap: 1rem; align-items: end; justify-content: space-between; margin-bottom: 1rem; }
+.memory-tabs { display: flex; gap: .4rem; }
+.memory-tabs button { padding: .55rem .8rem; border-radius: 8px; color: #64748b; background: #eef2f8; }
+.memory-tabs button.active { color: #fff; background: #315bd6; }
+.memory-toolbar .form-field { min-width: 220px; }
+.memory-layout { display: grid; grid-template-columns: minmax(240px, .7fr) minmax(0, 1.3fr); gap: 1rem; }
+.memory-list { display: grid; align-content: start; gap: .55rem; }
+.memory-list > button { display: grid; gap: .2rem; padding: .75rem; border: 1px solid #e2e8f0; border-radius: 9px; text-align: left; background: #fff; }
+.memory-list > button.active { border-color: #315bd6; background: #f4f7ff; }
+.memory-list strong { color: #24324b; }
+.memory-list small { color: #64748b; }
+.memory-list span { width: fit-content; padding: .12rem .4rem; border-radius: 999px; color: #315bd6; background: #e8efff; font-size: .65rem; }
+.memory-editor header { display: flex; justify-content: space-between; gap: 1rem; align-items: start; margin-bottom: .8rem; }
+.memory-editor h2 { margin: 0; }
+.memory-editor header small { color: #64748b; }
+.memory-editor textarea { width: 100%; padding: .8rem; border: 1px solid #cbd5e1; border-radius: 9px; font-family: ui-monospace, monospace; resize: vertical; }
+.danger-button { padding: .5rem .7rem; border-radius: 8px; color: #b91c1c; background: #fee2e2; }
+
 @media (max-width: 980px) {
   .session-navigation { width: 68px; }
   .session-navigation .navigation-toggle { display: none; }
@@ -347,6 +365,7 @@ h3 { margin: 1.25rem 0 .5rem; font-size: .9rem; }
 }
 
 @media (max-width: 760px) {
+  .memory-layout { grid-template-columns: 1fr; }
   .workspace-container { height: auto; min-height: calc(100vh - 68px); overflow: visible; }
   .workspace-shell { flex-direction: column; overflow: visible; }
   .session-navigation, .session-navigation.is-collapsed { width: 100%; height: 58px; flex-direction: row; border-right: 0; border-bottom: 1px solid #e2e7ef; }
