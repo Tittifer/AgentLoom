@@ -6,6 +6,7 @@ from uuid import UUID
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, JsonValue, field_validator
 
+from agentloom.context.schemas import ContextPolicy
 from agentloom.llm.base import ReasoningContent
 from agentloom.llm.model_routing import LLMProtocol
 from agentloom.runtime.states import ColonyStatus, SessionStatus, TaskItemStatus, WorkerStatus
@@ -28,6 +29,12 @@ class QueenProfile(ColonyModel):
     model: str = Field(min_length=1, max_length=200)
     base_url: str = Field(min_length=1, max_length=2_000)
     settings: JsonObject = Field(default_factory=dict)
+
+    @field_validator("settings")
+    @classmethod
+    def validate_context_settings(cls, value: JsonObject) -> JsonObject:
+        ContextPolicy.from_mapping(value)
+        return value
 
     @field_validator("base_url")
     @classmethod

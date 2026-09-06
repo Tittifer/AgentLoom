@@ -16,12 +16,14 @@ AgentLoom 是一个基于 Hive Colony 思路实现的持久化多智能体协作
 - 实时工作台：React 界面通过 SSE 展示 Queen、Worker、任务和 Tracker 的变化。
 - 模型兼容：根据 Queen 的模型名称自动选择 OpenAI、Claude 或 Gemini 协议，并通过 LiteLLM 调用。
 - 长期记忆：后台 Reflection 从 Queen 对话提炼 global/Queen 两级 Markdown 记忆，并在后续请求中按相关性召回。
+- 上下文压缩：Queen 和每个 Worker 分别按模型窗口执行工具结果落盘、微压缩和 LLM 摘要压缩，完整聊天记录不受影响。
 
 ## 目录结构
 
 ```text
 agentloom/                 FastAPI 后端包
   agents/                 AgentLoop 实现与 Judge
+  context/                Token 估算、上下文策略和摘要压缩
   api/routes/colonies.py  Colony、会话和 SSE API
   colony/                 Colony DTO、通知器和运行时
   storage/                Queen Profile、会话文件与每 Colony SQLite Tracker
@@ -50,6 +52,8 @@ AgentLoom 不读取 `.env`。持久化根目录固定为项目根目录下的 `.
 Queen 配置保存在 `queens/<queen_id>/profile.yaml`，`queen_id` 由后端根据名称自动生成。API Key 只保存在本机 YAML 中，不会通过 Queen 查询接口返回；`.agentloom/` 已被 Git 忽略。旗下 Session 引用保存在 `sessions/`，每个 Colony 是一个自包含目录。除每个 Colony 的 `tracker/tracker.db` 外，其余运行状态使用 JSON、JSONL 和普通文件保存。
 
 长期记忆保存在 `.agentloom/memories/global/*.md` 和 `.agentloom/memories/agents/queens/<queen_id>/*.md`。每条记忆包含 YAML frontmatter 和 Markdown 正文，单文件最多 4096 字节。Worker 不自动继承这些记忆；可以通过顶部“记忆”页面查看、编辑或删除。
+
+创建 Queen 时可以填写模型上下文窗口。该值保存在 Queen YAML 的 `settings.max_context_tokens`，新建 Session 会复制一份独立策略。压缩 checkpoint 位于 Session 的 `context/compaction.json`；超过限制的完整工具结果保存在 `spillover/*.json`，模型通过 `load_tool_result` 分页读取。`conversations/parts/*.json` 原始消息不会因压缩删除，因此前端仍展示完整对话。
 
 ## 安装和启动
 

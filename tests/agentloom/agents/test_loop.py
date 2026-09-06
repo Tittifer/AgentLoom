@@ -13,7 +13,14 @@ from agentloom.agents.loop import (
     ToolExecutionResult,
 )
 from agentloom.colony.schemas import ColonyRead, MessageRead, SessionRead
-from agentloom.llm.base import LLMMessage, LLMResponse, ToolCall, ToolDefinition
+from agentloom.llm.base import (
+    LLMContextLengthError,
+    LLMMessage,
+    LLMProvider,
+    LLMResponse,
+    ToolCall,
+    ToolDefinition,
+)
 from agentloom.llm.mock import ScriptedMockLLMProvider
 from agentloom.runtime.states import ColonyStatus, SessionStatus
 
@@ -200,6 +207,26 @@ class FakeTools:
         self.budget_finalized.append((content, reason))
 
 
+class FakeContextManager:
+    def __init__(self) -> None:
+        self.forced: list[bool] = []
+
+    async def compact(
+        self,
+        context: LoopContext,
+        messages: list[LLMMessage],
+        tools: list[ToolDefinition],
+        provider: LLMProvider,
+        *,
+        force: bool,
+    ) -> list[LLMMessage]:
+        del context, tools, provider
+        self.forced.append(force)
+        if force:
+            return [messages[0], LLMMessage(role="user", content="压缩后的上下文")]
+        return messages
+
+
 class RecordingLogger:
     def __init__(self) -> None:
         self.events: list[tuple[str, dict[str, object]]] = []
@@ -224,6 +251,34 @@ async def test_agent_loop_finishes_visible_response() -> None:
     assert store.messages[0].reasoning_content == "内部推理"
     assert provider.requests[0].messages[0].role == "system"
     assert [delta for _, delta in store.deltas] == ["完成"]
+
+
+async def test_agent_loop_forces_compaction_and_retries_context_error_once() -> None:
+    context = make_context()
+    store = FakeStore(context)
+    provider = ScriptedMockLLMProvider(
+        [
+            LLMContextLengthError("context too large"),
+            LLMResponse(content="压缩后完成", model="mock/test"),
+        ]
+    )
+    manager = FakeContextManager()
+    loop = AgentLoop(
+        store,
+        provider,
+        FakeTools(),
+        JudgePipeline(),
+        default_max_turns=2,
+        timeout_seconds=1,
+        context_manager=manager,
+    )
+
+    await loop.run(context.session.id)
+
+    assert manager.forced == [False, True]
+    assert len(provider.requests) == 2
+    assert provider.requests[1].messages[-1].content == "压缩后的上下文"
+    assert store.finished
 
 
 async def test_queen_recalled_memory_is_inserted_before_latest_user_message() -> None:

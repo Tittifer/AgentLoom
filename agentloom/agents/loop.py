@@ -12,6 +12,7 @@ from pydantic import JsonValue
 from agentloom.agents.judge import JudgePipeline
 from agentloom.colony.schemas import ActorType, ColonyRead, MessageRead, QueenRead, SessionRead
 from agentloom.llm.base import (
+    LLMContextLengthError,
     LLMMessage,
     LLMProvider,
     LLMRequest,
@@ -118,6 +119,18 @@ class AgentLoopObserver(Protocol):
     ) -> None: ...
 
 
+class AgentContextManager(Protocol):
+    async def compact(
+        self,
+        context: LoopContext,
+        messages: list[LLMMessage],
+        tools: list[ToolDefinition],
+        provider: LLMProvider,
+        *,
+        force: bool,
+    ) -> list[LLMMessage]: ...
+
+
 class AgentLoop:
     """Stream-independent bounded LLM/tool/judge loop with durable turn boundaries."""
 
@@ -131,6 +144,7 @@ class AgentLoop:
         default_max_turns: int,
         timeout_seconds: float,
         observer: AgentLoopObserver | None = None,
+        context_manager: AgentContextManager | None = None,
     ) -> None:
         self._store = store
         self._provider = provider
@@ -139,6 +153,7 @@ class AgentLoop:
         self._default_max_turns = default_max_turns
         self._timeout_seconds = timeout_seconds
         self._observer = observer
+        self._context_manager = context_manager
         self._logger = structlog.get_logger(__name__)
 
     async def run(self, session_id: UUID) -> None:
@@ -244,13 +259,31 @@ class AgentLoop:
                 definitions = [
                     definition for definition in definitions if definition.name in allowed_names
                 ]
-            response, message_id = await self._complete_turn(
-                context,
-                messages,
-                definitions,
-                usage,
-                iteration,
-            )
+            if self._context_manager is not None:
+                messages = await self._context_manager.compact(
+                    context, messages, definitions, self._provider, force=False
+                )
+            try:
+                response, message_id = await self._complete_turn(
+                    context,
+                    messages,
+                    definitions,
+                    usage,
+                    iteration,
+                )
+            except LLMContextLengthError:
+                if self._context_manager is None:
+                    raise
+                messages = await self._context_manager.compact(
+                    context, messages, definitions, self._provider, force=True
+                )
+                response, message_id = await self._complete_turn(
+                    context,
+                    messages,
+                    definitions,
+                    usage,
+                    iteration,
+                )
             content = response.content or self._json_content(response.structured_output)
             assistant = LLMMessage(
                 role="assistant",
@@ -439,6 +472,7 @@ class AgentLoop:
             await self._store.cancel_message_stream(context, message_id)
         usage["input_tokens"] += response.input_tokens
         usage["output_tokens"] += response.output_tokens
+        usage["last_input_tokens"] = response.input_tokens
         self._logger.info(
             "agent_turn_usage",
             session_id=str(context.session.id),
@@ -646,7 +680,7 @@ class AgentLoop:
     @staticmethod
     def _initial_usage(session: SessionRead) -> dict[str, int]:
         result: dict[str, int] = {}
-        for key in ("input_tokens", "output_tokens", "tool_calls"):
+        for key in ("input_tokens", "output_tokens", "tool_calls", "last_input_tokens"):
             value = session.usage.get(key)
             result[key] = value if isinstance(value, int) else 0
         return result
@@ -662,6 +696,7 @@ __all__ = [
     "AgentLoop",
     "AgentLoopStore",
     "AgentLoopObserver",
+    "AgentContextManager",
     "AgentToolExecutor",
     "BudgetReason",
     "LoopContext",

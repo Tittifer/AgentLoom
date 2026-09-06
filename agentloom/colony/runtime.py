@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError
 
 from agentloom.agents.judge import JudgePipeline
 from agentloom.agents.loop import (
+    AgentContextManager,
     AgentLoop,
     AgentLoopStore,
     BudgetReason,
@@ -38,6 +39,9 @@ from agentloom.colony.schemas import (
     WorkerTask,
 )
 from agentloom.config import Settings
+from agentloom.context.compaction import ContextCompactor
+from agentloom.context.estimator import estimate_context_tokens
+from agentloom.context.schemas import CompactionCheckpoint, ContextPolicy
 from agentloom.llm.base import LLMMessage, LLMProvider, ToolCall, ToolDefinition
 from agentloom.llm.factory import create_queen_llm_provider
 from agentloom.memory.coordinator import MemoryCoordinator
@@ -92,6 +96,12 @@ class TaskUpdateInput(ToolInput):
     status: Literal["pending", "in_progress", "completed", "blocked", "cancelled"]
 
 
+class LoadToolResultInput(ToolInput):
+    filename: str = Field(min_length=1, max_length=200)
+    offset: int = Field(default=0, ge=0)
+    limit: int = Field(default=10_000, ge=1, le=20_000)
+
+
 def normalize_message_history(messages: list[MessageRead]) -> tuple[list[LLMMessage], int]:
     """Drop orphan tool results and downgrade incomplete assistant tool-call groups."""
 
@@ -142,6 +152,19 @@ def normalize_message_history(messages: list[MessageRead]) -> tuple[list[LLMMess
             normalized.append(message)
         index += 1
     return normalized, repaired_groups
+
+
+def messages_for_checkpoint(
+    messages: list[MessageRead], checkpoint: CompactionCheckpoint | None
+) -> list[MessageRead]:
+    if checkpoint is None:
+        return messages
+    preserved = set(checkpoint.preserved_sequences)
+    return [
+        message
+        for message in messages
+        if message.sequence in preserved or message.sequence > checkpoint.through_sequence
+    ]
 
 
 def _worker_status_context(
@@ -213,7 +236,18 @@ class FileAgentLoopStore(AgentLoopStore):
         messages = await self._store.list_messages(session_id)
         if colony is None or queen is None or messages is None:
             return None
-        normalized, repaired_groups = normalize_message_history(messages)
+        compaction = await self._store.get_compaction_checkpoint(session_id)
+        normalized, repaired_groups = normalize_message_history(
+            messages_for_checkpoint(messages, compaction)
+        )
+        if compaction is not None:
+            normalized.insert(
+                0,
+                LLMMessage(
+                    role="user",
+                    content="[CONTEXT_COMPACTION]\n" + compaction.summary,
+                ),
+            )
         if agent_session.actor_type == "queen":
             status_context = _worker_status_context(
                 await self._store.list_workers(agent_session.colony_id),
@@ -406,6 +440,169 @@ class FileAgentLoopStore(AgentLoopStore):
         await self._notifier.notify(context.session.colony_id)
 
 
+class FileContextManager(AgentContextManager):
+    """Compact one Session while preserving its complete user-visible transcript."""
+
+    def __init__(
+        self,
+        store: LocalColonyStore,
+        timeout_seconds: float,
+        memory: MemoryCoordinator | None,
+    ) -> None:
+        self._store = store
+        self._compactor = ContextCompactor(timeout_seconds)
+        self._memory = memory
+        self._logger = structlog.get_logger(__name__)
+
+    async def compact(
+        self,
+        context: LoopContext,
+        messages: list[LLMMessage],
+        tools: list[ToolDefinition],
+        provider: LLMProvider,
+        *,
+        force: bool,
+    ) -> list[LLMMessage]:
+        policy = ContextPolicy.from_mapping(context.session.budget)
+        previous = await self._store.get_compaction_checkpoint(context.session.id)
+        microcompacted = self._compactor.microcompact(messages)
+        estimated_tokens = estimate_context_tokens(microcompacted, tools)
+        last_actual = context.session.usage.get("last_input_tokens")
+        tokens_before = max(
+            estimated_tokens,
+            (
+                last_actual
+                if previous is None and isinstance(last_actual, int) and last_actual >= 0
+                else 0
+            ),
+        )
+        if not force and tokens_before < policy.trigger_tokens:
+            return microcompacted
+        raw_messages = await self._store.list_messages(context.session.id)
+        if not raw_messages:
+            if force:
+                raise RuntimeError("上下文超过模型限制，但没有足够的历史消息可压缩")
+            return microcompacted
+        active_raw = [
+            message
+            for message in raw_messages
+            if previous is None or message.sequence > previous.through_sequence
+        ]
+        split = self._recent_start(active_raw)
+        if split <= 0 and previous is None:
+            if force:
+                raise RuntimeError("上下文超过模型限制，但近期消息组无法安全拆分")
+            return microcompacted
+        old_messages = active_raw[:split]
+        recent_messages = active_raw[split:]
+        old_normalized, _ = normalize_message_history(old_messages)
+        if previous is not None:
+            old_normalized.insert(
+                0,
+                LLMMessage(
+                    role="user",
+                    content="[PREVIOUS_CONTEXT_COMPACTION]\n" + previous.summary,
+                ),
+            )
+        if not old_normalized:
+            return microcompacted
+        self._logger.info(
+            "context_compaction_started",
+            session_id=str(context.session.id),
+            actor_type=context.session.actor_type,
+            tokens_before=tokens_before,
+            message_count=len(active_raw),
+            forced=force,
+        )
+        if self._memory is not None and context.session.actor_type == "queen":
+            await self._memory.reflect_before_compaction(context, provider)
+        try:
+            summary = await self._compactor.summarize(
+                old_normalized,
+                context.colony.model,
+                provider,
+                policy,
+            )
+            compacted_through = (
+                old_messages[-1].sequence
+                if old_messages
+                else previous.through_sequence
+                if previous is not None
+                else 0
+            )
+            eligible_users = [
+                message.sequence
+                for message in raw_messages
+                if message.sequence <= compacted_through
+                if message.role == "user"
+                and "worker_run_id" not in message.metadata
+                and not message.content.startswith("[WORKER_REPORT]")
+            ]
+            preserved = (
+                eligible_users[-policy.max_verbatim_user_messages :]
+                if policy.max_verbatim_user_messages
+                else []
+            )
+            recent_normalized, _ = normalize_message_history(recent_messages)
+            system_messages = [message for message in messages if message.role == "system"]
+            while True:
+                checkpoint = self._compactor.build_checkpoint(
+                    summary,
+                    compacted_through,
+                    preserved,
+                    tokens_before,
+                    recent_normalized,
+                )
+                selected = messages_for_checkpoint(raw_messages, checkpoint)
+                working, _ = normalize_message_history(selected)
+                working.insert(
+                    0,
+                    LLMMessage(role="user", content="[CONTEXT_COMPACTION]\n" + summary),
+                )
+                compacted = [*system_messages, *working]
+                tokens_after = estimate_context_tokens(compacted, tools)
+                if tokens_after < policy.trigger_tokens or not preserved:
+                    break
+                preserved.pop(0)
+            checkpoint = checkpoint.model_copy(update={"tokens_after": tokens_after})
+            await self._store.save_compaction_checkpoint(context.session.id, checkpoint)
+            self._logger.info(
+                "context_compaction_completed",
+                session_id=str(context.session.id),
+                actor_type=context.session.actor_type,
+                tokens_before=tokens_before,
+                tokens_after=tokens_after,
+                through_sequence=checkpoint.through_sequence,
+            )
+            return compacted
+        except Exception as error:
+            self._logger.warning(
+                "context_compaction_failed",
+                session_id=str(context.session.id),
+                actor_type=context.session.actor_type,
+                error_type=type(error).__name__,
+                error=str(error),
+                forced=force,
+            )
+            if force:
+                raise
+            return microcompacted
+
+    @staticmethod
+    def _recent_start(messages: list[MessageRead]) -> int:
+        groups = 0
+        index = len(messages)
+        while index > 0 and groups < 2:
+            index -= 1
+            if messages[index].role != "tool":
+                groups += 1
+        while index > 0 and messages[index].role == "tool":
+            index -= 1
+        if index > 0 and messages[index].role == "assistant" and messages[index].tool_calls:
+            return index
+        return index
+
+
 class ColonyRuntime:
     """Own Queen loops, worker concurrency, tools, recovery, and public commands."""
 
@@ -423,6 +620,7 @@ class ColonyRuntime:
         self._settings = settings
         self._tools = tools
         self._memory = memory
+        self._context_manager = FileContextManager(store, settings.llm_timeout_seconds, memory)
         self._provider_override = provider
         self._queen_loops: dict[UUID, AgentLoop] = {}
         self._worker_semaphore = asyncio.Semaphore(settings.max_concurrent_workers)
@@ -615,6 +813,11 @@ class ColonyRuntime:
                 description="更新持久任务计划中某个任务项的状态。",
                 parameters=TaskUpdateInput.model_json_schema(),
             ),
+            ToolDefinition(
+                name="load_tool_result",
+                description="分页读取当前 Session 中已落盘的大型工具完整结果。",
+                parameters=LoadToolResultInput.model_json_schema(),
+            ),
         ]
         builtins = self._tools.definitions()
         if actor_type == "queen":
@@ -647,7 +850,11 @@ class ColonyRuntime:
                 payload = RunWorkersInput.model_validate(tool_call.arguments)
                 workers = await self._spawn_workers(context, payload.tasks, payload.timeout)
                 return ToolExecutionResult(
-                    {"workers": [worker.model_dump(mode="json") for worker in workers]}
+                    await self._spill_tool_result(
+                        context,
+                        tool_call.name,
+                        {"workers": [worker.model_dump(mode="json") for worker in workers]},
+                    )
                 )
             if tool_call.name == "report_to_parent":
                 if context.session.actor_type != "worker":
@@ -665,7 +872,13 @@ class ColonyRuntime:
             if tool_call.name == "tracker_query":
                 payload = TrackerQueryInput.model_validate(tool_call.arguments)
                 entries = await self.list_tracker(context.session.colony_id, payload.namespace)
-                return ToolExecutionResult([entry.model_dump(mode="json") for entry in entries])
+                return ToolExecutionResult(
+                    await self._spill_tool_result(
+                        context,
+                        tool_call.name,
+                        [entry.model_dump(mode="json") for entry in entries],
+                    )
+                )
             if tool_call.name == "task_create":
                 payload = TaskItemCreate.model_validate(tool_call.arguments)
                 item = await self._task_create(context, payload)
@@ -674,9 +887,21 @@ class ColonyRuntime:
                 payload = TaskUpdateInput.model_validate(tool_call.arguments)
                 item = await self._task_update(context, payload)
                 return ToolExecutionResult(item.model_dump(mode="json"))
+            if tool_call.name == "load_tool_result":
+                payload = LoadToolResultInput.model_validate(tool_call.arguments)
+                value = await self._storage.read_tool_spillover(
+                    context.session.id,
+                    payload.filename,
+                    payload.offset,
+                    min(
+                        payload.limit,
+                        ContextPolicy.from_mapping(context.session.budget).max_tool_result_chars,
+                    ),
+                )
+                return ToolExecutionResult(value)
             builtin_names = {definition.name for definition in self._tools.definitions()}
             if tool_call.name in builtin_names:
-                value = await self._tools.execute(
+                value = await self._tools.execute_unbounded(
                     tool_call.name,
                     tool_call.arguments,
                     builtin_names,
@@ -685,12 +910,41 @@ class ColonyRuntime:
                         upstream_outputs={},
                     ),
                 )
-                return ToolExecutionResult(value)
+                return ToolExecutionResult(
+                    await self._spill_tool_result(context, tool_call.name, value)
+                )
             return self._tool_error("TOOL_NOT_FOUND", f"未知工具：{tool_call.name}")
         except ToolError as error:
             return ToolExecutionResult(error.as_payload())
+        except FileNotFoundError as error:
+            return self._tool_error("TOOL_RESULT_NOT_FOUND", str(error))
         except (ValidationError, TrackerVersionConflictError, ValueError) as error:
             return self._tool_error("TOOL_ARGUMENTS_INVALID", str(error))
+
+    async def _spill_tool_result(
+        self, context: LoopContext, tool_name: str, value: JsonValue
+    ) -> JsonValue:
+        serialized = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+        policy = ContextPolicy.from_mapping(context.session.budget)
+        if len(serialized) <= policy.max_tool_result_chars:
+            return value
+        filename = await self._storage.write_tool_spillover(context.session.id, tool_name, value)
+        self._logger.info(
+            "tool_result_spilled",
+            session_id=str(context.session.id),
+            actor_type=context.session.actor_type,
+            tool_name=tool_name,
+            result_chars=len(serialized),
+            truncated=True,
+        )
+        preview_size = max(500, policy.max_tool_result_chars - 500)
+        return {
+            "truncated": True,
+            "preview": serialized[:preview_size],
+            "full_result_file": filename,
+            "original_chars": len(serialized),
+            "hint": "使用 load_tool_result 分页读取完整结果。",
+        }
 
     async def finalize_text(self, context: LoopContext, content: str) -> None:
         if context.session.actor_type == "worker":
@@ -929,6 +1183,7 @@ class ColonyRuntime:
             default_max_turns=self._settings.queen_max_turns,
             timeout_seconds=self._settings.llm_timeout_seconds,
             observer=self._memory,
+            context_manager=self._context_manager,
         )
 
     def _get_queen_loop(
@@ -953,6 +1208,7 @@ class ColonyRuntime:
             JudgePipeline(),
             default_max_turns=DEFAULT_WORKER_MAX_TURNS,
             timeout_seconds=self._settings.llm_timeout_seconds,
+            context_manager=self._context_manager,
         )
 
     async def _run_queen(self, session_id: UUID) -> None:
@@ -1010,6 +1266,7 @@ def conversation_name_from_message(content: str) -> str:
 __all__ = [
     "ColonyNotFoundError",
     "ColonyRuntime",
+    "FileContextManager",
     "FileAgentLoopStore",
     "QueenNotFoundError",
     "SessionConflictError",

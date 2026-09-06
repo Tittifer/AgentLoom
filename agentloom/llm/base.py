@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, StringConstraints
 
 JsonObject = dict[str, JsonValue]
 MessageRole = Literal["system", "user", "assistant", "tool", "reviewer"]
+RequestPurpose = Literal["agent", "compaction", "recall", "reflection"]
 ReasoningContent = Annotated[str, StringConstraints(strip_whitespace=False)]
 
 
@@ -51,6 +52,8 @@ class LLMRequest(LLMModel):
     tools: list[ToolDefinition] = Field(default_factory=lambda: list[ToolDefinition]())
     response_schema: JsonObject | None = None
     timeout_seconds: float = Field(default=60, gt=0, le=600)
+    max_output_tokens: int | None = Field(default=None, ge=1)
+    purpose: RequestPurpose = "agent"
 
 
 class LLMResponse(LLMModel):
@@ -93,9 +96,14 @@ class LLMResponseError(LLMProviderError):
     """Raised when a provider response cannot be normalized safely."""
 
 
+class LLMContextLengthError(LLMProviderError):
+    """Raised when one request exceeds the selected model's context window."""
+
+
 __all__ = [
     "JsonObject",
     "LLMMessage",
+    "LLMContextLengthError",
     "LLMProvider",
     "LLMProviderError",
     "LLMRequest",
@@ -104,6 +112,7 @@ __all__ = [
     "LLMStreamChunk",
     "LLMTimeoutError",
     "MessageRole",
+    "RequestPurpose",
     "ReasoningContent",
     "ToolCall",
     "ToolDefinition",

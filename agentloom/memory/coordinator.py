@@ -106,6 +106,13 @@ class MemoryCoordinator:
         self._reflection_scheduled = True
         self._schedule(self._reflect(context, provider, is_long_interval))
 
+    async def reflect_before_compaction(self, context: LoopContext, provider: LLMProvider) -> None:
+        """Capture durable facts before older working context is summarized."""
+
+        if not self._accepting or context.session.actor_type != "queen":
+            return
+        await self._reflect(context, provider, False)
+
     async def stop(self) -> None:
         self._accepting = False
         try:

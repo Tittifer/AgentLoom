@@ -52,6 +52,10 @@ class ToolRegistry:
         allowed = set(allowed_tools) if allowed_tools is not None else set(self._tools)
         return [tool.definition for name, tool in self._tools.items() if name in allowed]
 
+    @property
+    def max_result_chars(self) -> int:
+        return self._max_result_chars
+
     async def execute(
         self,
         name: str,
@@ -60,6 +64,18 @@ class ToolRegistry:
         context: ToolContext,
     ) -> JsonValue:
         """Execute one authorized tool and bound its result size."""
+
+        result = await self.execute_unbounded(name, arguments, allowed_tools, context)
+        return _limit_result(result, self._max_result_chars)
+
+    async def execute_unbounded(
+        self,
+        name: str,
+        arguments: Mapping[str, JsonValue],
+        allowed_tools: Collection[str],
+        context: ToolContext,
+    ) -> JsonValue:
+        """Execute a tool without discarding data before session spillover."""
 
         if name not in allowed_tools:
             raise ToolNotAllowedError(f"Tool {name} is not allowed for this session")
@@ -75,7 +91,7 @@ class ToolRegistry:
             raise ToolArgumentsError(f"Invalid arguments for {name}: {error}") from error
         except TimeoutError as error:
             raise ToolTimeoutError(f"Tool {name} timed out") from error
-        return _limit_result(result, self._max_result_chars)
+        return result
 
 
 def _limit_result(result: JsonValue, maximum: int) -> JsonValue:

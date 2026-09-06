@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import re
 from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from importlib import import_module
@@ -10,6 +11,7 @@ from typing import Literal, Protocol, cast, runtime_checkable
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError
 
 from agentloom.llm.base import (
+    LLMContextLengthError,
     LLMRequest,
     LLMResponse,
     LLMResponseError,
@@ -22,6 +24,13 @@ from agentloom.llm.model_routing import LLMProtocol, litellm_model_name, protoco
 CompletionCallable = Callable[..., Awaitable[object]]
 ResponseFormat = Literal["json_schema", "json_object"]
 LITELLM_COMPLETION_ATTRIBUTE = "acompletion"
+CONTEXT_LENGTH_PATTERN = re.compile(
+    r"context.{0,24}(length|window|limit|size)|"
+    r"too.{0,12}(long|large|many.{0,10}tokens)|"
+    r"(exceed|exceeds|exceeded).{0,32}(limit|window|context|tokens)|"
+    r"maximum.{0,20}token|prompt.{0,20}too.{0,10}long",
+    re.IGNORECASE,
+)
 
 
 @runtime_checkable
@@ -150,6 +159,10 @@ class LiteLLMProvider:
         except TimeoutError as error:
             raise LLMTimeoutError(f"Model {request.model} timed out") from error
         except Exception as error:
+            if _is_context_length_error(error):
+                raise LLMContextLengthError(
+                    f"Model {request.model} context window exceeded"
+                ) from error
             raise LLMResponseError(f"LiteLLM request failed: {error}") from error
 
         return _normalize_response(raw_response, request)
@@ -203,6 +216,10 @@ class LiteLLMProvider:
         except LLMResponseError:
             raise
         except Exception as error:
+            if _is_context_length_error(error):
+                raise LLMContextLengthError(
+                    f"Model {request.model} context window exceeded"
+                ) from error
             raise LLMResponseError(f"LiteLLM stream failed: {error}") from error
 
         content = "".join(content_parts) or None
@@ -272,7 +289,15 @@ class LiteLLMProvider:
                         "strict": True,
                     },
                 }
+        if request.max_output_tokens is not None:
+            parameters["max_tokens"] = request.max_output_tokens
         return parameters
+
+
+def _is_context_length_error(error: BaseException) -> bool:
+    return "ContextWindow" in type(error).__name__ or bool(
+        CONTEXT_LENGTH_PATTERN.search(str(error))
+    )
 
 
 def _load_default_completion() -> CompletionCallable:

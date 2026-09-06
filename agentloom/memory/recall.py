@@ -86,6 +86,7 @@ class RecallSelector:
             ],
             response_schema=SELECT_SCHEMA,
             timeout_seconds=self._timeout_seconds,
+            purpose="recall",
         )
         try:
             response = await provider.complete(request)

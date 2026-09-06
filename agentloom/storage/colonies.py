@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from uuid import UUID, uuid4
 
 from pydantic import JsonValue, TypeAdapter
 
-from agentloom.colony.message_safety import sanitize_json, sanitize_text
+from agentloom.colony.message_safety import redact_json, sanitize_json, sanitize_text
 from agentloom.colony.schemas import (
     ColonyEventRead,
     ColonyRead,
@@ -25,6 +26,7 @@ from agentloom.colony.schemas import (
     WorkerRead,
     WorkerTask,
 )
+from agentloom.context.schemas import CompactionCheckpoint
 from agentloom.llm.base import LLMMessage
 from agentloom.runtime.states import ColonyStatus, SessionStatus, TaskItemStatus, WorkerStatus
 from agentloom.storage.base import (
@@ -50,6 +52,12 @@ def default_colony_settings() -> dict[str, JsonValue]:
         "worker_timeout_seconds": 600,
         "max_tool_calls": 100,
         "grace_turns": 1,
+        "max_context_tokens": 128_000,
+        "compaction_buffer_tokens": 8_000,
+        "compaction_buffer_ratio": 0.4,
+        "compaction_summary_max_tokens": 8_192,
+        "max_tool_result_chars": 20_000,
+        "max_verbatim_user_messages": 40,
     }
 
 
@@ -98,6 +106,7 @@ class LocalColonyStore:
             raise KeyError(queen_id)
         async with self._root_lock:
             merged = default_colony_settings()
+            merged.update(queen_identity.settings)
             merged.update(JSON_OBJECT.validate_python(dict(settings)))
             now = utc_now()
             colony_id = uuid4()
@@ -260,6 +269,59 @@ class LocalColonyStore:
         if located is None:
             return None
         return await asyncio.to_thread(self._list_messages_sync, located[0], session_id)
+
+    async def get_compaction_checkpoint(self, session_id: UUID) -> CompactionCheckpoint | None:
+        located = await asyncio.to_thread(self._find_session_sync, session_id)
+        if located is None:
+            return None
+        return await asyncio.to_thread(self._get_compaction_checkpoint_sync, located[0], session_id)
+
+    async def save_compaction_checkpoint(
+        self, session_id: UUID, checkpoint: CompactionCheckpoint
+    ) -> None:
+        located = await asyncio.to_thread(self._find_session_sync, session_id)
+        if located is None:
+            raise KeyError(str(session_id))
+        colony_id = located[0]
+        async with self._lock(colony_id):
+            await asyncio.to_thread(
+                atomic_write_json,
+                self._compaction_path(colony_id, session_id),
+                checkpoint.model_dump(mode="json"),
+            )
+
+    async def write_tool_spillover(self, session_id: UUID, tool_name: str, value: JsonValue) -> str:
+        located = await asyncio.to_thread(self._find_session_sync, session_id)
+        if located is None:
+            raise KeyError(str(session_id))
+        colony_id = located[0]
+        async with self._lock(colony_id):
+            return await asyncio.to_thread(
+                self._write_tool_spillover_sync,
+                colony_id,
+                session_id,
+                tool_name,
+                value,
+            )
+
+    async def read_tool_spillover(
+        self,
+        session_id: UUID,
+        filename: str,
+        offset: int,
+        limit: int,
+    ) -> dict[str, JsonValue]:
+        located = await asyncio.to_thread(self._find_session_sync, session_id)
+        if located is None:
+            raise KeyError(str(session_id))
+        return await asyncio.to_thread(
+            self._read_tool_spillover_sync,
+            located[0],
+            session_id,
+            filename,
+            offset,
+            limit,
+        )
 
     async def create_workers(
         self,
@@ -498,6 +560,61 @@ class LocalColonyStore:
             for path in sorted(self._parts_dir(colony_id, session_id).glob("*.json"))
         ]
 
+    def _get_compaction_checkpoint_sync(
+        self, colony_id: UUID, session_id: UUID
+    ) -> CompactionCheckpoint | None:
+        path = self._compaction_path(colony_id, session_id)
+        return CompactionCheckpoint.model_validate(read_json(path)) if path.is_file() else None
+
+    def _write_tool_spillover_sync(
+        self,
+        colony_id: UUID,
+        session_id: UUID,
+        tool_name: str,
+        value: JsonValue,
+    ) -> str:
+        directory = self._spillover_dir(colony_id, session_id)
+        directory.mkdir(parents=True, exist_ok=True)
+        safe_name = (
+            "".join(
+                character if character.isalnum() or character in {"-", "_"} else "_"
+                for character in tool_name
+            )[:60]
+            or "tool"
+        )
+        sequence = len(list(directory.glob("*.json"))) + 1
+        filename = f"{sequence:08d}-{safe_name}.json"
+        atomic_write_json(
+            directory / filename,
+            {"value": redact_json(value)},
+        )
+        return filename
+
+    def _read_tool_spillover_sync(
+        self,
+        colony_id: UUID,
+        session_id: UUID,
+        filename: str,
+        offset: int,
+        limit: int,
+    ) -> dict[str, JsonValue]:
+        if Path(filename).name != filename or not filename.endswith(".json"):
+            raise ValueError("非法工具结果文件名")
+        path = self._spillover_dir(colony_id, session_id) / filename
+        if not path.is_file():
+            raise FileNotFoundError(filename)
+        serialized = json.dumps(
+            read_json(path).get("value"), ensure_ascii=False, separators=(",", ":")
+        )
+        end = min(len(serialized), offset + limit)
+        return {
+            "content": serialized[offset:end],
+            "offset": offset,
+            "next_offset": end if end < len(serialized) else None,
+            "total_chars": len(serialized),
+            "truncated": end < len(serialized),
+        }
+
     def _create_workers_sync(
         self,
         colony_id: UUID,
@@ -523,7 +640,24 @@ class LocalColonyStore:
                 park_reason=None,
                 task={"description": task.task, "data": task.data},
                 cursor={"iteration": 0, "phase": "queued"},
-                budget={"max_turns": 8, "max_tool_calls": 30, "grace_turns": 2},
+                budget={
+                    "max_turns": 8,
+                    "max_tool_calls": 30,
+                    "grace_turns": 2,
+                    **{
+                        key: value
+                        for key, value in parent.budget.items()
+                        if key
+                        in {
+                            "max_context_tokens",
+                            "compaction_buffer_tokens",
+                            "compaction_buffer_ratio",
+                            "compaction_summary_max_tokens",
+                            "max_tool_result_chars",
+                            "max_verbatim_user_messages",
+                        }
+                    },
+                },
                 usage={"input_tokens": 0, "output_tokens": 0, "tool_calls": 0},
                 created_at=now,
                 updated_at=now,
@@ -802,6 +936,12 @@ class LocalColonyStore:
 
     def _parts_dir(self, colony_id: UUID, session_id: UUID) -> Path:
         return self._session_dir(colony_id, session_id) / "conversations" / "parts"
+
+    def _compaction_path(self, colony_id: UUID, session_id: UUID) -> Path:
+        return self._session_dir(colony_id, session_id) / "context" / "compaction.json"
+
+    def _spillover_dir(self, colony_id: UUID, session_id: UUID) -> Path:
+        return self._session_dir(colony_id, session_id) / "spillover"
 
     def _tasks_path(self, colony_id: UUID, session_id: UUID) -> Path:
         return self._session_dir(colony_id, session_id) / "tasks.json"

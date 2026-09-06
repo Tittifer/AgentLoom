@@ -1,10 +1,12 @@
 """Tests for file-backed Colony aggregate storage."""
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
 from agentloom.colony.schemas import QueenCreate, TaskItemCreate, TrackerUpsert, WorkerTask
+from agentloom.context.schemas import CompactionCheckpoint
 from agentloom.llm.base import LLMMessage
 from agentloom.runtime.states import SessionStatus, TaskItemStatus, WorkerStatus
 from agentloom.storage import LocalColonyStore
@@ -94,6 +96,45 @@ async def test_reasoning_content_is_persisted_but_not_publicly_serialized(
     loaded = await store.list_messages(queen.id)
     assert loaded is not None and loaded[0].reasoning_content == reasoning
     assert "reasoning_content" not in loaded[0].model_dump(mode="json")
+
+
+async def test_compaction_checkpoint_and_spillover_preserve_original_messages(
+    tmp_path: Path,
+) -> None:
+    store = await create_store(tmp_path)
+    _, queen = await store.create("Context", "", "queen_general", {})
+    original = await store.append_message(queen.id, LLMMessage(role="user", content="原始消息"))
+    assert original is not None
+    checkpoint = CompactionCheckpoint(
+        summary="已压缩摘要",
+        through_sequence=original.sequence,
+        preserved_sequences=[original.sequence],
+        tokens_before=10_000,
+        tokens_after=1_000,
+        compacted_at=datetime.now(UTC),
+    )
+
+    await store.save_compaction_checkpoint(queen.id, checkpoint)
+    filename = await store.write_tool_spillover(
+        queen.id,
+        "search",
+        {"token": "secret-value", "content": "abcdefghij"},
+    )
+    page = await store.read_tool_spillover(queen.id, filename, 0, 8)
+
+    assert await store.get_compaction_checkpoint(queen.id) == checkpoint
+    assert await store.list_messages(queen.id) == [original]
+    assert page["truncated"] is True
+    spill_path = (
+        tmp_path
+        / "colonies"
+        / str(queen.colony_id)
+        / "sessions"
+        / str(queen.id)
+        / "spillover"
+        / filename
+    )
+    assert "secret-value" not in spill_path.read_text(encoding="utf-8")
 
 
 async def test_workers_tasks_status_and_delete_are_persisted(tmp_path: Path) -> None:

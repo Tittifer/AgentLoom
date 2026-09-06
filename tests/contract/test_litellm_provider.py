@@ -5,6 +5,7 @@ import asyncio
 import pytest
 
 from agentloom.llm.base import (
+    LLMContextLengthError,
     LLMMessage,
     LLMRequest,
     LLMResponseError,
@@ -95,6 +96,16 @@ async def test_litellm_provider_normalizes_request_response_tools_and_usage() ->
     assert response.output_tokens == 7
 
 
+async def test_litellm_provider_forwards_output_budget() -> None:
+    completion = RecordingCompletion({"choices": [{"message": {"content": "done"}}]})
+
+    await LiteLLMProvider(completion).complete(
+        request().model_copy(update={"max_output_tokens": 2048, "purpose": "compaction"})
+    )
+
+    assert completion.parameters["max_tokens"] == 2048
+
+
 async def test_litellm_provider_round_trips_reasoning_content() -> None:
     completion = RecordingCompletion(
         {
@@ -169,18 +180,14 @@ async def test_litellm_provider_supports_json_object_compatibility() -> None:
 
 
 async def test_litellm_provider_uses_queen_connection_configuration() -> None:
-    completion = RecordingCompletion(
-        {"choices": [{"message": {"content": '{"answer":"done"}'}}]}
-    )
+    completion = RecordingCompletion({"choices": [{"message": {"content": '{"answer":"done"}'}}]})
 
     await LiteLLMProvider(
         completion,
         protocol="openai",
         base_url="https://api.example.com",
         api_key="queen-key",
-    ).complete(
-        request().model_copy(update={"model": "deepseek-v4-flash"})
-    )
+    ).complete(request().model_copy(update={"model": "deepseek-v4-flash"}))
 
     assert completion.parameters["model"] == "openai/deepseek-v4-flash"
     assert completion.parameters["api_base"] == "https://api.example.com/v1"
@@ -240,6 +247,13 @@ async def test_litellm_provider_converts_provider_errors() -> None:
     failed_completion = RecordingCompletion(RuntimeError("provider unavailable"))
 
     with pytest.raises(LLMResponseError, match="provider unavailable"):
+        await LiteLLMProvider(failed_completion).complete(request())
+
+
+async def test_litellm_provider_classifies_context_window_errors() -> None:
+    failed_completion = RecordingCompletion(RuntimeError("maximum context length exceeded"))
+
+    with pytest.raises(LLMContextLengthError, match="context window exceeded"):
         await LiteLLMProvider(failed_completion).complete(request())
 
 

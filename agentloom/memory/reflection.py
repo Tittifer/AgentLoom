@@ -133,6 +133,7 @@ class ReflectionAgent:
                     messages=messages,
                     tools=REFLECTION_TOOLS,
                     timeout_seconds=self._timeout_seconds,
+                    purpose="reflection",
                 )
             )
             assistant = LLMMessage(

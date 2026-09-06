@@ -73,7 +73,7 @@ describe("QueenListPage", () => {
       model: "claude-sonnet-4",
       base_url: "https://api.anthropic.com",
       api_key: "secret-key",
-      settings: {},
+      settings: { max_context_tokens: 128000 },
     });
     expect(await screen.findByText("Queen 会话列表")).toBeInTheDocument();
   });

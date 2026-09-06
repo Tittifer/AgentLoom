@@ -2,10 +2,12 @@
 
 import asyncio
 import json
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID, uuid4
 
+from pydantic import JsonValue
 from pytest import MonkeyPatch
 
 from agentloom.agents.loop import AgentLoop, LoopContext
@@ -13,6 +15,7 @@ from agentloom.colony.notifier import ColonyEventNotifier
 from agentloom.colony.runtime import (
     ColonyRuntime,
     FileAgentLoopStore,
+    FileContextManager,
     conversation_name_from_message,
     normalize_message_history,
 )
@@ -25,11 +28,29 @@ from agentloom.colony.schemas import (
     WorkerTask,
 )
 from agentloom.config import Settings
-from agentloom.llm.base import LLMMessage, LLMProvider, LLMResponse, ToolCall
+from agentloom.context.schemas import CompactionCheckpoint
+from agentloom.llm.base import LLMMessage, LLMProvider, LLMResponse, ToolCall, ToolDefinition
 from agentloom.llm.mock import SchemaMockLLMProvider, ScriptedMockLLMProvider
 from agentloom.runtime.states import ColonyStatus, SessionStatus, WorkerStatus
 from agentloom.storage import LocalColonyStore
-from agentloom.tools.registry import create_builtin_tool_registry
+from agentloom.tools.base import ToolContext
+from agentloom.tools.registry import ToolRegistry, create_builtin_tool_registry
+
+
+class LargeResultTool:
+    definition = ToolDefinition(
+        name="large_result",
+        description="返回大型结果",
+        parameters={"type": "object"},
+    )
+
+    async def execute(
+        self,
+        arguments: Mapping[str, JsonValue],
+        context: ToolContext,
+    ) -> JsonValue:
+        del arguments, context
+        return {"content": "x" * 2_000}
 
 
 async def create_store(tmp_path: Path) -> LocalColonyStore:
@@ -485,6 +506,123 @@ async def test_runtime_exposes_actor_tools_and_executes_builtin(tmp_path: Path) 
             "message": "工具 task_create 的参数不是合法 JSON，请重新生成。",
         }
     }
+
+
+async def test_runtime_spills_and_pages_large_tool_results(tmp_path: Path) -> None:
+    store = await create_store(tmp_path)
+    _, queen = await store.create(
+        "Large result",
+        "",
+        "queen_general",
+        {"max_tool_result_chars": 1_000},
+    )
+    context = await FileAgentLoopStore(store, ColonyEventNotifier()).load(queen.id)
+    assert context is not None
+    runtime = ColonyRuntime(
+        store,
+        SchemaMockLLMProvider(),
+        ColonyEventNotifier(),
+        Settings(environment="test", storage_root=tmp_path),
+        ToolRegistry([LargeResultTool()]),
+    )
+
+    result = await runtime.execute(
+        context,
+        ToolCall(id="large", name="large_result", arguments={}),
+    )
+    assert isinstance(result.value, dict)
+    filename = result.value["full_result_file"]
+    assert isinstance(filename, str)
+
+    loaded = await runtime.execute(
+        context,
+        ToolCall(
+            id="load",
+            name="load_tool_result",
+            arguments={"filename": filename, "limit": 1_000},
+        ),
+    )
+    assert isinstance(loaded.value, dict)
+    assert loaded.value["truncated"] is True
+    assert "content" in loaded.value
+
+
+async def test_file_loop_store_loads_compacted_context_without_hiding_transcript(
+    tmp_path: Path,
+) -> None:
+    store = await create_store(tmp_path)
+    _, queen = await store.create("Compact", "", "queen_general", {})
+    first = await store.append_message(
+        queen.id, LLMMessage(role="user", content="需要保留的原始要求")
+    )
+    second = await store.append_message(queen.id, LLMMessage(role="assistant", content="旧回复"))
+    third = await store.append_message(queen.id, LLMMessage(role="user", content="最近消息"))
+    assert first is not None and second is not None and third is not None
+    await store.save_compaction_checkpoint(
+        queen.id,
+        CompactionCheckpoint(
+            summary="旧上下文摘要",
+            through_sequence=second.sequence,
+            preserved_sequences=[first.sequence],
+            tokens_before=10_000,
+            tokens_after=1_000,
+            compacted_at=datetime.now(UTC),
+        ),
+    )
+
+    context = await FileAgentLoopStore(store, ColonyEventNotifier()).load(queen.id)
+    transcript = await store.list_messages(queen.id)
+
+    assert context is not None
+    assert [message.content for message in context.messages] == [
+        "[CONTEXT_COMPACTION]\n旧上下文摘要",
+        "需要保留的原始要求",
+        "最近消息",
+    ]
+    assert transcript is not None and len(transcript) == 3
+
+
+async def test_file_context_manager_compacts_queen_session_independently(
+    tmp_path: Path,
+) -> None:
+    store = await create_store(tmp_path)
+    _, queen = await store.create(
+        "Long",
+        "",
+        "queen_general",
+        {
+            "max_context_tokens": 4096,
+            "compaction_buffer_tokens": 0,
+            "compaction_buffer_ratio": 0,
+        },
+    )
+    for index in range(3):
+        await store.append_message(
+            queen.id, LLMMessage(role="user", content=f"要求{index}" + "长" * 1000)
+        )
+        await store.append_message(
+            queen.id, LLMMessage(role="assistant", content=f"回复{index}" + "文" * 1000)
+        )
+    context = await FileAgentLoopStore(store, ColonyEventNotifier()).load(queen.id)
+    assert context is not None
+    provider = ScriptedMockLLMProvider(
+        [LLMResponse(content="压缩后的任务状态", model="mock/schema")]
+    )
+    manager = FileContextManager(store, 1, None)
+
+    compacted = await manager.compact(
+        context,
+        [LLMMessage(role="system", content="Queen"), *context.messages],
+        [],
+        provider,
+        force=False,
+    )
+
+    checkpoint = await store.get_compaction_checkpoint(queen.id)
+    transcript = await store.list_messages(queen.id)
+    assert checkpoint is not None and checkpoint.summary == "压缩后的任务状态"
+    assert any(message.content.startswith("[CONTEXT_COMPACTION]") for message in compacted)
+    assert transcript is not None and len(transcript) == 6
 
 
 def make_context() -> LoopContext:

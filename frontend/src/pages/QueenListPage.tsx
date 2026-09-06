@@ -28,7 +28,9 @@ export function QueenListPage() {
       model: String(form.get("model") ?? "").trim(),
       base_url: String(form.get("base_url") ?? "").trim(),
       api_key: String(form.get("api_key") ?? "").trim(),
-      settings: {},
+      settings: {
+        max_context_tokens: Number(form.get("max_context_tokens") ?? 128000),
+      },
     };
     createMutation.mutate(payload);
   }
@@ -106,6 +108,19 @@ export function QueenListPage() {
                 type="password"
               />
               <small>密钥仅写入本机 Queen YAML，不会通过 Queen 查询接口返回。</small>
+            </label>
+            <label className="form-field queen-form-wide">
+              <span>模型上下文窗口（tokens）</span>
+              <input
+                defaultValue={128000}
+                disabled={createMutation.isPending}
+                max={2000000}
+                min={4096}
+                name="max_context_tokens"
+                required
+                type="number"
+              />
+              <small>达到安全阈值后，Queen 和每个 Worker 将分别压缩自己的上下文。</small>
             </label>
           </div>
           {createMutation.isError ? (
