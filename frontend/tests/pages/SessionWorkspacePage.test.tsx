@@ -1,27 +1,37 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   dismissColonySuggestion,
   deleteSession,
   forkSessionIntoColony,
   getSession,
+  listColonies,
   listMessages,
   submitMessage,
   type SessionRead,
 } from "../../src/api/colonies";
+import { createQueenSession, listQueens, listQueenSessions } from "../../src/api/queens";
 import { SessionWorkspacePage } from "../../src/pages/SessionWorkspacePage";
 
 vi.mock("../../src/api/colonies", () => ({
+  deleteColony: vi.fn(),
   dismissColonySuggestion: vi.fn(),
   deleteSession: vi.fn(),
   forkSessionIntoColony: vi.fn(),
   getSession: vi.fn(),
+  listColonies: vi.fn(),
   listMessages: vi.fn(),
   submitMessage: vi.fn(),
+}));
+vi.mock("../../src/api/queens", () => ({
+  createQueen: vi.fn(),
+  createQueenSession: vi.fn(),
+  listQueens: vi.fn(),
+  listQueenSessions: vi.fn(),
 }));
 vi.mock("../../src/hooks/useColonyEvents", () => ({ useSessionEvents: () => null }));
 
@@ -57,13 +67,39 @@ const session: SessionRead = {
 };
 
 describe("SessionWorkspacePage", () => {
+  afterEach(cleanup);
+
   beforeEach(() => {
     vi.mocked(getSession).mockResolvedValue(session);
     vi.mocked(listMessages).mockResolvedValue([]);
+    vi.mocked(listColonies).mockResolvedValue([]);
+    vi.mocked(listQueens).mockResolvedValue([]);
+    vi.mocked(listQueenSessions).mockResolvedValue([session]);
+    vi.mocked(createQueenSession).mockReset();
     vi.mocked(submitMessage).mockReset();
     vi.mocked(deleteSession).mockReset();
     vi.mocked(dismissColonySuggestion).mockReset();
     vi.mocked(forkSessionIntoColony).mockReset();
+  });
+
+  it("在当前工作台直接创建并打开新会话", async () => {
+    const nextSession = { ...session, id: "session-2", pending_colony_suggestion: null };
+    vi.mocked(createQueenSession).mockResolvedValue(nextSession);
+    vi.mocked(getSession).mockImplementation(async (sessionId) => ({ ...session, id: sessionId }));
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={["/sessions/session-1"]}>
+          <Routes><Route path="/sessions/:sessionId" element={<SessionWorkspacePage />} /></Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    await userEvent.click(await screen.findByRole("button", { name: "新建会话" }));
+
+    expect(vi.mocked(createQueenSession).mock.calls[0]?.[0]).toBe(session.queen_id);
+    await waitFor(() => expect(getSession).toHaveBeenCalledWith("session-2"));
+    expect(screen.getByRole("heading", { name: "独立 Queen 会话" })).toBeInTheDocument();
   });
 
   it("仅在用户确认后按 Queen 建议创建 Colony", async () => {
@@ -118,15 +154,15 @@ describe("SessionWorkspacePage", () => {
         <MemoryRouter initialEntries={["/sessions/session-1"]}>
           <Routes>
             <Route path="/sessions/:sessionId" element={<SessionWorkspacePage />} />
-            <Route path="/queens/:queenId" element={<div>会话已删除</div>} />
+            <Route path="/" element={<div>会话已删除</div>} />
           </Routes>
         </MemoryRouter>
       </QueryClientProvider>,
     );
 
-    await userEvent.click(await screen.findByRole("button", { name: "删除" }));
+    await userEvent.click(await screen.findByRole("button", { name: "删除会话 独立会话 1" }));
 
-    expect(deleteSession).toHaveBeenCalledWith("session-1");
+    expect(vi.mocked(deleteSession).mock.calls[0]?.[0]).toBe("session-1");
     expect(await screen.findByText("会话已删除")).toBeInTheDocument();
   });
 });

@@ -1,16 +1,13 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useNavigate, useParams } from "react-router-dom";
+import { useParams } from "react-router-dom";
 
 import {
-  deleteColony,
   getColony,
-  listColonies,
   listMessages,
   submitMessage,
   type WorkerRead,
 } from "../api/colonies";
-import { createQueenSession } from "../api/queens";
 import { ChatPanel } from "../components/ChatPanel";
 import { ColonySidebar } from "../components/ColonySidebar";
 import { SessionNavigation } from "../components/SessionNavigation";
@@ -20,10 +17,8 @@ import { formatError, statusText } from "../utils/format";
 
 export function ColonyWorkspacePage() {
   const { colonyId } = useParams();
-  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [selectedWorker, setSelectedWorker] = useState<WorkerRead | null>(null);
-  const coloniesQuery = useQuery({ queryKey: ["colonies"], queryFn: listColonies });
   const colonyQuery = useQuery({
     queryKey: ["colony", colonyId],
     queryFn: () => getColony(requireId(colonyId)),
@@ -45,20 +40,6 @@ export function ColonyWorkspacePage() {
       ]);
     },
   });
-  const deleteMutation = useMutation({
-    mutationFn: () => deleteColony(requireId(colonyId)),
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["colonies"] });
-      navigate("/colonies");
-    },
-  });
-  const createMutation = useMutation({
-    mutationFn: () => createQueenSession(colonyQuery.data?.colony.queen_id ?? ""),
-    onSuccess: async (session) => {
-      await queryClient.invalidateQueries({ queryKey: ["queen-sessions"] });
-      navigate(`/sessions/${session.id}`);
-    },
-  });
   const streamingMessage = useColonyEvents(
     colonyId,
     queenId,
@@ -77,14 +58,7 @@ export function ColonyWorkspacePage() {
   return (
     <section className="workspace-page" aria-labelledby="workspace-title">
       <div className="workspace-shell">
-        <SessionNavigation
-          colonies={(coloniesQuery.data ?? [snapshot.colony]).filter(
-            (colony) => colony.queen_id === snapshot.colony.queen_id
-          )}
-          creating={createMutation.isPending}
-          queenId={snapshot.colony.queen_id}
-          onCreate={() => createMutation.mutate()}
-        />
+        <SessionNavigation queenId={snapshot.colony.queen_id} />
         <div className="conversation-workspace">
           <header className="workspace-heading">
             <div className="workspace-identity">
@@ -97,22 +71,8 @@ export function ColonyWorkspacePage() {
                 {statusText(snapshot.colony.status)}
               </span>
               <span className="worker-count-label">{activeWorkerCount} 个 Worker 运行中</span>
-              <button
-                className="workspace-delete-button"
-                disabled={deleteMutation.isPending}
-                onClick={() => {
-                  if (window.confirm(`确定删除会话“${snapshot.colony.name}”吗？删除后无法恢复。`)) {
-                    deleteMutation.mutate();
-                  }
-                }}
-                type="button"
-              >
-                {deleteMutation.isPending ? "删除中…" : "删除"}
-              </button>
             </div>
           </header>
-          {deleteMutation.isError ? <div className="form-error">{formatError(deleteMutation.error)}</div> : null}
-          {createMutation.isError ? <div className="form-error">{formatError(createMutation.error)}</div> : null}
           <ChatPanel
             activeWorkerCount={activeWorkerCount}
             messages={messagesQuery.data ?? []}

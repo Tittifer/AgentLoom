@@ -2,17 +2,17 @@ import { NavLink, Outlet, useLocation } from "react-router-dom";
 
 function App() {
   const location = useLocation();
-  const isWorkspace = /^\/(?:colonies|sessions)\/[^/]+$/.test(location.pathname);
+  const isWorkspace = location.pathname === "/" || /^\/(?:colonies|sessions)\/[^/]+$/.test(location.pathname);
 
   return (
     <div className="app-shell">
       <header className="app-header">
-        <NavLink className="brand" to="/queens">
+        <NavLink className="brand" to="/">
           <span className="brand-mark" aria-hidden="true">✣</span>
           <span><strong>Agent<span>Loom</span></strong><small>多智能体协作空间</small></span>
         </NavLink>
         <nav aria-label="主导航">
-          <NavLink className={({ isActive }) => isActive ? "nav-link active" : "nav-link"} to="/queens">
+          <NavLink className={() => isWorkspace ? "nav-link active" : "nav-link"} end to="/">
             <span aria-hidden="true">◇</span> Queen
           </NavLink>
           <NavLink className={({ isActive }) => isActive ? "nav-link active" : "nav-link"} to="/memories">
