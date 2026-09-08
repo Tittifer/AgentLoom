@@ -59,6 +59,7 @@ def make_context(actor_type: str = "queen") -> LoopContext:
             ended_at=None,
         ),
         messages=[LLMMessage(role="user", content="开始")],
+        model="mock/test",
     )
 
 
@@ -287,6 +288,7 @@ async def test_queen_recalled_memory_is_inserted_before_latest_user_message() ->
         session=context.session,
         colony=context.colony,
         messages=context.messages,
+        model=context.model,
         recalled_memory="--- Global Memories ---\n用户偏好 FastAPI",
     )
     store = FakeStore(context)

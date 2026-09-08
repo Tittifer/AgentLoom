@@ -45,7 +45,7 @@ from agentloom.context.compaction import ContextCompactor
 from agentloom.context.estimator import estimate_context_tokens
 from agentloom.context.schemas import CompactionCheckpoint, ContextPolicy
 from agentloom.llm.base import LLMMessage, LLMProvider, ToolCall, ToolDefinition
-from agentloom.llm.factory import create_queen_llm_provider
+from agentloom.llm.factory import create_llm_provider
 from agentloom.memory.coordinator import MemoryCoordinator
 from agentloom.memory.store import LocalMemoryStore
 from agentloom.runtime.states import SessionStatus, WorkerStatus
@@ -53,6 +53,7 @@ from agentloom.storage import LocalColonyStore, TrackerVersionConflictError
 from agentloom.storage.base import utc_now
 from agentloom.tools.base import ToolContext, ToolError
 from agentloom.tools.registry import ToolRegistry
+from agentloom.user_settings import UserLLMRuntimeConfig, UserSettingsRead, UserSettingsUpdate
 
 
 class ColonyNotFoundError(LookupError):
@@ -69,6 +70,10 @@ class SessionConflictError(ValueError):
 
 class QueenNotFoundError(LookupError):
     """Raised when a Queen identity does not exist."""
+
+
+class LLMSettingsNotConfiguredError(RuntimeError):
+    """Raised when an operation requires missing global LLM settings."""
 
 
 UNTITLED_COLONY_NAME = "新会话"
@@ -248,6 +253,7 @@ class FileAgentLoopStore(AgentLoopStore):
             else None
         )
         queen = await self._store.get_queen(agent_session.queen_id)
+        llm = await self._store.get_user_llm_runtime_config()
         messages = await self._store.list_messages(session_id)
         if queen is None or messages is None:
             return None
@@ -278,10 +284,21 @@ class FileAgentLoopStore(AgentLoopStore):
                 session_id=str(session_id),
                 repaired_groups=repaired_groups,
             )
+        effective_session = agent_session
+        if llm is not None:
+            effective_session = agent_session.model_copy(
+                update={
+                    "budget": {
+                        **agent_session.budget,
+                        "max_context_tokens": llm.max_context_tokens,
+                    }
+                }
+            )
         return LoopContext(
-            session=agent_session,
+            session=effective_session,
             colony=colony,
             messages=normalized,
+            model=llm.model if llm is not None else "",
             queen=queen,
             recalled_memory=(
                 self._memory.recalled_memory(session_id) if self._memory is not None else ""
@@ -544,13 +561,7 @@ class FileContextManager(AgentContextManager):
         try:
             summary = await self._compactor.summarize(
                 old_normalized,
-                (
-                    context.queen.model
-                    if context.queen is not None
-                    else context.colony.model
-                    if context.colony is not None
-                    else ""
-                ),
+                context.model,
                 provider,
                 policy,
             )
@@ -667,6 +678,13 @@ class ColonyRuntime:
         if self._memory is not None:
             await self._memory.initialize()
         worker_ids, queen_ids = await self._storage.recover_interrupted()
+        if await self._storage.get_user_llm_runtime_config() is None:
+            self._logger.info(
+                "llm_settings_required",
+                queued_workers=len(worker_ids),
+                queued_queens=len(queen_ids),
+            )
+            return
         for worker_id in worker_ids:
             self._schedule(self._run_worker(worker_id))
         for session_id in queen_ids:
@@ -687,6 +705,7 @@ class ColonyRuntime:
         queen = await self._storage.get_queen(payload.queen_id)
         if queen is None:
             raise QueenNotFoundError(payload.queen_id)
+        await self._require_llm_settings()
         colony, queen_session = await self._storage.create(
             payload.name,
             payload.description,
@@ -712,6 +731,21 @@ class ColonyRuntime:
 
     async def create_queen(self, payload: QueenCreate) -> QueenRead:
         return await self._storage.create_queen(payload)
+
+    async def get_user_settings(self) -> UserSettingsRead:
+        return await self._storage.get_user_settings()
+
+    async def update_user_settings(self, payload: UserSettingsUpdate) -> UserSettingsRead:
+        was_configured = await self._storage.get_user_llm_runtime_config() is not None
+        result = await self._storage.update_user_settings(payload)
+        self._queen_loops.clear()
+        if not was_configured:
+            worker_ids, queen_ids = await self._storage.recover_interrupted()
+            for worker_id in worker_ids:
+                self._schedule(self._run_worker(worker_id))
+            for session_id in queen_ids:
+                self._schedule(self._run_queen(session_id))
+        return result
 
     async def create_queen_session(self, queen_id: str) -> SessionRead:
         if await self._storage.get_queen(queen_id) is None:
@@ -742,6 +776,7 @@ class ColonyRuntime:
     async def fork_session_into_colony(
         self, session_id: UUID, payload: ColonyForkCreate
     ) -> ColonyRead:
+        await self._require_llm_settings()
         try:
             colony, target = await self._storage.fork_dm_session(session_id, payload)
         except KeyError as error:
@@ -809,6 +844,19 @@ class ColonyRuntime:
             self._queen_loops.pop(colony.queen_session_id, None)
         await self._notifier.notify(colony_id)
 
+    async def delete_session(self, session_id: UUID) -> None:
+        session = await self._storage.get_session(session_id)
+        if session is None:
+            raise SessionNotFoundError(str(session_id))
+        try:
+            deleted = await self._storage.delete_session(session_id)
+        except ValueError as error:
+            raise SessionConflictError(str(error)) from error
+        if not deleted:
+            raise SessionNotFoundError(str(session_id))
+        self._queen_loops.pop(session_id, None)
+        await self._notifier.notify(session_id)
+
     async def get_snapshot(self, colony_id: UUID) -> ColonySnapshot:
         colony = await self._storage.get(colony_id)
         queen = await self._storage.get_queen_session(colony_id)
@@ -840,6 +888,7 @@ class ColonyRuntime:
             raise SessionNotFoundError(str(session_id))
         if agent_session.actor_type != "queen":
             raise SessionConflictError("User messages can only be sent to a queen session")
+        await self._require_llm_settings()
         if agent_session.status in {
             SessionStatus.FORKED,
             SessionStatus.COMPLETED,
@@ -1403,10 +1452,16 @@ class ColonyRuntime:
         session = await self._storage.get_session(session_id)
         if session is None:
             raise SessionNotFoundError(str(session_id))
-        queen = await self._storage.get_queen_runtime_config(session.queen_id)
-        if queen is None:
+        if await self._storage.get_queen(session.queen_id) is None:
             raise QueenNotFoundError(session.queen_id)
-        return create_queen_llm_provider(queen)
+        settings = await self._require_llm_settings()
+        return create_llm_provider(settings)
+
+    async def _require_llm_settings(self) -> UserLLMRuntimeConfig:
+        settings = await self._storage.get_user_llm_runtime_config()
+        if settings is None:
+            raise LLMSettingsNotConfiguredError("请先在用户设置中配置 LLM")
+        return settings
 
     async def _run_serial(self, session_id: UUID, loop: AgentLoop) -> None:
         lock = self._session_locks.setdefault(session_id, asyncio.Lock())
@@ -1448,6 +1503,7 @@ __all__ = [
     "ColonyRuntime",
     "FileContextManager",
     "FileAgentLoopStore",
+    "LLMSettingsNotConfiguredError",
     "QueenNotFoundError",
     "SessionConflictError",
     "SessionNotFoundError",

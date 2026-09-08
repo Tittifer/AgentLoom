@@ -5,6 +5,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
+import pytest
+
 from agentloom.colony.schemas import (
     ColonyForkCreate,
     ColonySuggestion,
@@ -17,18 +19,21 @@ from agentloom.context.schemas import CompactionCheckpoint
 from agentloom.llm.base import LLMMessage
 from agentloom.runtime.states import SessionStatus, TaskItemStatus, WorkerStatus
 from agentloom.storage import LocalColonyStore
+from agentloom.user_settings import UserSettingsUpdate
 
 
 async def create_store(tmp_path: Path) -> LocalColonyStore:
     store = LocalColonyStore(tmp_path)
     await store.initialize()
-    await store.create_queen(
-        QueenCreate(
-            name="General",
+    await store.update_user_settings(
+        UserSettingsUpdate(
             model="mock/schema",
             base_url="http://localhost:8001",
             api_key="test-key",
         )
+    )
+    await store.create_queen(
+        QueenCreate(name="General")
     )
     return store
 
@@ -89,6 +94,29 @@ async def test_dm_session_is_stored_under_queen_without_colony(tmp_path: Path) -
     assert await store.list_colonies() == []
     assert list((tmp_path / "colonies").iterdir()) == []
     assert await store.list_queen_sessions("queen_general") == [session]
+
+
+async def test_idle_dm_session_can_be_moved_to_trash(tmp_path: Path) -> None:
+    store = await create_store(tmp_path)
+    session = await store.create_dm_session("queen_general")
+    source = tmp_path / "queens" / "queen_general" / "sessions" / str(session.id)
+
+    assert await store.delete_session(session.id) is True
+    assert not source.exists()
+    assert await store.get_session(session.id) is None
+    assert len(list((tmp_path / "trash").glob(f"session-{session.id}-*"))) == 1
+
+
+async def test_running_or_colony_session_cannot_be_deleted_as_dm(tmp_path: Path) -> None:
+    store = await create_store(tmp_path)
+    dm = await store.create_dm_session("queen_general")
+    await store.set_session_status(dm.id, SessionStatus.RUNNING)
+    with pytest.raises(ValueError, match="仍在运行"):
+        await store.delete_session(dm.id)
+
+    _, queen = await store.create("Research", "", "queen_general", {})
+    with pytest.raises(ValueError, match="Colony"):
+        await store.delete_session(queen.id)
 
 
 async def test_dm_fork_preserves_transcript_and_locks_source(tmp_path: Path) -> None:

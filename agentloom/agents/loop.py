@@ -33,6 +33,7 @@ class LoopContext:
     session: SessionRead
     colony: ColonyRead | None
     messages: list[LLMMessage]
+    model: str = ""
     queen: QueenRead | None = None
     recalled_memory: str = ""
 
@@ -431,13 +432,7 @@ class AgentLoop:
         iteration: int,
     ) -> tuple[LLMResponse, UUID]:
         request = LLMRequest(
-            model=(
-                context.queen.model
-                if context.queen is not None
-                else context.colony.model
-                if context.colony is not None
-                else ""
-            ),
+            model=context.model,
             messages=messages,
             tools=definitions,
             timeout_seconds=self._timeout_seconds,

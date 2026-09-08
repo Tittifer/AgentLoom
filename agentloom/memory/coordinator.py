@@ -62,8 +62,9 @@ class MemoryCoordinator:
         if session is None or session.actor_type != "queen":
             return
         queen = await self._colonies.get_queen(session.queen_id)
+        llm = await self._colonies.get_user_llm_runtime_config()
         messages = await self._colonies.list_messages(session_id)
-        if queen is None or messages is None:
+        if queen is None or llm is None or messages is None:
             return
         query = next(
             (message.content for message in reversed(messages) if message.role == "user"),
@@ -75,7 +76,7 @@ class MemoryCoordinator:
         self._recall_cache[session_id] = await self._recall.recall(
             query,
             session.queen_id,
-            queen.model,
+            llm.model,
             provider,
         )
 
@@ -150,14 +151,14 @@ class MemoryCoordinator:
                 changed = await self._reflection.short_reflect(
                     messages,
                     context.session.queen_id,
-                    queen.model,
+                    context.model,
                     provider,
                 )
                 if include_long:
                     changed.extend(
                         await self._reflection.long_reflect(
                             context.session.queen_id,
-                            queen.model,
+                            context.model,
                             provider,
                         )
                     )

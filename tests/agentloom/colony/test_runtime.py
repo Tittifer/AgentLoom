@@ -36,6 +36,7 @@ from agentloom.runtime.states import ColonyStatus, SessionStatus, WorkerStatus
 from agentloom.storage import LocalColonyStore
 from agentloom.tools.base import ToolContext
 from agentloom.tools.registry import ToolRegistry, create_builtin_tool_registry
+from agentloom.user_settings import UserSettingsUpdate
 
 
 class LargeResultTool:
@@ -57,13 +58,15 @@ class LargeResultTool:
 async def create_store(tmp_path: Path) -> LocalColonyStore:
     store = LocalColonyStore(tmp_path)
     await store.initialize()
-    await store.create_queen(
-        QueenCreate(
-            name="General",
+    await store.update_user_settings(
+        UserSettingsUpdate(
             model="mock/schema",
             base_url="http://localhost:8001",
             api_key="test-key",
         )
+    )
+    await store.create_queen(
+        QueenCreate(name="General")
     )
     return store
 
@@ -642,6 +645,14 @@ async def test_file_context_manager_compacts_queen_session_independently(
     tmp_path: Path,
 ) -> None:
     store = await create_store(tmp_path)
+    await store.update_user_settings(
+        UserSettingsUpdate(
+            model="mock/schema",
+            base_url="http://localhost:8001",
+            api_key="test-key",
+            max_context_tokens=4_096,
+        )
+    )
     _, queen = await store.create(
         "Long",
         "",

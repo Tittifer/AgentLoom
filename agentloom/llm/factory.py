@@ -1,18 +1,19 @@
-"""Construct an LLM provider from one Queen's persisted configuration."""
+"""Construct an LLM provider from the global user configuration."""
 
-from agentloom.colony.schemas import QueenRuntimeConfig
 from agentloom.llm.base import LLMProvider
 from agentloom.llm.litellm_provider import LiteLLMProvider
+from agentloom.user_settings import UserLLMRuntimeConfig
 
 
-def create_queen_llm_provider(queen: QueenRuntimeConfig) -> LLMProvider:
-    """Create an isolated provider using only the Queen YAML configuration."""
+def create_llm_provider(settings: UserLLMRuntimeConfig) -> LLMProvider:
+    """Create a provider shared by Queen and Worker loops."""
 
     return LiteLLMProvider(
-        protocol=queen.protocol,
-        base_url=queen.base_url,
-        api_key=queen.api_key,
+        protocol=settings.protocol,
+        base_url=settings.base_url,
+        api_key=settings.api_key,
+        response_format=settings.response_format,
     )
 
 
-__all__ = ["create_queen_llm_provider"]
+__all__ = ["create_llm_provider"]

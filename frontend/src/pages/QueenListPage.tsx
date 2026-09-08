@@ -25,12 +25,6 @@ export function QueenListPage() {
       name: String(form.get("name") ?? "").trim(),
       description: String(form.get("description") ?? "").trim(),
       system_prompt: String(form.get("system_prompt") ?? "").trim(),
-      model: String(form.get("model") ?? "").trim(),
-      base_url: String(form.get("base_url") ?? "").trim(),
-      api_key: String(form.get("api_key") ?? "").trim(),
-      settings: {
-        max_context_tokens: Number(form.get("max_context_tokens") ?? 128000),
-      },
     };
     createMutation.mutate(payload);
   }
@@ -74,54 +68,6 @@ export function QueenListPage() {
               <span>系统提示词</span>
               <textarea disabled={createMutation.isPending} maxLength={20000} name="system_prompt" rows={4} />
             </label>
-            <label className="form-field queen-form-wide">
-              <span>模型名称</span>
-              <input
-                disabled={createMutation.isPending}
-                maxLength={200}
-                name="model"
-                placeholder="例如 deepseek-v4-flash、claude-sonnet-4 或 gemini-2.5-pro"
-                required
-              />
-              <small>后端将根据模型名称自动选择 OpenAI、Claude 或 Gemini 协议。</small>
-            </label>
-            <label className="form-field queen-form-wide">
-              <span>服务 Base URL</span>
-              <input
-                disabled={createMutation.isPending}
-                maxLength={2000}
-                name="base_url"
-                placeholder="例如 https://api.example.com"
-                required
-                type="url"
-              />
-              <small>只填写服务根地址，不要添加 /v1、/messages 等接口后缀。</small>
-            </label>
-            <label className="form-field queen-form-wide">
-              <span>API Key</span>
-              <input
-                autoComplete="new-password"
-                disabled={createMutation.isPending}
-                maxLength={10000}
-                name="api_key"
-                required
-                type="password"
-              />
-              <small>密钥仅写入本机 Queen YAML，不会通过 Queen 查询接口返回。</small>
-            </label>
-            <label className="form-field queen-form-wide">
-              <span>模型上下文窗口（tokens）</span>
-              <input
-                defaultValue={128000}
-                disabled={createMutation.isPending}
-                max={2000000}
-                min={4096}
-                name="max_context_tokens"
-                required
-                type="number"
-              />
-              <small>达到安全阈值后，Queen 和每个 Worker 将分别压缩自己的上下文。</small>
-            </label>
           </div>
           {createMutation.isError ? (
             <div className="form-error" role="alert">{formatError(createMutation.error)}</div>
@@ -153,7 +99,7 @@ export function QueenListPage() {
               <h2>{queen.name}</h2>
               <p>{queen.description || "查看该 Queen 的会话"}</p>
             </Link>
-            <footer><span>{queen.protocol} 协议</span><span>{queen.model}</span></footer>
+            <footer><span>Queen 身份</span><span>使用全局 LLM 设置</span></footer>
           </article>
         ))}
       </div>

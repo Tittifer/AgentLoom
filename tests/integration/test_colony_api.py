@@ -26,13 +26,25 @@ async def colony_client(tmp_path: Path) -> AsyncIterator[tuple[AsyncClient, str]
             transport=ASGITransport(app=app),
             base_url="http://test",
         ) as client:
+            empty_settings = await client.get("/api/settings")
+            assert empty_settings.json()["configured"] is False
+            settings_response = await client.put(
+                "/api/settings",
+                json={
+                    "model": "mock/schema",
+                    "base_url": "http://localhost:8001",
+                    "api_key": "test-key",
+                    "response_format": "json_schema",
+                    "max_context_tokens": 128000,
+                },
+            )
+            assert settings_response.status_code == 200
+            assert settings_response.json()["api_key_configured"] is True
+            assert "api_key" not in settings_response.json()
             response = await client.post(
                 "/api/queens",
                 json={
                     "name": "General",
-                    "model": "mock/schema",
-                    "base_url": "http://localhost:8001",
-                    "api_key": "test-key",
                 },
             )
             assert response.status_code == 201
@@ -161,7 +173,18 @@ async def test_one_queen_owns_multiple_isolated_sessions(
         await client.delete(f"/api/colonies/{colony.id}")
 
 
-async def test_custom_queen_supplies_colony_identity_and_model_config(
+async def test_independent_session_can_be_deleted(colony_client: tuple[AsyncClient, str]) -> None:
+    client, _ = colony_client
+    created = await client.post("/api/queens/queen_general/sessions")
+    session = SessionRead.model_validate(created.json())
+
+    deleted = await client.delete(f"/api/sessions/{session.id}")
+
+    assert deleted.status_code == 204
+    assert (await client.get(f"/api/sessions/{session.id}")).status_code == 404
+
+
+async def test_custom_queen_uses_global_model_config(
     colony_client: tuple[AsyncClient, str],
 ) -> None:
     client, prefix = colony_client
@@ -169,15 +192,11 @@ async def test_custom_queen_supplies_colony_identity_and_model_config(
         "name": "Travel",
         "description": "旅行规划",
         "system_prompt": "你是专业旅行规划师。",
-        "model": "deepseek-v4-flash",
-        "base_url": "https://api.deepseek.com",
-        "api_key": "test-key",
-        "settings": {},
     }
     queen_response = await client.post("/api/queens", json=queen_payload)
     assert queen_response.status_code == 201
     assert queen_response.json()["id"] == "queen_travel"
-    assert queen_response.json()["protocol"] == "openai"
+    assert "model" not in queen_response.json()
     assert "api_key" not in queen_response.json()
     duplicate = await client.post("/api/queens", json=queen_payload)
     assert duplicate.status_code == 409
@@ -189,7 +208,7 @@ async def test_custom_queen_supplies_colony_identity_and_model_config(
     assert colony_response.status_code == 201
     colony = ColonyRead.model_validate(colony_response.json())
     assert colony.queen_id == "queen_travel"
-    assert colony.model == "deepseek-v4-flash"
+    assert colony.model == "mock/schema"
     await client.delete(f"/api/colonies/{colony.id}")
 
     missing = await client.post(
@@ -198,3 +217,21 @@ async def test_custom_queen_supplies_colony_identity_and_model_config(
     )
     assert missing.status_code == 404
     assert missing.json()["code"] == "QUEEN_NOT_FOUND"
+
+
+async def test_message_requires_global_llm_settings(tmp_path: Path) -> None:
+    app = create_app(
+        Settings(environment="test", log_level="WARNING", storage_root=tmp_path),
+        SchemaMockLLMProvider(),
+    )
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            queen = await client.post("/api/queens", json={"name": "Empty"})
+            session = await client.post(f"/api/queens/{queen.json()['id']}/sessions")
+            response = await client.post(
+                f"/api/sessions/{session.json()['id']}/messages",
+                json={"content": "开始"},
+            )
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "LLM_SETTINGS_NOT_CONFIGURED"

@@ -14,6 +14,7 @@ from agentloom.colony.notifier import ColonyEventNotifier, TransientColonyEvent
 from agentloom.colony.runtime import (
     ColonyNotFoundError,
     ColonyRuntime,
+    LLMSettingsNotConfiguredError,
     QueenNotFoundError,
     SessionConflictError,
     SessionNotFoundError,
@@ -144,6 +145,8 @@ async def create_colony(
         return await runtime.create_colony(payload)
     except QueenNotFoundError:
         return error_response(404, "QUEEN_NOT_FOUND", "Queen 不存在")
+    except LLMSettingsNotConfiguredError as error:
+        return error_response(409, "LLM_SETTINGS_NOT_CONFIGURED", str(error))
 
 
 @router.post(
@@ -166,6 +169,8 @@ async def fork_session_into_colony(
         return error_response(404, "SESSION_NOT_FOUND", "会话不存在")
     except SessionConflictError as error:
         return error_response(409, "SESSION_CONFLICT", str(error))
+    except LLMSettingsNotConfiguredError as error:
+        return error_response(409, "LLM_SETTINGS_NOT_CONFIGURED", str(error))
 
 
 @router.post(
@@ -240,6 +245,28 @@ async def get_session(
         return error_response(404, "SESSION_NOT_FOUND", "会话不存在")
 
 
+@router.delete(
+    "/sessions/{session_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_model=None,
+    responses={
+        status.HTTP_404_NOT_FOUND: {"model": ApiError},
+        status.HTTP_409_CONFLICT: {"model": ApiError},
+    },
+)
+async def delete_session(
+    session_id: UUID,
+    runtime: RuntimeDependency,
+) -> Response | JSONResponse:
+    try:
+        await runtime.delete_session(session_id)
+    except SessionNotFoundError:
+        return error_response(404, "SESSION_NOT_FOUND", "会话不存在")
+    except SessionConflictError as error:
+        return error_response(409, "SESSION_CONFLICT", str(error))
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 @router.get(
     "/sessions/{session_id}/messages",
     response_model=list[MessageRead],
@@ -275,6 +302,8 @@ async def submit_message(
         return error_response(404, "SESSION_NOT_FOUND", "会话不存在")
     except SessionConflictError as error:
         return error_response(409, "SESSION_CONFLICT", str(error))
+    except LLMSettingsNotConfiguredError as error:
+        return error_response(409, "LLM_SETTINGS_NOT_CONFIGURED", str(error))
 
 
 @router.get("/colonies/{colony_id}/workers", response_model=list[WorkerRead])

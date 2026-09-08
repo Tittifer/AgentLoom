@@ -2,7 +2,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
-import type { MessageRead, SessionRead } from "../../src/api/colonies";
+import type { MessageRead, SessionRead, WorkerRead } from "../../src/api/colonies";
 import { ChatPanel } from "../../src/components/ChatPanel";
 
 const session: SessionRead = {
@@ -18,8 +18,16 @@ const message: MessageRead = {
   created_at: "2026-08-29T00:00:00Z",
 };
 
+const worker: WorkerRead = {
+  id: "worker-1", colony_id: "colony-1", queen_session_id: session.id,
+  worker_session_id: "worker-session-1", status: "completed", task: "整理内部资料",
+  input: {}, report: { summary: "摘要" }, error: null, timeout_seconds: 60,
+  queued_at: "2026-08-29T00:00:01Z", started_at: "2026-08-29T00:00:02Z",
+  ended_at: "2026-08-29T00:00:04Z",
+};
+
 describe("ChatPanel", () => {
-  it("只展示用户与 AgentLoom 的最终消息并发送用户输入", async () => {
+  it("展示最终消息与执行链并发送用户输入", async () => {
     const onSend = vi.fn(async () => undefined);
     const internalMessages: MessageRead[] = [
       {
@@ -54,8 +62,9 @@ describe("ChatPanel", () => {
     );
     expect(await screen.findByText("已经完成分析。")).toBeInTheDocument();
     expect(screen.queryByText(/内部工具数据/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/内部汇报/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/正在安排内部任务/)).not.toBeInTheDocument();
+    expect(screen.getByText(/内部汇报/)).toBeInTheDocument();
+    expect(screen.getByText(/正在安排内部任务/)).toBeInTheDocument();
+    expect(screen.getByText(/run_worker/)).toBeInTheDocument();
     await userEvent.type(screen.getByLabelText("输入消息"), "继续执行");
     await userEvent.click(screen.getByRole("button", { name: "发送" }));
     expect(onSend).toHaveBeenCalledWith("继续执行");
@@ -74,6 +83,32 @@ describe("ChatPanel", () => {
     );
 
     expect(screen.getByRole("status")).toHaveTextContent("3 个协作节点正在执行任务");
+  });
+
+  it("把 Worker 和报告合并为对话时间线中的执行卡片", () => {
+    const { container } = render(
+      <ChatPanel
+        activeWorkerCount={0}
+        messages={[{
+          ...message,
+          id: "worker-report",
+          role: "user",
+          content: '[WORKER_REPORT]\n{"status":"completed","summary":"**完整报告**"}',
+          metadata: { worker_run_id: worker.id },
+          created_at: "2026-08-29T00:00:05Z",
+        }]}
+        onSend={vi.fn(async () => undefined)}
+        sending={false}
+        session={session}
+        streamingMessage={null}
+        workers={[worker]}
+      />,
+    );
+
+    expect(screen.getByText("整理内部资料")).toBeInTheDocument();
+    expect(screen.getByText("完整报告")).toBeInTheDocument();
+    expect(container.querySelectorAll(".hive-worker-card")).toHaveLength(1);
+    expect(container.querySelector(".worker-activity-card")).not.toBeInTheDocument();
   });
 
   it("直接展示后端推送的增量文本，不回放已持久化消息", () => {

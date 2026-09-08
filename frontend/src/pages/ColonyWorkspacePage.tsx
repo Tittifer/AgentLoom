@@ -87,9 +87,10 @@ export function ColonyWorkspacePage() {
         />
         <div className="conversation-workspace">
           <header className="workspace-heading">
-            <div>
-              <span className="eyebrow">协作会话</span>
+            <div className="workspace-identity">
+              <span className="workspace-mark" aria-hidden="true">⌘</span>
               <h1 id="workspace-title">{snapshot.colony.name}</h1>
+              <span className="role-chip">Queen Colony</span>
             </div>
             <div className="workspace-actions">
               <span className={`status-pill status-${snapshot.colony.status}`}>
@@ -115,15 +116,16 @@ export function ColonyWorkspacePage() {
           <ChatPanel
             activeWorkerCount={activeWorkerCount}
             messages={messagesQuery.data ?? []}
+            onSelectWorker={setSelectedWorker}
             onSend={async (content) => { await messageMutation.mutateAsync(content); }}
             sending={messageMutation.isPending}
             session={snapshot.queen_session}
             streamingMessage={streamingMessage}
+            workers={snapshot.workers}
           />
         </div>
         <ColonySidebar
           onSelectWorker={setSelectedWorker}
-          queen={snapshot.queen_session}
           tasks={snapshot.tasks}
           tracker={snapshot.tracker}
           workers={snapshot.workers}

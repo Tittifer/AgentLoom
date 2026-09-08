@@ -3,5 +3,6 @@
 from agentloom.api.routes.colonies import router as colony_router
 from agentloom.api.routes.memories import router as memory_router
 from agentloom.api.routes.queens import router as queen_router
+from agentloom.api.routes.settings import router as settings_router
 
-__all__ = ["colony_router", "memory_router", "queen_router"]
+__all__ = ["colony_router", "memory_router", "queen_router", "settings_router"]

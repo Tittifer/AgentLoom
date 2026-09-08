@@ -1,14 +1,11 @@
 """Strict public and runtime contracts for Colony execution."""
 
 from typing import Literal
-from urllib.parse import urlsplit
 from uuid import UUID
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, JsonValue, field_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, JsonValue
 
-from agentloom.context.schemas import ContextPolicy
 from agentloom.llm.base import ReasoningContent
-from agentloom.llm.model_routing import LLMProtocol
 from agentloom.runtime.states import ColonyStatus, SessionStatus, TaskItemStatus, WorkerStatus
 
 JsonObject = dict[str, JsonValue]
@@ -28,48 +25,16 @@ class QueenProfile(ColonyModel):
     name: str = Field(min_length=1, max_length=100)
     description: str = Field(default="", max_length=1_000)
     system_prompt: str = Field(default="", max_length=20_000)
-    model: str = Field(min_length=1, max_length=200)
-    base_url: str = Field(min_length=1, max_length=2_000)
-    settings: JsonObject = Field(default_factory=dict)
-
-    @field_validator("settings")
-    @classmethod
-    def validate_context_settings(cls, value: JsonObject) -> JsonObject:
-        ContextPolicy.from_mapping(value)
-        return value
-
-    @field_validator("base_url")
-    @classmethod
-    def validate_base_url(cls, value: str) -> str:
-        """Require an HTTP(S) origin without an API endpoint suffix."""
-
-        parsed = urlsplit(value)
-        if (
-            parsed.scheme not in {"http", "https"}
-            or not parsed.netloc
-            or parsed.username is not None
-            or parsed.password is not None
-            or parsed.path not in {"", "/"}
-            or parsed.query
-            or parsed.fragment
-        ):
-            raise ValueError("base_url 必须是没有路径后缀的 HTTP(S) 服务地址")
-        return f"{parsed.scheme}://{parsed.netloc}"
 
 
 class QueenCreate(QueenProfile):
-    api_key: str = Field(min_length=1, max_length=10_000, repr=False)
+    pass
 
 
 class QueenRead(QueenProfile):
     id: str = Field(pattern=r"^[a-z0-9][a-z0-9_-]{0,99}$")
-    protocol: LLMProtocol
     created_at: AwareDatetime
     updated_at: AwareDatetime
-
-
-class QueenRuntimeConfig(QueenRead):
-    api_key: str = Field(min_length=1, max_length=10_000, repr=False)
 
 
 class ColonyCreate(ColonyModel):
@@ -257,7 +222,6 @@ __all__ = [
     "OperatingPhase",
     "QueenCreate",
     "QueenRead",
-    "QueenRuntimeConfig",
     "ReportStatus",
     "SessionKind",
     "SessionRead",

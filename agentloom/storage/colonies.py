@@ -21,7 +21,6 @@ from agentloom.colony.schemas import (
     MessageRead,
     QueenCreate,
     QueenRead,
-    QueenRuntimeConfig,
     SessionRead,
     TaskItemCreate,
     TaskItemRead,
@@ -41,7 +40,13 @@ from agentloom.storage.base import (
     utc_now,
 )
 from agentloom.storage.queens import LocalQueenStore
+from agentloom.storage.settings import LocalUserSettingsStore
 from agentloom.storage.tracker import SQLiteTrackerStore
+from agentloom.user_settings import (
+    UserLLMRuntimeConfig,
+    UserSettingsRead,
+    UserSettingsUpdate,
+)
 
 JSON_OBJECT = TypeAdapter(dict[str, JsonValue])
 JSON_OBJECTS = TypeAdapter(list[dict[str, JsonValue]])
@@ -81,6 +86,7 @@ class LocalColonyStore:
         self._trash = self.root / "trash"
         self._tracker = SQLiteTrackerStore()
         self._queens = LocalQueenStore(self.root)
+        self._user_settings = LocalUserSettingsStore(self.root)
         self._locks: dict[UUID, asyncio.Lock] = {}
         self._root_lock = asyncio.Lock()
 
@@ -89,6 +95,7 @@ class LocalColonyStore:
 
         await asyncio.to_thread(self._initialize_sync)
         await self._queens.initialize()
+        await self._user_settings.initialize()
 
     async def close(self) -> None:
         """Close the store; operations use no persistent file handles."""
@@ -124,9 +131,10 @@ class LocalColonyStore:
         queen_identity = await self._queens.get(queen_id)
         if queen_identity is None:
             raise KeyError(queen_id)
+        llm = await self._require_llm_settings()
         async with self._root_lock:
             merged = default_colony_settings()
-            merged.update(queen_identity.settings)
+            merged["max_context_tokens"] = llm.max_context_tokens
             merged.update(JSON_OBJECT.validate_python(dict(settings)))
             now = utc_now()
             colony_id = uuid4()
@@ -137,7 +145,7 @@ class LocalColonyStore:
                 description=description,
                 status=ColonyStatus.ACTIVE,
                 queen_id=queen_id,
-                model=queen_identity.model,
+                model=llm.model,
                 settings=merged,
                 queen_session_id=queen_session_id,
                 created_at=now,
@@ -176,8 +184,14 @@ class LocalColonyStore:
     async def get_queen(self, queen_id: str) -> QueenRead | None:
         return await self._queens.get(queen_id)
 
-    async def get_queen_runtime_config(self, queen_id: str) -> QueenRuntimeConfig | None:
-        return await self._queens.get_runtime_config(queen_id)
+    async def get_user_settings(self) -> UserSettingsRead:
+        return await self._user_settings.get()
+
+    async def update_user_settings(self, payload: UserSettingsUpdate) -> UserSettingsRead:
+        return await self._user_settings.update(payload)
+
+    async def get_user_llm_runtime_config(self) -> UserLLMRuntimeConfig | None:
+        return await self._user_settings.get_runtime_config()
 
     async def list_queen_sessions(self, queen_id: str) -> list[SessionRead]:
         sessions = await asyncio.to_thread(self._list_dm_sessions_sync, queen_id)
@@ -195,7 +209,9 @@ class LocalColonyStore:
             raise KeyError(queen_id)
         async with self._root_lock:
             settings = default_colony_settings()
-            settings.update(queen.settings)
+            llm = await self._user_settings.get_runtime_config()
+            if llm is not None:
+                settings["max_context_tokens"] = llm.max_context_tokens
             now = utc_now()
             session = SessionRead(
                 id=uuid4(),
@@ -256,6 +272,7 @@ class LocalColonyStore:
             queen = await self._queens.get(source.queen_id)
             if queen is None:
                 raise KeyError(source.queen_id)
+            llm = await self._require_llm_settings()
 
             now = utc_now()
             colony_id = uuid4()
@@ -266,7 +283,7 @@ class LocalColonyStore:
                 description=payload.description,
                 status=ColonyStatus.ACTIVE,
                 queen_id=source.queen_id,
-                model=queen.model,
+                model=llm.model,
                 settings=source.budget,
                 queen_session_id=target_session_id,
                 source_session_id=source.id,
@@ -314,6 +331,21 @@ class LocalColonyStore:
                     colony.queen_id, colony.queen_session_id
                 )
             return deleted
+
+    async def delete_session(self, session_id: UUID) -> bool:
+        located = await asyncio.to_thread(self._find_session_sync, session_id)
+        if located is None:
+            return False
+        if located.session.colony_id is not None:
+            raise ValueError("Colony 会话必须通过 Colony 删除入口删除")
+        if located.session.status in {SessionStatus.QUEUED, SessionStatus.RUNNING}:
+            raise ValueError("会话仍在运行，无法删除")
+        async with self._lock(located.lock_id):
+            return await asyncio.to_thread(
+                self._delete_dm_session_sync,
+                located.base,
+                session_id,
+            )
 
     async def get(self, colony_id: UUID) -> ColonyRead | None:
         return await asyncio.to_thread(self._get_colony_sync, colony_id)
@@ -671,6 +703,20 @@ class LocalColonyStore:
         destination = self._trash / f"{colony_id}-{uuid4().hex}.json"
         metadata.replace(destination)
         return True
+
+    def _delete_dm_session_sync(self, source: Path, session_id: UUID) -> bool:
+        if not (source / "meta.json").is_file():
+            return False
+        self._trash.mkdir(parents=True, exist_ok=True)
+        destination = self._trash / f"session-{session_id}-{uuid4().hex}"
+        source.replace(destination)
+        return True
+
+    async def _require_llm_settings(self) -> UserLLMRuntimeConfig:
+        config = await self._user_settings.get_runtime_config()
+        if config is None:
+            raise RuntimeError("全局 LLM 设置尚未配置")
+        return config
 
     def _get_colony_sync(self, colony_id: UUID) -> ColonyRead | None:
         path = self._metadata_path(colony_id)

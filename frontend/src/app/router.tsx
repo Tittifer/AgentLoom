@@ -6,6 +6,7 @@ import { ColonyWorkspacePage } from "../pages/ColonyWorkspacePage";
 import { QueenListPage } from "../pages/QueenListPage";
 import { MemoryLibraryPage } from "../pages/MemoryLibraryPage";
 import { SessionWorkspacePage } from "../pages/SessionWorkspacePage";
+import { UserSettingsPage } from "../pages/UserSettingsPage";
 
 export const router = createBrowserRouter([
   {
@@ -16,6 +17,7 @@ export const router = createBrowserRouter([
       { path: "queens", element: <QueenListPage /> },
       { path: "queens/:queenId", element: <ColonyListPage /> },
       { path: "memories", element: <MemoryLibraryPage /> },
+      { path: "settings", element: <UserSettingsPage /> },
       { path: "colonies", element: <Navigate replace to="/queens" /> },
       { path: "colonies/new", element: <Navigate replace to="/queens" /> },
       { path: "colonies/:colonyId", element: <ColonyWorkspacePage /> },

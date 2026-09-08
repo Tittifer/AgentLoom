@@ -5,18 +5,21 @@ from pathlib import Path
 
 from agentloom.colony.schemas import QueenCreate, TaskItemCreate, TrackerUpsert, WorkerTask
 from agentloom.storage import LocalColonyStore
+from agentloom.user_settings import UserSettingsUpdate
 
 
 async def create_store(tmp_path: Path) -> LocalColonyStore:
     store = LocalColonyStore(tmp_path)
     await store.initialize()
-    await store.create_queen(
-        QueenCreate(
-            name="General",
+    await store.update_user_settings(
+        UserSettingsUpdate(
             model="mock/schema",
             base_url="http://localhost:8001",
             api_key="test-key",
         )
+    )
+    await store.create_queen(
+        QueenCreate(name="General")
     )
     return store
 

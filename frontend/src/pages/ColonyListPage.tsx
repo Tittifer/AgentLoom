@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "react-router-dom";
 
-import { deleteColony, listColonies } from "../api/colonies";
+import { deleteColony, deleteSession, listColonies } from "../api/colonies";
 import { createQueenSession, listQueenSessions } from "../api/queens";
 import { formatDateTime, formatError, statusText } from "../utils/format";
 
@@ -24,6 +24,12 @@ export function ColonyListPage() {
       ]);
     },
   });
+  const deleteSessionMutation = useMutation({
+    mutationFn: deleteSession,
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["queen-sessions", queenId] });
+    },
+  });
   const createMutation = useMutation({
     mutationFn: () => createQueenSession(queenId),
     onSuccess: async (session) => {
@@ -41,6 +47,12 @@ export function ColonyListPage() {
   function removeColony(colonyId: string, name: string) {
     if (window.confirm(`确定删除会话“${name}”吗？删除后无法恢复。`)) {
       deleteMutation.mutate(colonyId);
+    }
+  }
+
+  function removeSession(sessionId: string, name: string) {
+    if (window.confirm(`确定删除会话“${name}”吗？会话将移动到本地回收目录。`)) {
+      deleteSessionMutation.mutate(sessionId);
     }
   }
 
@@ -71,9 +83,9 @@ export function ColonyListPage() {
           <p>{formatError(sessionsQuery.error ?? coloniesQuery.error)}</p>
         </div>
       ) : null}
-      {deleteMutation.isError || createMutation.isError ? (
+      {deleteMutation.isError || deleteSessionMutation.isError || createMutation.isError ? (
         <div className="panel error-panel">
-          <p>{formatError(deleteMutation.error ?? createMutation.error)}</p>
+          <p>{formatError(deleteMutation.error ?? deleteSessionMutation.error ?? createMutation.error)}</p>
         </div>
       ) : null}
       {!sessionsQuery.isLoading && sessions.length === 0 ? (
@@ -118,7 +130,17 @@ export function ColonyListPage() {
                     >
                       删除
                     </button>
-                  ) : null}
+                  ) : (
+                    <button
+                      aria-label={`删除会话 ${name}`}
+                      className="delete-button"
+                      disabled={deleteSessionMutation.isPending && deleteSessionMutation.variables === session.id}
+                      onClick={() => removeSession(session.id, name)}
+                      type="button"
+                    >
+                      删除
+                    </button>
+                  )}
                 </div>
               </header>
               <Link className="colony-card-link" to={href}>

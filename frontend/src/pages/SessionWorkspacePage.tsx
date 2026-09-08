@@ -4,6 +4,7 @@ import { Link, Navigate, useNavigate, useParams } from "react-router-dom";
 
 import {
   dismissColonySuggestion,
+  deleteSession,
   forkSessionIntoColony,
   getSession,
   listMessages,
@@ -36,6 +37,13 @@ export function SessionWorkspacePage() {
         queryClient.invalidateQueries({ queryKey: ["messages", sessionId] }),
         queryClient.invalidateQueries({ queryKey: ["session", sessionId] }),
       ]);
+    },
+  });
+  const deleteMutation = useMutation({
+    mutationFn: () => deleteSession(requireId(sessionId)),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["queen-sessions", sessionQuery.data?.queen_id] });
+      navigate(`/queens/${sessionQuery.data?.queen_id}`);
     },
   });
   const suggestion = sessionQuery.data?.pending_colony_suggestion;
@@ -84,14 +92,47 @@ export function SessionWorkspacePage() {
           <header className="session-navigation-header">
             <div><span className="section-kicker">工作空间</span><strong>独立会话</strong></div>
           </header>
+          <div className="navigation-primary">
+            <Link className="navigation-menu-item" to={`/queens/${session.queen_id}`}>
+              <span aria-hidden="true">⌘</span><strong>Queen 会话</strong>
+            </Link>
+            <Link className="navigation-menu-item" to="/memories">
+              <span aria-hidden="true">♧</span><strong>记忆库</strong>
+            </Link>
+            <Link className="navigation-menu-item" to="/settings">
+              <span aria-hidden="true">⚙</span><strong>用户设置</strong>
+            </Link>
+          </div>
+          <div className="navigation-section-heading"><span>DIRECT MESSAGE</span><b>1</b></div>
+          <div className="session-navigation-list">
+            <span className="session-navigation-item active">
+              <span className={`session-status-dot status-dot-${session.status}`} aria-hidden="true" />
+              <span className="session-navigation-copy"><strong>当前 Queen</strong><small>独立对话</small></span>
+            </span>
+          </div>
           <Link className="all-sessions-link" to={`/queens/${session.queen_id}`}>
-            <span aria-hidden="true">⌂</span><strong>管理全部会话</strong>
+            <span aria-hidden="true">⚙</span><strong>管理 Queen</strong>
           </Link>
+          <small className="navigation-version">v0.1.0</small>
         </aside>
         <div className="conversation-workspace">
           <header className="workspace-heading">
-            <div><span className="eyebrow">Queen 私聊</span><h1 id="workspace-title">独立 Queen 会话</h1></div>
-            <span className="status-pill">{session.status === "forked" ? "已创建 Colony" : "独立模式"}</span>
+            <div className="workspace-identity"><span className="workspace-mark" aria-hidden="true">◇</span><h1 id="workspace-title">独立 Queen 会话</h1><span className="role-chip">Private DM</span></div>
+            <div className="workspace-actions">
+              <span className="status-pill">{session.status === "forked" ? "已创建 Colony" : "独立模式"}</span>
+              <button
+                className="workspace-delete-button"
+                disabled={deleteMutation.isPending || ["queued", "running"].includes(session.status)}
+                onClick={() => {
+                  if (window.confirm("确定删除这条独立会话吗？删除后会被移动到本地回收目录。")) {
+                    deleteMutation.mutate();
+                  }
+                }}
+                type="button"
+              >
+                {deleteMutation.isPending ? "删除中…" : "删除"}
+              </button>
+            </div>
           </header>
           {session.status === "forked" && session.forked_to_colony_id ? (
             <div className="forked-session-notice">
@@ -100,6 +141,7 @@ export function SessionWorkspacePage() {
             </div>
           ) : null}
           {messageMutation.isError ? <div className="form-error">{formatError(messageMutation.error)}</div> : null}
+          {deleteMutation.isError ? <div className="form-error">{formatError(deleteMutation.error)}</div> : null}
           <ChatPanel
             activeWorkerCount={0}
             messages={messagesQuery.data ?? []}

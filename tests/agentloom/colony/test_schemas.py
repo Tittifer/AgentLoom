@@ -6,10 +6,10 @@ from pydantic import ValidationError
 from agentloom.colony.schemas import (
     ColonyCreate,
     MessageCreate,
-    QueenCreate,
     TrackerUpsert,
     WorkerTask,
 )
+from agentloom.user_settings import UserSettingsUpdate
 
 
 def test_colony_create_applies_defaults() -> None:
@@ -18,17 +18,15 @@ def test_colony_create_applies_defaults() -> None:
     assert payload.settings == {}
 
 
-def test_queen_requires_a_suffix_free_base_url() -> None:
-    payload = QueenCreate(
-        name="研究 Queen",
+def test_user_settings_require_a_suffix_free_base_url() -> None:
+    payload = UserSettingsUpdate(
         model="gemini-2.5-pro",
         base_url="https://generativelanguage.googleapis.com/",
         api_key="test-key",
     )
     assert payload.base_url == "https://generativelanguage.googleapis.com"
     with pytest.raises(ValidationError):
-        QueenCreate(
-            name="错误 Queen",
+        UserSettingsUpdate(
             model="gpt-5",
             base_url="https://api.openai.com/v1",
             api_key="test-key",

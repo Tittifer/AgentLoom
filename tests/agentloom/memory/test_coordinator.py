@@ -10,25 +10,28 @@ from agentloom.llm.mock import ScriptedMockLLMProvider
 from agentloom.memory.coordinator import MemoryCoordinator
 from agentloom.memory.store import LocalMemoryStore
 from agentloom.storage import LocalColonyStore
+from agentloom.user_settings import UserSettingsUpdate
 
 
 async def test_first_queen_text_turn_schedules_short_reflection(tmp_path: Path) -> None:
     colonies = LocalColonyStore(tmp_path)
     await colonies.initialize()
-    queen = await colonies.create_queen(
-        QueenCreate(
-            name="Memory Test",
+    await colonies.update_user_settings(
+        UserSettingsUpdate(
             model="mock/test",
             base_url="http://localhost:8001",
             api_key="test-key",
         )
+    )
+    queen = await colonies.create_queen(
+        QueenCreate(name="Memory Test")
     )
     colony, session = await colonies.create("测试", "", queen.id, {})
     await colonies.append_message(session.id, LLMMessage(role="user", content="我偏好 FastAPI"))
     await colonies.append_message(session.id, LLMMessage(role="assistant", content="已了解"))
     messages = await colonies.list_messages(session.id)
     assert messages is not None
-    context = LoopContext(session=session, colony=colony, messages=[])
+    context = LoopContext(session=session, colony=colony, messages=[], model="mock/test")
     provider = ScriptedMockLLMProvider(
         [
             LLMResponse(content="无需保存", model="mock/test"),

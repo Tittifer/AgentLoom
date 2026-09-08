@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   dismissColonySuggestion,
+  deleteSession,
   forkSessionIntoColony,
   getSession,
   listMessages,
@@ -16,6 +17,7 @@ import { SessionWorkspacePage } from "../../src/pages/SessionWorkspacePage";
 
 vi.mock("../../src/api/colonies", () => ({
   dismissColonySuggestion: vi.fn(),
+  deleteSession: vi.fn(),
   forkSessionIntoColony: vi.fn(),
   getSession: vi.fn(),
   listMessages: vi.fn(),
@@ -59,6 +61,7 @@ describe("SessionWorkspacePage", () => {
     vi.mocked(getSession).mockResolvedValue(session);
     vi.mocked(listMessages).mockResolvedValue([]);
     vi.mocked(submitMessage).mockReset();
+    vi.mocked(deleteSession).mockReset();
     vi.mocked(dismissColonySuggestion).mockReset();
     vi.mocked(forkSessionIntoColony).mockReset();
   });
@@ -104,5 +107,26 @@ describe("SessionWorkspacePage", () => {
       description: "整理完整横向对比",
     });
     expect(await screen.findByText("Colony 工作区")).toBeInTheDocument();
+  });
+
+  it("确认后删除独立会话", async () => {
+    vi.mocked(deleteSession).mockResolvedValue();
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={["/sessions/session-1"]}>
+          <Routes>
+            <Route path="/sessions/:sessionId" element={<SessionWorkspacePage />} />
+            <Route path="/queens/:queenId" element={<div>会话已删除</div>} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    await userEvent.click(await screen.findByRole("button", { name: "删除" }));
+
+    expect(deleteSession).toHaveBeenCalledWith("session-1");
+    expect(await screen.findByText("会话已删除")).toBeInTheDocument();
   });
 });

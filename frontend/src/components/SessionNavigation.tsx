@@ -36,16 +36,31 @@ export function SessionNavigation({
         </button>
       </header>
 
-      <button
-        aria-label="新建会话"
-        className="new-session-button"
-        disabled={creating}
-        onClick={onCreate}
-        type="button"
-      >
-        <span aria-hidden="true">＋</span>
-        <strong>{creating ? "创建中…" : "新建会话"}</strong>
-      </button>
+      <div className="navigation-primary">
+        <button
+          aria-label="新建会话"
+          className="new-session-button"
+          disabled={creating}
+          onClick={onCreate}
+          type="button"
+        >
+          <span aria-hidden="true">▣</span>
+          <strong>{creating ? "创建中…" : "新建会话"}</strong>
+        </button>
+        <NavLink className="navigation-menu-item" to={`/queens/${queenId}`}>
+          <span aria-hidden="true">⌘</span><strong>Queen 会话</strong>
+        </NavLink>
+        <NavLink className="navigation-menu-item" to="/memories">
+          <span aria-hidden="true">♧</span><strong>记忆库</strong>
+        </NavLink>
+        <NavLink className="navigation-menu-item" to="/settings">
+          <span aria-hidden="true">⚙</span><strong>用户设置</strong>
+        </NavLink>
+      </div>
+
+      <div className="navigation-section-heading">
+        <span>COLONIES</span><b>{colonies.length}</b>
+      </div>
 
       <nav aria-label="会话导航" className="session-navigation-list">
         {colonies.map((colony) => (
@@ -65,9 +80,10 @@ export function SessionNavigation({
       </nav>
 
       <NavLink className="all-sessions-link" to={`/queens/${queenId}`}>
-        <span aria-hidden="true">⌂</span>
-        <strong>管理全部会话</strong>
+        <span aria-hidden="true">⚙</span>
+        <strong>管理 Queen</strong>
       </NavLink>
+      <small className="navigation-version">v0.1.0</small>
     </aside>
   );
 }

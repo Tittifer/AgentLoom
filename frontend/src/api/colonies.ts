@@ -164,6 +164,10 @@ export function getSession(sessionId: string): Promise<SessionRead> {
   return apiClient.get(`/api/sessions/${sessionId}`);
 }
 
+export function deleteSession(sessionId: string): Promise<void> {
+  return apiClient.delete(`/api/sessions/${sessionId}`);
+}
+
 export function forkSessionIntoColony(
   sessionId: string,
   payload: ColonyForkCreate,
