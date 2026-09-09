@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 
 import type { TaskItemRead, TrackerEntryRead, WorkerRead } from "../api/colonies";
 import { statusText } from "../utils/format";
@@ -9,6 +9,8 @@ interface ColonySidebarProps {
   tracker: TrackerEntryRead[];
   workers: WorkerRead[];
   onSelectWorker: (worker: WorkerRead) => void;
+  defaultTab?: InspectorTab;
+  planContent?: ReactNode;
 }
 
 type InspectorTab = "data" | "plan" | "automations" | "workers";
@@ -18,8 +20,11 @@ export function ColonySidebar({
   tracker,
   workers,
   onSelectWorker,
+  defaultTab = "data",
+  planContent,
 }: ColonySidebarProps) {
-  const [tab, setTab] = useState<InspectorTab>("data");
+  const [tab, setTab] = useState<InspectorTab>(defaultTab);
+  const hasPlanContent = Boolean(planContent);
   const namespaces = useMemo(
     () => Array.from(new Set(tracker.map((entry) => entry.namespace))),
     [tracker],
@@ -38,7 +43,7 @@ export function ColonySidebar({
     <aside className="workspace-inspector" aria-label="协作详情">
       <div className="inspector-tabs" role="tablist" aria-label="协作详情分类">
         <InspectorTabButton active={tab === "data"} count={tracker.length} label="Data" onClick={() => setTab("data")} />
-        <InspectorTabButton active={tab === "plan"} count={tasks.length} label="Plan" onClick={() => setTab("plan")} />
+        <InspectorTabButton active={tab === "plan"} count={tasks.length + (hasPlanContent ? 1 : 0)} label="Plan" onClick={() => setTab("plan")} />
         <InspectorTabButton active={tab === "automations"} label="Automations" onClick={() => setTab("automations")} />
         <InspectorTabButton active={tab === "workers"} count={workers.length} label="Workers" onClick={() => setTab("workers")} />
       </div>
@@ -48,7 +53,8 @@ export function ColonySidebar({
           <section aria-labelledby="plan-title">
             <span className="section-kicker">执行进度</span>
             <h2 id="plan-title">任务计划</h2>
-            {tasks.length === 0 ? <p className="empty-copy">任务计划会在需要时自动生成。</p> : null}
+            {planContent}
+            {tasks.length === 0 && !hasPlanContent ? <p className="empty-copy">任务计划会在需要时自动生成。</p> : null}
             <ol className="task-plan-list">
               {tasks.map((task) => (
                 <li key={task.id}>

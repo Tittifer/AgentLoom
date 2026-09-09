@@ -11,6 +11,7 @@ import {
   type ColonySuggestion,
 } from "../api/colonies";
 import { ChatPanel } from "../components/ChatPanel";
+import { ColonySidebar } from "../components/ColonySidebar";
 import { SessionNavigation } from "../components/SessionNavigation";
 import { useSessionEvents } from "../hooks/useColonyEvents";
 import { formatError } from "../utils/format";
@@ -105,11 +106,11 @@ export function SessionWorkspacePage() {
             streamingMessage={streamingMessage}
           />
         </div>
-        <aside className="workspace-inspector suggestion-inspector">
-          <header className="inspector-heading">
-            <div><span className="section-kicker">运行方式</span><h2>Colony 建议</h2></div>
-          </header>
-          {suggestion?.status === "pending" ? (
+        <ColonySidebar
+          defaultTab={suggestion?.status === "pending" ? "plan" : "data"}
+          key={suggestion?.status === "pending" ? suggestion.id : "empty-colony-inspector"}
+          onSelectWorker={() => undefined}
+          planContent={suggestion?.status === "pending" ? (
             <ColonySuggestionCard
               busy={forkMutation.isPending || dismissMutation.isPending}
               error={forkMutation.error ?? dismissMutation.error}
@@ -120,10 +121,11 @@ export function SessionWorkspacePage() {
               onDismiss={() => dismissMutation.mutate()}
               suggestion={suggestion}
             />
-          ) : (
-            <div className="empty-copy">Queen 判断需要多智能体协作时，会在这里提交创建建议；未经确认不会启动 Worker。</div>
-          )}
-        </aside>
+          ) : undefined}
+          tasks={[]}
+          tracker={[]}
+          workers={[]}
+        />
       </div>
     </section>
   );

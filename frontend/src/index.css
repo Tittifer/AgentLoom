@@ -140,8 +140,6 @@ h3 { margin: 1.25rem 0 .5rem; font-size: .9rem; }
 .session-navigation.is-collapsed .session-navigation-item { justify-content: center; padding-right: .55rem; padding-left: .55rem; }
 
 .workspace-inspector { display: flex; width: 350px; min-width: 0; flex: 0 0 auto; flex-direction: column; overflow: hidden; border-left: 1px solid #e2e7ef; background: #fbfcfe; }
-.inspector-heading { display: grid; min-height: 68px; flex: 0 0 auto; align-content: center; gap: .2rem; padding: .8rem 1rem; border-bottom: 1px solid #e5e9f0; }
-.inspector-heading strong { color: #26334a; font-size: .85rem; }
 .inspector-tabs { display: flex; flex: 0 0 auto; overflow-x: auto; border-bottom: 1px solid #e5e9f0; background: white; }
 .inspector-tabs button { display: flex; flex: 1 0 auto; gap: .35rem; align-items: center; justify-content: center; padding: .7rem .55rem; border-bottom: 2px solid transparent; color: #8490a3; background: transparent; font-size: .68rem; font-weight: 750; }
 .inspector-tabs button:hover { color: #3f4d65; background: #f8faff; }
@@ -336,7 +334,6 @@ h3 { margin: 1.25rem 0 .5rem; font-size: .9rem; }
 
 .dm-workspace-shell .conversation-workspace { flex: 1; }
 .dm-navigation { justify-content: space-between; }
-.suggestion-inspector { padding-bottom: 1rem; }
 .colony-suggestion-card { display: grid; gap: .8rem; padding: 1rem; }
 .colony-suggestion-card p { margin: 0; color: #475569; font-size: .8rem; line-height: 1.6; }
 .colony-suggestion-card label { display: grid; gap: .35rem; color: #475569; font-size: .72rem; font-weight: 700; }
@@ -380,7 +377,6 @@ h3 { margin: 1.25rem 0 .5rem; font-size: .9rem; }
   .session-navigation .session-navigation-copy { display: grid; }
   .conversation-workspace { min-height: calc(100vh - 126px); }
   .workspace-inspector { width: 100%; max-height: 600px; border-top: 1px solid #e2e7ef; border-left: 0; }
-  .inspector-heading { min-height: 58px; }
 }
 
 @media (max-width: 640px) {

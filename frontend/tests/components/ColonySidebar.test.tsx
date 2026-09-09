@@ -1,6 +1,6 @@
-import { render, screen } from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { TrackerEntryRead } from "../../src/api/colonies";
 import { ColonySidebar } from "../../src/components/ColonySidebar";
@@ -19,6 +19,22 @@ const tracker: TrackerEntryRead = {
 };
 
 describe("ColonySidebar", () => {
+  afterEach(cleanup);
+
+  it("空状态仍展示四个 Colony 工作区标签", () => {
+    render(
+      <ColonySidebar
+        onSelectWorker={vi.fn()}
+        tasks={[]}
+        tracker={[]}
+        workers={[]}
+      />,
+    );
+
+    expect(screen.getAllByRole("tab")).toHaveLength(4);
+    expect(screen.getByText("暂无数据")).toBeInTheDocument();
+  });
+
   it("通过标签切换并以自然语言展示阶段性结果", async () => {
     render(
       <ColonySidebar

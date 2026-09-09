@@ -12,9 +12,6 @@ function App() {
           <span><strong>Agent<span>Loom</span></strong><small>多智能体协作空间</small></span>
         </NavLink>
         <nav aria-label="主导航">
-          <NavLink className={() => isWorkspace ? "nav-link active" : "nav-link"} end to="/">
-            <span aria-hidden="true">◇</span> Queen
-          </NavLink>
           <NavLink className={({ isActive }) => isActive ? "nav-link active" : "nav-link"} to="/memories">
             <span aria-hidden="true">♧</span> 记忆
           </NavLink>

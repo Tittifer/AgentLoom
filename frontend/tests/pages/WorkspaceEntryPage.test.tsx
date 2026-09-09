@@ -1,6 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 
@@ -21,7 +20,7 @@ vi.mock("../../src/api/queens", () => ({
 }));
 
 describe("WorkspaceEntryPage", () => {
-  it("通过侧栏选择 Queen 并直接进入会话", async () => {
+  it("首页没有独立会话时自动创建并进入会话工作台", async () => {
     const session: SessionRead = {
       id: "session-1",
       colony_id: null,
@@ -69,11 +68,7 @@ describe("WorkspaceEntryPage", () => {
       </QueryClientProvider>,
     );
 
-    expect(screen.getByRole("heading", { name: "选择一个 Queen" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "新建会话" })).toBeDisabled();
-    await userEvent.click(await screen.findByRole("button", { name: /Research/ }));
-
-    expect(createQueenSession).toHaveBeenCalledWith("queen-1");
     expect(await screen.findByText("会话工作区")).toBeInTheDocument();
+    expect(vi.mocked(createQueenSession).mock.calls[0]?.[0]).toBe("queen-1");
   });
 });
