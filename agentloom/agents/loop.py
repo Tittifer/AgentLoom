@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import time
 from dataclasses import dataclass
 from typing import Literal, Protocol
 from uuid import UUID, uuid4
@@ -15,6 +16,7 @@ from agentloom.llm.base import (
     LLMContextLengthError,
     LLMMessage,
     LLMProvider,
+    LLMProviderError,
     LLMRequest,
     LLMResponse,
     LLMResponseError,
@@ -26,6 +28,10 @@ BudgetReason = Literal["model_turns", "tool_calls"]
 
 GRACE_TERMINAL_TOOL_NAMES = frozenset({"report_to_parent", "tracker_upsert", "task_update"})
 DEFAULT_GRACE_TURNS = {"queen": 1, "worker": 2}
+MAX_LLM_TRANSIENT_RETRIES = 5
+LLM_RETRY_BACKOFF_BASE_SECONDS = 2.0
+LLM_RETRY_MAX_DELAY_SECONDS = 60.0
+CAPACITY_RETRY_MAX_SECONDS = 600.0
 
 
 @dataclass(frozen=True)
@@ -68,6 +74,15 @@ class AgentLoopStore(Protocol):
         self,
         context: LoopContext,
         message_id: UUID,
+    ) -> None: ...
+
+    async def record_llm_retry(
+        self,
+        context: LoopContext,
+        error: LLMProviderError,
+        attempt: int,
+        max_retries: int | None,
+        delay_seconds: float,
     ) -> None: ...
 
     async def checkpoint(
@@ -275,7 +290,7 @@ class AgentLoop:
                     context, messages, definitions, self._provider, force=False
                 )
             try:
-                response, message_id = await self._complete_turn(
+                response, message_id = await self._complete_turn_with_retry(
                     context,
                     messages,
                     definitions,
@@ -288,7 +303,7 @@ class AgentLoop:
                 messages = await self._context_manager.compact(
                     context, messages, definitions, self._provider, force=True
                 )
-                response, message_id = await self._complete_turn(
+                response, message_id = await self._complete_turn_with_retry(
                     context,
                     messages,
                     definitions,
@@ -520,6 +535,86 @@ class AgentLoop:
             total_tool_calls=usage["tool_calls"],
         )
         return response, message_id
+
+    async def _complete_turn_with_retry(
+        self,
+        context: LoopContext,
+        messages: list[LLMMessage],
+        definitions: list[ToolDefinition],
+        usage: dict[str, int],
+        iteration: int,
+    ) -> tuple[LLMResponse, UUID]:
+        transient_retries = 0
+        capacity_retries = 0
+        capacity_started_at: float | None = None
+
+        while True:
+            try:
+                return await self._complete_turn(
+                    context,
+                    messages,
+                    definitions,
+                    usage,
+                    iteration,
+                )
+            except LLMProviderError as error:
+                if not error.retryable or error.category == "context_length":
+                    raise
+
+                if error.category == "capacity":
+                    if capacity_started_at is None:
+                        capacity_started_at = time.monotonic()
+                    remaining_seconds = (
+                        CAPACITY_RETRY_MAX_SECONDS
+                        - (time.monotonic() - capacity_started_at)
+                    )
+                    if remaining_seconds <= 0:
+                        raise
+                    capacity_retries += 1
+                    attempt = capacity_retries
+                    max_retries = None
+                    delay_seconds = min(
+                        self._llm_retry_delay(error, attempt),
+                        remaining_seconds,
+                    )
+                else:
+                    if transient_retries >= MAX_LLM_TRANSIENT_RETRIES:
+                        raise
+                    transient_retries += 1
+                    attempt = transient_retries
+                    max_retries = MAX_LLM_TRANSIENT_RETRIES
+                    delay_seconds = self._llm_retry_delay(error, attempt)
+
+                await self._store.record_llm_retry(
+                    context,
+                    error,
+                    attempt,
+                    max_retries,
+                    delay_seconds,
+                )
+                self._logger.warning(
+                    "llm_request_retrying",
+                    session_id=str(context.session.id),
+                    actor_type=context.session.actor_type,
+                    category=error.category,
+                    status_code=error.status_code,
+                    attempt=attempt,
+                    max_retries=max_retries,
+                    delay_seconds=delay_seconds,
+                )
+                await asyncio.sleep(delay_seconds)
+
+    @staticmethod
+    def _llm_retry_delay(error: LLMProviderError, attempt: int) -> float:
+        if error.retry_after_seconds is not None:
+            return min(
+                max(0.0, error.retry_after_seconds),
+                LLM_RETRY_MAX_DELAY_SECONDS,
+            )
+        return min(
+            LLM_RETRY_BACKOFF_BASE_SECONDS * (2 ** (attempt - 1)),
+            LLM_RETRY_MAX_DELAY_SECONDS,
+        )
 
     async def _execute_tool_calls(
         self,

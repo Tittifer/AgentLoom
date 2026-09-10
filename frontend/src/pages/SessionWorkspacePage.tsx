@@ -61,7 +61,7 @@ export function SessionWorkspacePage() {
       await queryClient.invalidateQueries({ queryKey: ["session", sessionId] });
     },
   });
-  const streamingMessage = useSessionEvents(
+  const { streamingMessage, llmRetry } = useSessionEvents(
     sessionId,
     (messagesQuery.data ?? []).map((message) => message.id),
   );
@@ -103,6 +103,7 @@ export function SessionWorkspacePage() {
             onSend={async (content) => { await messageMutation.mutateAsync(content); }}
             sending={messageMutation.isPending || session.status === "forked"}
             session={session}
+            llmRetry={llmRetry}
             streamingMessage={streamingMessage}
           />
         </div>

@@ -40,7 +40,7 @@ export function ColonyWorkspacePage() {
       ]);
     },
   });
-  const streamingMessage = useColonyEvents(
+  const { streamingMessage, llmRetry } = useColonyEvents(
     colonyId,
     queenId,
     (messagesQuery.data ?? []).map((message) => message.id),
@@ -80,6 +80,7 @@ export function ColonyWorkspacePage() {
             onSend={async (content) => { await messageMutation.mutateAsync(content); }}
             sending={messageMutation.isPending}
             session={snapshot.queen_session}
+            llmRetry={llmRetry}
             streamingMessage={streamingMessage}
             workers={snapshot.workers}
           />

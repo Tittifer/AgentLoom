@@ -1,7 +1,7 @@
 import { FormEvent, useEffect, useRef, useState } from "react";
 
 import type { MessageRead, SessionRead, WorkerRead } from "../api/colonies";
-import type { StreamingAssistantMessage } from "../hooks/useColonyEvents";
+import type { LLMRetryState, StreamingAssistantMessage } from "../hooks/useColonyEvents";
 import { formatDateTime } from "../utils/format";
 import { MarkdownContent } from "./MarkdownContent";
 import { WorkerCard } from "./WorkerCard";
@@ -12,6 +12,7 @@ interface ChatPanelProps {
   activeWorkerCount: number;
   sending: boolean;
   streamingMessage: StreamingAssistantMessage | null;
+  llmRetry?: LLMRetryState | null;
   workers?: WorkerRead[];
   onSelectWorker?: (worker: WorkerRead) => void;
   onSend: (content: string) => Promise<void>;
@@ -23,6 +24,7 @@ export function ChatPanel({
   activeWorkerCount,
   sending,
   streamingMessage,
+  llmRetry = null,
   workers = [],
   onSelectWorker,
   onSend,
@@ -45,6 +47,7 @@ export function ChatPanel({
     ...workers.map((worker, index) => ({ kind: "worker" as const, time: worker.queued_at, index, worker })),
   ].sort((left, right) => left.time.localeCompare(right.time) || left.index - right.index);
   const isWaiting = !streamingMessage && (
+    llmRetry !== null ||
     sending ||
     session.status === "queued" ||
     session.status === "running" ||
@@ -159,7 +162,9 @@ export function ChatPanel({
             <span className="waiting-orbit" aria-hidden="true"><i /><i /><i /></span>
             <span className="agent-waiting-copy">
               <strong>
-                {activeWorkerCount > 0
+                {llmRetry
+                  ? llmRetryStatusText(llmRetry)
+                  : activeWorkerCount > 0
                   ? `${activeWorkerCount} 个协作节点正在执行任务`
                   : "正在分析并组织回复"}
               </strong>
@@ -242,8 +247,17 @@ function workerReportContent(content: string): string {
 }
 
 function sessionStatusText(status: SessionRead["status"]): string {
+  if (status === "parked") return "等待重试";
   if (status === "queued" || status === "running") return "思考中";
-  if (status === "failed") return "需要重试";
+  if (status === "failed") return "执行失败";
   if (status === "forked") return "已创建 Colony";
   return "已就绪";
+}
+
+function llmRetryStatusText(retry: LLMRetryState): string {
+  const seconds = Math.max(0, Math.ceil(retry.delaySeconds));
+  if (retry.category === "capacity") {
+    return `模型服务繁忙，${seconds} 秒后继续重试（第 ${retry.attempt} 次）`;
+  }
+  return `模型连接暂时中断，${seconds} 秒后重试（${retry.attempt}/${retry.maxRetries ?? "∞"}）`;
 }

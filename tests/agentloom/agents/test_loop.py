@@ -17,6 +17,8 @@ from agentloom.llm.base import (
     LLMContextLengthError,
     LLMMessage,
     LLMProvider,
+    LLMProviderError,
+    LLMRequestError,
     LLMResponse,
     ToolCall,
     ToolDefinition,
@@ -74,6 +76,7 @@ class FakeStore:
         self.deltas: list[tuple[UUID, str]] = []
         self.cancelled_streams: list[UUID] = []
         self.message_events: list[str] = []
+        self.llm_retries: list[tuple[int, int | None, float]] = []
 
     async def load(self, session_id):  # type: ignore[no-untyped-def]
         return self.context if session_id == self.context.session.id else None
@@ -113,6 +116,17 @@ class FakeStore:
     async def cancel_message_stream(self, context: LoopContext, message_id: UUID) -> None:
         del context
         self.cancelled_streams.append(message_id)
+
+    async def record_llm_retry(
+        self,
+        context: LoopContext,
+        error: LLMProviderError,
+        attempt: int,
+        max_retries: int | None,
+        delay_seconds: float,
+    ) -> None:
+        del context, error
+        self.llm_retries.append((attempt, max_retries, delay_seconds))
 
     async def checkpoint(
         self,
@@ -306,6 +320,83 @@ async def test_agent_loop_forces_compaction_and_retries_context_error_once() -> 
     assert len(provider.requests) == 2
     assert provider.requests[1].messages[-1].content == "压缩后的上下文"
     assert store.finished
+
+
+async def test_agent_loop_retries_transient_error_without_spending_turn_budget(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    delays: list[float] = []
+
+    async def no_wait(delay: float) -> None:
+        delays.append(delay)
+
+    monkeypatch.setattr("agentloom.agents.loop.asyncio.sleep", no_wait)
+    context = make_context()
+    context.session.budget["max_turns"] = 1
+    store = FakeStore(context)
+    provider = ScriptedMockLLMProvider(
+        [
+            LLMRequestError(
+                "temporary connection failure",
+                category="transient",
+                retryable=True,
+            ),
+            LLMResponse(content="done after retry", model="mock/test"),
+        ]
+    )
+    loop = AgentLoop(
+        store,
+        provider,
+        FakeTools(),
+        JudgePipeline(),
+        default_max_turns=1,
+        timeout_seconds=1,
+    )
+
+    await loop.run(context.session.id)
+
+    assert len(provider.requests) == 2
+    assert delays == [2.0]
+    assert store.llm_retries == [(1, 5, 2.0)]
+    assert store.finished
+    assert store.failed is None
+
+
+async def test_agent_loop_stops_after_five_transient_retries(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    delays: list[float] = []
+
+    async def no_wait(delay: float) -> None:
+        delays.append(delay)
+
+    monkeypatch.setattr("agentloom.agents.loop.asyncio.sleep", no_wait)
+    context = make_context()
+    store = FakeStore(context)
+    errors = [
+        LLMRequestError(
+            f"temporary failure {index}",
+            category="transient",
+            retryable=True,
+        )
+        for index in range(6)
+    ]
+    provider = ScriptedMockLLMProvider(errors)
+    loop = AgentLoop(
+        store,
+        provider,
+        FakeTools(),
+        JudgePipeline(),
+        default_max_turns=2,
+        timeout_seconds=1,
+    )
+
+    await loop.run(context.session.id)
+
+    assert len(provider.requests) == 6
+    assert delays == [2.0, 4.0, 8.0, 16.0, 32.0]
+    assert len(store.llm_retries) == 5
+    assert isinstance(store.failed, LLMRequestError)
 
 
 async def test_queen_recalled_memory_is_inserted_before_latest_user_message() -> None:

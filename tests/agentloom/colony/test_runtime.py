@@ -2,7 +2,7 @@
 
 import asyncio
 import json
-from collections.abc import Mapping
+from collections.abc import Coroutine, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -32,7 +32,14 @@ from agentloom.colony.schemas import (
 )
 from agentloom.config import Settings
 from agentloom.context.schemas import CompactionCheckpoint
-from agentloom.llm.base import LLMMessage, LLMProvider, LLMResponse, ToolCall, ToolDefinition
+from agentloom.llm.base import (
+    LLMMessage,
+    LLMProvider,
+    LLMRequestError,
+    LLMResponse,
+    ToolCall,
+    ToolDefinition,
+)
 from agentloom.llm.mock import SchemaMockLLMProvider, ScriptedMockLLMProvider
 from agentloom.runtime.states import ColonyStatus, SessionStatus, WorkerStatus
 from agentloom.storage import LocalColonyStore
@@ -724,6 +731,67 @@ async def test_file_loop_store_loads_compacted_context_without_hiding_transcript
         "最近消息",
     ]
     assert transcript is not None and len(transcript) == 3
+
+
+async def test_queen_llm_failure_parks_session_and_next_message_resumes(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    store = await create_store(tmp_path)
+    session = await store.create_dm_session("queen_general")
+    loop_store = FileAgentLoopStore(store, ColonyEventNotifier())
+    context = await loop_store.load(session.id)
+    assert context is not None
+
+    await loop_store.fail(
+        context,
+        LLMRequestError(
+            "authentication failed",
+            category="permanent",
+            retryable=False,
+            status_code=401,
+        ),
+    )
+
+    parked = await store.get_session(session.id)
+    transcript = await store.list_messages(session.id)
+    reloaded = await loop_store.load(session.id)
+    events = await store.list_session_events_after(session.id, 0)
+    assert parked is not None
+    assert parked.status is SessionStatus.PARKED
+    assert parked.park_reason == "llm_error"
+    assert transcript is not None
+    assert transcript[-1].metadata == {
+        "kind": "llm_error",
+        "exclude_from_model": True,
+    }
+    assert "authentication failed" in transcript[-1].content
+    assert reloaded is not None and reloaded.messages == []
+    assert events is not None
+    assert [event.type for event in events] == [
+        "message.completed",
+        "llm.retry_exhausted",
+        "session.parked",
+    ]
+
+    runtime = ColonyRuntime(
+        store,
+        SchemaMockLLMProvider(),
+        ColonyEventNotifier(),
+        Settings(environment="test", storage_root=tmp_path),
+        create_builtin_tool_registry(),
+    )
+
+    def discard(coroutine: Coroutine[object, object, object]) -> None:
+        coroutine.close()
+
+    monkeypatch.setattr(runtime, "_schedule", discard)
+    await runtime.submit_message(session.id, "retry now")
+
+    resumed = await store.get_session(session.id)
+    assert resumed is not None
+    assert resumed.status is SessionStatus.QUEUED
+    assert resumed.park_reason is None
 
 
 async def test_file_context_manager_compacts_queen_session_independently(

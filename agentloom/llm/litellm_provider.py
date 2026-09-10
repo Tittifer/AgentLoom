@@ -5,6 +5,8 @@ import json
 import re
 from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from importlib import import_module
 from typing import Literal, Protocol, cast, runtime_checkable
 
@@ -12,7 +14,10 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError
 
 from agentloom.llm.base import (
     LLMContextLengthError,
+    LLMErrorCategory,
+    LLMProviderError,
     LLMRequest,
+    LLMRequestError,
     LLMResponse,
     LLMResponseError,
     LLMStreamChunk,
@@ -156,6 +161,8 @@ class LiteLLMProvider:
                 self._completion(**parameters),
                 timeout=request.timeout_seconds,
             )
+        except LLMProviderError:
+            raise
         except TimeoutError as error:
             raise LLMTimeoutError(f"Model {request.model} timed out") from error
         except Exception as error:
@@ -163,7 +170,7 @@ class LiteLLMProvider:
                 raise LLMContextLengthError(
                     f"Model {request.model} context window exceeded"
                 ) from error
-            raise LLMResponseError(f"LiteLLM request failed: {error}") from error
+            raise _normalize_provider_error(error, operation="request") from error
 
         return _normalize_response(raw_response, request)
 
@@ -211,16 +218,16 @@ class LiteLLMProvider:
                                 if tool_delta.function.arguments:
                                     buffer.arguments += tool_delta.function.arguments
                         yield LLMStreamChunk(tool_calls_started=True)
+        except LLMProviderError:
+            raise
         except TimeoutError as error:
             raise LLMTimeoutError(f"Model {request.model} timed out") from error
-        except LLMResponseError:
-            raise
         except Exception as error:
             if _is_context_length_error(error):
                 raise LLMContextLengthError(
                     f"Model {request.model} context window exceeded"
                 ) from error
-            raise LLMResponseError(f"LiteLLM stream failed: {error}") from error
+            raise _normalize_provider_error(error, operation="stream") from error
 
         content = "".join(content_parts) or None
         reasoning_content = "".join(reasoning_parts) or None
@@ -298,6 +305,118 @@ def _is_context_length_error(error: BaseException) -> bool:
     return "ContextWindow" in type(error).__name__ or bool(
         CONTEXT_LENGTH_PATTERN.search(str(error))
     )
+
+
+def _normalize_provider_error(error: BaseException, *, operation: str) -> LLMRequestError:
+    status_code = _status_code(error)
+    error_text = f"{type(error).__name__}: {error}".lower()
+    category: LLMErrorCategory
+
+    permanent_markers = (
+        "authentication",
+        "permission",
+        "unauthorized",
+        "invalid api key",
+        "invalid_api_key",
+        "insufficient_quota",
+        "billing",
+        "credit balance",
+    )
+    capacity_markers = (
+        "rate limit",
+        "rate_limit",
+        "too many requests",
+        "overloaded",
+        "capacity",
+        "service unavailable",
+        "unavailable",
+    )
+    transient_markers = (
+        "timeout",
+        "timed out",
+        "connection",
+        "internal server error",
+        "bad gateway",
+    )
+
+    if status_code in {400, 401, 402, 403, 404, 405, 409, 422} or any(
+        marker in error_text for marker in permanent_markers
+    ):
+        category = "permanent"
+        retryable = False
+    elif status_code in {429, 503, 529} or any(
+        marker in error_text for marker in capacity_markers
+    ):
+        category = "capacity"
+        retryable = True
+    elif (
+        status_code in {408, 425, 500, 502, 504}
+        or (status_code is not None and status_code >= 500)
+        or isinstance(error, (ConnectionError, OSError, TimeoutError))
+        or any(marker in error_text for marker in transient_markers)
+    ):
+        category = "transient"
+        retryable = True
+    else:
+        category = "permanent"
+        retryable = False
+
+    return LLMRequestError(
+        f"LiteLLM {operation} failed: {error}",
+        category=category,
+        retryable=retryable,
+        status_code=status_code,
+        retry_after_seconds=_retry_after_seconds(error),
+    )
+
+
+def _status_code(error: BaseException) -> int | None:
+    candidates = [getattr(error, "status_code", None)]
+    response = getattr(error, "response", None)
+    if response is not None:
+        candidates.append(getattr(response, "status_code", None))
+    for candidate in candidates:
+        try:
+            return int(candidate) if candidate is not None else None
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _retry_after_seconds(error: BaseException) -> float | None:
+    headers = _error_headers(error)
+    retry_after_ms = headers.get("retry-after-ms")
+    if retry_after_ms is not None:
+        try:
+            return max(0.0, float(retry_after_ms) / 1_000)
+        except ValueError:
+            pass
+
+    retry_after = headers.get("retry-after")
+    if retry_after is None:
+        return None
+    try:
+        return max(0.0, float(retry_after))
+    except ValueError:
+        try:
+            retry_at = parsedate_to_datetime(retry_after)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if retry_at.tzinfo is None:
+            retry_at = retry_at.replace(tzinfo=UTC)
+        return max(0.0, (retry_at - datetime.now(UTC)).total_seconds())
+
+
+def _error_headers(error: BaseException) -> dict[str, str]:
+    response = getattr(error, "response", None)
+    candidates = [getattr(error, "headers", None)]
+    if response is not None:
+        candidates.append(getattr(response, "headers", None))
+    for candidate in candidates:
+        if isinstance(candidate, Mapping):
+            headers = cast(Mapping[object, object], candidate)
+            return {str(key).lower(): str(value) for key, value in headers.items()}
+    return {}
 
 
 def _load_default_completion() -> CompletionCallable:

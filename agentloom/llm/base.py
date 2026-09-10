@@ -8,6 +8,13 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, StringConstraints
 JsonObject = dict[str, JsonValue]
 MessageRole = Literal["system", "user", "assistant", "tool", "reviewer"]
 RequestPurpose = Literal["agent", "compaction", "recall", "reflection"]
+LLMErrorCategory = Literal[
+    "transient",
+    "capacity",
+    "permanent",
+    "invalid_response",
+    "context_length",
+]
 ReasoningContent = Annotated[str, StringConstraints(strip_whitespace=False)]
 
 
@@ -87,26 +94,56 @@ class LLMProvider(Protocol):
 class LLMProviderError(RuntimeError):
     """Base error for failures at the model-provider boundary."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        category: LLMErrorCategory = "permanent",
+        retryable: bool = False,
+        status_code: int | None = None,
+        retry_after_seconds: float | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.category = category
+        self.retryable = retryable
+        self.status_code = status_code
+        self.retry_after_seconds = retry_after_seconds
+
 
 class LLMTimeoutError(LLMProviderError):
     """Raised when a model call exceeds its configured deadline."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, category="transient", retryable=True)
 
 
 class LLMResponseError(LLMProviderError):
     """Raised when a provider response cannot be normalized safely."""
 
+    def __init__(self, message: str) -> None:
+        super().__init__(message, category="invalid_response")
+
 
 class LLMContextLengthError(LLMProviderError):
     """Raised when one request exceeds the selected model's context window."""
 
+    def __init__(self, message: str) -> None:
+        super().__init__(message, category="context_length")
+
+
+class LLMRequestError(LLMProviderError):
+    """Raised when a provider rejects or cannot complete a valid request."""
+
 
 __all__ = [
     "JsonObject",
+    "LLMErrorCategory",
     "LLMMessage",
     "LLMContextLengthError",
     "LLMProvider",
     "LLMProviderError",
     "LLMRequest",
+    "LLMRequestError",
     "LLMResponse",
     "LLMResponseError",
     "LLMStreamChunk",

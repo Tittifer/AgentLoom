@@ -44,7 +44,13 @@ from agentloom.config import Settings
 from agentloom.context.compaction import ContextCompactor
 from agentloom.context.estimator import estimate_context_tokens
 from agentloom.context.schemas import CompactionCheckpoint, ContextPolicy
-from agentloom.llm.base import LLMMessage, LLMProvider, ToolCall, ToolDefinition
+from agentloom.llm.base import (
+    LLMMessage,
+    LLMProvider,
+    LLMProviderError,
+    ToolCall,
+    ToolDefinition,
+)
 from agentloom.llm.factory import create_llm_provider
 from agentloom.memory.coordinator import MemoryCoordinator
 from agentloom.memory.store import LocalMemoryStore
@@ -291,8 +297,13 @@ class FileAgentLoopStore(AgentLoopStore):
         if agent_session.session_kind == "colony" and colony is None:
             return None
         compaction = await self._store.get_compaction_checkpoint(session_id)
+        model_messages = [
+            message
+            for message in messages
+            if not bool(message.metadata.get("exclude_from_model"))
+        ]
         normalized, repaired_groups = normalize_message_history(
-            messages_for_checkpoint(messages, compaction)
+            messages_for_checkpoint(model_messages, compaction)
         )
         if compaction is not None:
             normalized.insert(
@@ -420,6 +431,29 @@ class FileAgentLoopStore(AgentLoopStore):
             },
         )
 
+    async def record_llm_retry(
+        self,
+        context: LoopContext,
+        error: LLMProviderError,
+        attempt: int,
+        max_retries: int | None,
+        delay_seconds: float,
+    ) -> None:
+        await self._store.append_session_event(
+            context.session.id,
+            "llm.retrying",
+            payload={
+                "actor_type": context.session.actor_type,
+                "category": error.category,
+                "status_code": error.status_code,
+                "attempt": attempt,
+                "max_retries": max_retries,
+                "delay_seconds": delay_seconds,
+                "message": sanitize_text(str(error)),
+            },
+        )
+        await self._notifier.notify(self._stream_id(context))
+
     async def checkpoint(
         self,
         context: LoopContext,
@@ -493,12 +527,25 @@ class FileAgentLoopStore(AgentLoopStore):
             error_type=type(error).__name__,
             error=safe_error,
         )
+        llm_error = error if isinstance(error, LLMProviderError) else None
         worker = await self._store.get_worker_for_session(context.session.id)
         if worker is not None:
             saved = await self._store.finish_worker_if_active(
                 context.session.id,
                 WorkerStatus.FAILED,
-                error={"code": "AGENT_LOOP_FAILED", "message": safe_error},
+                error={
+                    "code": (
+                        "LLM_RETRY_EXHAUSTED"
+                        if llm_error is not None and llm_error.retryable
+                        else (
+                            f"LLM_{llm_error.category.upper()}"
+                            if llm_error is not None
+                            and type(llm_error) is not LLMProviderError
+                            else "AGENT_LOOP_FAILED"
+                        )
+                    ),
+                    "message": safe_error,
+                },
             )
             if saved is None:
                 self._logger.info(
@@ -508,13 +555,75 @@ class FileAgentLoopStore(AgentLoopStore):
                 )
                 return
             worker = saved
+        elif llm_error is not None:
+            await self._park_queen_after_llm_error(context, llm_error, safe_error)
+            return
         else:
             await self._store.set_session_status(context.session.id, SessionStatus.FAILED)
+        if llm_error is not None:
+            await self._store.append_session_event(
+                context.session.id,
+                "llm.retry_exhausted",
+                worker_run_id=worker.id if worker is not None else None,
+                payload={
+                    "actor_type": context.session.actor_type,
+                    "category": llm_error.category,
+                    "status_code": llm_error.status_code,
+                    "retryable": llm_error.retryable,
+                    "message": safe_error,
+                },
+            )
         await self._store.append_session_event(
             context.session.id,
             "session.failed",
             worker_run_id=worker.id if worker is not None else None,
             payload={"message": safe_error},
+        )
+        await self._notifier.notify(self._stream_id(context))
+
+    async def _park_queen_after_llm_error(
+        self,
+        context: LoopContext,
+        error: LLMProviderError,
+        safe_error: str,
+    ) -> None:
+        await self._store.set_session_status(
+            context.session.id,
+            SessionStatus.PARKED,
+            park_reason="llm_error",
+        )
+        saved = await self._store.append_message(
+            context.session.id,
+            LLMMessage(
+                role="assistant",
+                content=(
+                    f"模型调用失败：{safe_error}\n\n"
+                    "请检查用户设置或模型服务状态，然后发送消息重试。"
+                ),
+            ),
+            metadata={"kind": "llm_error", "exclude_from_model": True},
+        )
+        if saved is not None:
+            await self._store.append_session_event(
+                context.session.id,
+                "message.completed",
+                payload={"message_id": str(saved.id), "role": saved.role},
+            )
+        await self._store.append_session_event(
+            context.session.id,
+            "llm.retry_exhausted",
+            payload={
+                "actor_type": context.session.actor_type,
+                "category": error.category,
+                "status_code": error.status_code,
+                "retryable": error.retryable,
+                "message": safe_error,
+            },
+        )
+        await self._store.append_session_event(
+            context.session.id,
+            "session.parked",
+            payload={"actor_type": context.session.actor_type, "reason": "llm_error"},
         )
         await self._notifier.notify(self._stream_id(context))
 

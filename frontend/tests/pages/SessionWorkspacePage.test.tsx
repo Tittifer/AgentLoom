@@ -33,7 +33,9 @@ vi.mock("../../src/api/queens", () => ({
   listQueens: vi.fn(),
   listQueenSessions: vi.fn(),
 }));
-vi.mock("../../src/hooks/useColonyEvents", () => ({ useSessionEvents: () => null }));
+vi.mock("../../src/hooks/useColonyEvents", () => ({
+  useSessionEvents: () => ({ streamingMessage: null, llmRetry: null }),
+}));
 
 const session: SessionRead = {
   id: "session-1",

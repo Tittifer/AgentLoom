@@ -128,6 +128,27 @@ describe("ChatPanel", () => {
     expect(container.querySelector(".agent-waiting")).not.toBeInTheDocument();
   });
 
+  it("shows the current LLM retry delay", () => {
+    render(
+      <ChatPanel
+        activeWorkerCount={0}
+        llmRetry={{
+          category: "capacity",
+          attempt: 3,
+          maxRetries: null,
+          delaySeconds: 8,
+        }}
+        messages={[]}
+        onSend={vi.fn(async () => undefined)}
+        sending={false}
+        session={{ ...session, status: "running" }}
+        streamingMessage={null}
+      />,
+    );
+
+    expect(screen.getByText("模型服务繁忙，8 秒后继续重试（第 3 次）")).toBeInTheDocument();
+  });
+
   it("renders assistant Markdown for persisted and streaming messages", () => {
     const markdownMessage = {
       ...message,

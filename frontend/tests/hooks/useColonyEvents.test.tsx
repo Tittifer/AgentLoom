@@ -59,10 +59,13 @@ describe("useColonyEvents", () => {
         delta: "流式",
       });
     });
-    expect(result.current).toEqual({ id: "message-1", content: "原生流式" });
+    expect(result.current).toEqual({
+      streamingMessage: { id: "message-1", content: "原生流式" },
+      llmRetry: null,
+    });
 
     rerender({ persistedIds: ["message-1"] });
-    expect(result.current).toBeNull();
+    expect(result.current.streamingMessage).toBeNull();
     unmount();
   });
 
@@ -87,7 +90,42 @@ describe("useColonyEvents", () => {
         message_id: "message-2",
       });
     });
-    expect(result.current).toBeNull();
+    expect(result.current.streamingMessage).toBeNull();
+    unmount();
+  });
+
+  it("exposes Queen LLM retry state and clears it when the session is parked", () => {
+    const queryClient = new QueryClient();
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    );
+    const { result, unmount } = renderHook(
+      () => useColonyEvents("colony-1", "session-1"),
+      { wrapper },
+    );
+
+    act(() => {
+      MockEventSource.current.emit("llm.retrying", {
+        session_id: "session-1",
+        category: "transient",
+        attempt: 2,
+        max_retries: 5,
+        delay_seconds: 4,
+      });
+    });
+    expect(result.current.llmRetry).toEqual({
+      category: "transient",
+      attempt: 2,
+      maxRetries: 5,
+      delaySeconds: 4,
+    });
+
+    act(() => {
+      MockEventSource.current.emit("session.parked", {
+        session_id: "session-1",
+      });
+    });
+    expect(result.current.llmRetry).toBeNull();
     unmount();
   });
 });

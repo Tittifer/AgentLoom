@@ -8,7 +8,7 @@ from agentloom.llm.base import (
     LLMContextLengthError,
     LLMMessage,
     LLMRequest,
-    LLMResponseError,
+    LLMRequestError,
     LLMTimeoutError,
     ToolDefinition,
 )
@@ -246,8 +246,38 @@ async def test_litellm_provider_normalizes_invalid_tool_arguments() -> None:
 async def test_litellm_provider_converts_provider_errors() -> None:
     failed_completion = RecordingCompletion(RuntimeError("provider unavailable"))
 
-    with pytest.raises(LLMResponseError, match="provider unavailable"):
+    with pytest.raises(LLMRequestError, match="provider unavailable") as raised:
         await LiteLLMProvider(failed_completion).complete(request())
+    assert raised.value.category == "capacity"
+    assert raised.value.retryable is True
+
+
+async def test_litellm_provider_preserves_retry_after_metadata() -> None:
+    class RateLimitError(RuntimeError):
+        status_code = 429
+        headers = {"Retry-After": "3.5"}
+
+    failed_completion = RecordingCompletion(RateLimitError("too many requests"))
+
+    with pytest.raises(LLMRequestError) as raised:
+        await LiteLLMProvider(failed_completion).complete(request())
+
+    assert raised.value.category == "capacity"
+    assert raised.value.status_code == 429
+    assert raised.value.retry_after_seconds == 3.5
+
+
+async def test_litellm_provider_does_not_retry_permanent_errors() -> None:
+    class AuthenticationError(RuntimeError):
+        status_code = 401
+
+    failed_completion = RecordingCompletion(AuthenticationError("invalid api key"))
+
+    with pytest.raises(LLMRequestError) as raised:
+        await LiteLLMProvider(failed_completion).complete(request())
+
+    assert raised.value.category == "permanent"
+    assert raised.value.retryable is False
 
 
 async def test_litellm_provider_classifies_context_window_errors() -> None:
