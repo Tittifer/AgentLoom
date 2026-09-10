@@ -155,7 +155,16 @@ class AgentLoop:
         self._timeout_seconds = timeout_seconds
         self._observer = observer
         self._context_manager = context_manager
+        self._injected_messages: asyncio.Queue[LLMMessage] = asyncio.Queue()
         self._logger = structlog.get_logger(__name__)
+
+    async def inject_user_message(self, content: str) -> None:
+        """Queue one runtime message for the next model-turn boundary."""
+
+        normalized = content.strip()
+        if not normalized:
+            raise ValueError("Injected message must not be empty")
+        await self._injected_messages.put(LLMMessage(role="user", content=normalized))
 
     async def run(self, session_id: UUID) -> None:
         context = await self._store.load(session_id)
@@ -223,6 +232,7 @@ class AgentLoop:
             )
 
         while True:
+            await self._drain_injected_messages(context, messages)
             if budget_reason is None:
                 if next_work_iteration > max_turns:
                     budget_reason = "model_turns"
@@ -421,6 +431,28 @@ class AgentLoop:
                 usage,
                 budget_tool_calls,
                 budget_reason,
+            )
+
+    async def _drain_injected_messages(
+        self,
+        context: LoopContext,
+        messages: list[LLMMessage],
+    ) -> None:
+        injected = 0
+        while True:
+            try:
+                message = self._injected_messages.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            messages.append(message)
+            await self._store.append_message(context, message, "message.injected")
+            injected += 1
+        if injected:
+            self._logger.info(
+                "agent_messages_injected",
+                session_id=str(context.session.id),
+                actor_type=context.session.actor_type,
+                count=injected,
             )
 
     async def _complete_turn(

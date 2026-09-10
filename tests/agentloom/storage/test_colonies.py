@@ -272,6 +272,56 @@ async def test_workers_tasks_status_and_delete_are_persisted(tmp_path: Path) -> 
     assert any((tmp_path / "trash").iterdir())
 
 
+async def test_worker_terminal_transition_and_synthetic_report_are_atomic(
+    tmp_path: Path,
+) -> None:
+    store = await create_store(tmp_path)
+    _, queen = await store.create("Worker race", "", "queen_general", {})
+    worker = (await store.create_workers(queen.id, [WorkerTask(task="A")], 30))[0]
+    await store.mark_worker_running(worker.id)
+
+    completed = await store.finish_worker_if_active(
+        worker.worker_session_id,
+        WorkerStatus.COMPLETED,
+        report={"status": "success", "summary": "done"},
+    )
+    overwritten = await store.finish_worker_if_active(
+        worker.worker_session_id,
+        WorkerStatus.TIMED_OUT,
+        error={"code": "WORKER_HARD_TIMEOUT"},
+    )
+
+    assert completed is not None
+    assert overwritten is None
+    saved = await store.get_worker(worker.id)
+    assert saved is not None
+    assert saved.status is WorkerStatus.COMPLETED
+    assert saved.report == {"status": "success", "summary": "done"}
+
+    without_report = (
+        await store.create_workers(queen.id, [WorkerTask(task="B")], 30)
+    )[0]
+    failed = await store.finish_worker_if_active(
+        without_report.worker_session_id,
+        WorkerStatus.FAILED,
+        error={"code": "WORKER_RUNTIME_FAILED"},
+    )
+    assert failed is not None and failed.report is None
+
+    attached = await store.attach_worker_report_if_missing(
+        without_report.worker_session_id,
+        {"status": "failed", "summary": "partial progress"},
+    )
+    duplicate = await store.attach_worker_report_if_missing(
+        without_report.worker_session_id,
+        {"status": "failed", "summary": "duplicate"},
+    )
+
+    assert attached is not None
+    assert attached.report == {"status": "failed", "summary": "partial progress"}
+    assert duplicate is None
+
+
 async def test_recovery_requeues_running_workers_and_queens(tmp_path: Path) -> None:
     store = await create_store(tmp_path)
     colony, queen = await store.create("Recovery", "", "queen_general", {})

@@ -512,6 +512,10 @@ class LocalColonyStore:
     async def list_workers(self, colony_id: UUID) -> list[WorkerRead]:
         return await asyncio.to_thread(self._list_workers_sync, colony_id)
 
+    async def get_worker(self, worker_id: UUID) -> WorkerRead | None:
+        located = await asyncio.to_thread(self._find_worker_sync, worker_id)
+        return located[1] if located is not None else None
+
     async def get_worker_for_session(self, session_id: UUID) -> WorkerRead | None:
         return await asyncio.to_thread(self._get_worker_for_session_sync, session_id)
 
@@ -541,6 +545,46 @@ class LocalColonyStore:
                 status,
                 report,
                 error,
+            )
+
+    async def finish_worker_if_active(
+        self,
+        session_id: UUID,
+        status: WorkerStatus,
+        report: Mapping[str, object] | None = None,
+        error: Mapping[str, object] | None = None,
+    ) -> WorkerRead | None:
+        """Move an active Worker to a terminal state without overwriting a winner."""
+
+        worker = await self.get_worker_for_session(session_id)
+        if worker is None:
+            return None
+        async with self._lock(worker.colony_id):
+            return await asyncio.to_thread(
+                self._finish_worker_if_active_sync,
+                worker.colony_id,
+                worker.id,
+                status,
+                report,
+                error,
+            )
+
+    async def attach_worker_report_if_missing(
+        self,
+        session_id: UUID,
+        report: Mapping[str, object],
+    ) -> WorkerRead | None:
+        """Attach one synthetic report to an already terminal Worker."""
+
+        worker = await self.get_worker_for_session(session_id)
+        if worker is None:
+            return None
+        async with self._lock(worker.colony_id):
+            return await asyncio.to_thread(
+                self._attach_worker_report_if_missing_sync,
+                worker.colony_id,
+                worker.id,
+                report,
             )
 
     async def upsert_tracker(
@@ -1061,6 +1105,48 @@ class LocalColonyStore:
                 update={"status": session_status, "updated_at": now, "ended_at": now}
             )
         )
+        return updated
+
+    def _finish_worker_if_active_sync(
+        self,
+        colony_id: UUID,
+        worker_id: UUID,
+        status: WorkerStatus,
+        report: Mapping[str, object] | None,
+        error: Mapping[str, object] | None,
+    ) -> WorkerRead | None:
+        path = self._worker_meta_path(colony_id, worker_id)
+        if not path.is_file():
+            return None
+        worker = WorkerRead.model_validate(read_json(path))
+        if worker.status not in {
+            WorkerStatus.QUEUED,
+            WorkerStatus.RUNNING,
+            WorkerStatus.REPORTING,
+        }:
+            return None
+        return self._finish_worker_sync(colony_id, worker_id, status, report, error)
+
+    def _attach_worker_report_if_missing_sync(
+        self,
+        colony_id: UUID,
+        worker_id: UUID,
+        report: Mapping[str, object],
+    ) -> WorkerRead | None:
+        path = self._worker_meta_path(colony_id, worker_id)
+        if not path.is_file():
+            return None
+        worker = WorkerRead.model_validate(read_json(path))
+        if worker.report is not None or worker.status in {
+            WorkerStatus.QUEUED,
+            WorkerStatus.RUNNING,
+            WorkerStatus.REPORTING,
+        }:
+            return None
+        updated = worker.model_copy(
+            update={"report": JSON_OBJECT.validate_python(dict(report))}
+        )
+        self._write_model(path, updated)
         return updated
 
     def _create_task_sync(

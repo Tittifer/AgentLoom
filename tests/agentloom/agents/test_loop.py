@@ -73,6 +73,7 @@ class FakeStore:
         self.failed: Exception | None = None
         self.deltas: list[tuple[UUID, str]] = []
         self.cancelled_streams: list[UUID] = []
+        self.message_events: list[str] = []
 
     async def load(self, session_id):  # type: ignore[no-untyped-def]
         return self.context if session_id == self.context.session.id else None
@@ -87,8 +88,9 @@ class FakeStore:
         event_type: str,
         message_id: UUID | None = None,
     ) -> MessageRead:
-        del context, event_type
+        del context
         self.messages.append(message)
+        self.message_events.append(event_type)
         now = datetime.now(UTC)
         return MessageRead(
             id=message_id or uuid4(),
@@ -252,6 +254,30 @@ async def test_agent_loop_finishes_visible_response() -> None:
     assert store.messages[0].reasoning_content == "内部推理"
     assert provider.requests[0].messages[0].role == "system"
     assert [delta for _, delta in store.deltas] == ["完成"]
+
+
+async def test_agent_loop_injects_runtime_message_at_turn_boundary() -> None:
+    context = make_context("worker")
+    store = FakeStore(context)
+    provider = ScriptedMockLLMProvider([LLMResponse(content="已收尾", model="mock/test")])
+    loop = AgentLoop(
+        store,
+        provider,
+        FakeTools(),
+        JudgePipeline(),
+        default_max_turns=2,
+        timeout_seconds=1,
+    )
+
+    await loop.inject_user_message("  [SOFT_TIMEOUT]\n请立即汇报  ")
+    await loop.run(context.session.id)
+
+    assert provider.requests[0].messages[-1] == LLMMessage(
+        role="user",
+        content="[SOFT_TIMEOUT]\n请立即汇报",
+    )
+    assert store.messages[0] == provider.requests[0].messages[-1]
+    assert store.message_events[0] == "message.injected"
 
 
 async def test_agent_loop_forces_compaction_and_retries_context_error_once() -> None:

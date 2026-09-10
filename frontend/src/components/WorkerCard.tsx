@@ -26,7 +26,7 @@ export function WorkerCard({ worker, reportContent, compact = false, onSelect }:
         </span>
         <div className="hive-worker-surface">
           <strong className="hive-worker-task">{worker.task || "未命名任务"}</strong>
-          <span className="hive-worker-meta">独立 AgentLoop · {worker.timeout_seconds} 秒上限</span>
+          <span className="hive-worker-meta">独立 AgentLoop · {worker.timeout_seconds} 秒软超时</span>
           <div className="hive-worker-report">
             <MarkdownContent content={content} />
           </div>

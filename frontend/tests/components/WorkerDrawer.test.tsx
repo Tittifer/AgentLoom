@@ -24,6 +24,8 @@ describe("WorkerDrawer", () => {
   it("只展示可读的工作摘要", () => {
     render(<WorkerDrawer onClose={vi.fn()} worker={worker} />);
 
+    expect(screen.getByText("软超时")).toBeInTheDocument();
+    expect(screen.getByText("60 秒")).toBeInTheDocument();
     expect(screen.getByText("已完成城市调研。")).toBeInTheDocument();
     expect(screen.queryByText(/不应显示的内部输入/)).not.toBeInTheDocument();
     expect(screen.queryByText(/"score"/)).not.toBeInTheDocument();

@@ -20,7 +20,7 @@ export function WorkerDrawer({ worker, onClose }: WorkerDrawerProps) {
         </header>
         <dl className="worker-details">
           <div><dt>状态</dt><dd>{statusText(worker.status)}</dd></div>
-          <div><dt>超时</dt><dd>{worker.timeout_seconds} 秒</dd></div>
+          <div><dt>软超时</dt><dd>{worker.timeout_seconds} 秒</dd></div>
           <div><dt>开始</dt><dd>{formatDateTime(worker.started_at)}</dd></div>
           <div><dt>结束</dt><dd>{formatDateTime(worker.ended_at)}</dd></div>
         </dl>

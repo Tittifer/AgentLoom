@@ -78,6 +78,32 @@ class LLMSettingsNotConfiguredError(RuntimeError):
 
 UNTITLED_COLONY_NAME = "新会话"
 DEFAULT_WORKER_MAX_TURNS = 8
+DEFAULT_WORKER_SOFT_TIMEOUT_SECONDS = 600
+WORKER_HARD_TIMEOUT_CAP_SECONDS = 3600
+WORKER_HARD_TIMEOUT_EXTRA_SECONDS = 600
+WORKER_MIN_TIMEOUT_GRACE_SECONDS = 60
+WORKER_STOP_TIMEOUT_SECONDS = 10
+ACTIVE_WORKER_STATUSES = {
+    WorkerStatus.QUEUED,
+    WorkerStatus.RUNNING,
+    WorkerStatus.REPORTING,
+}
+
+
+def worker_hard_timeout_seconds(soft_timeout_seconds: float) -> float:
+    """Derive Hive-compatible hard timeout from a Worker's soft timeout."""
+
+    hard_timeout = min(
+        float(WORKER_HARD_TIMEOUT_CAP_SECONDS),
+        max(
+            soft_timeout_seconds * 4,
+            soft_timeout_seconds + WORKER_HARD_TIMEOUT_EXTRA_SECONDS,
+        ),
+    )
+    return max(
+        hard_timeout,
+        soft_timeout_seconds + WORKER_MIN_TIMEOUT_GRACE_SECONDS,
+    )
 
 
 class ToolInput(BaseModel):
@@ -86,7 +112,12 @@ class ToolInput(BaseModel):
 
 class RunWorkersInput(ToolInput):
     tasks: list[WorkerTask] = Field(min_length=1, max_length=100)
-    timeout: int = Field(default=600, ge=1, le=3600)
+    timeout: int = Field(
+        default=DEFAULT_WORKER_SOFT_TIMEOUT_SECONDS,
+        ge=1,
+        le=3600,
+        description="触发 Worker 收尾提醒的软超时秒数",
+    )
 
 
 class ReportInput(ToolInput):
@@ -454,26 +485,36 @@ class FileAgentLoopStore(AgentLoopStore):
         await self._notifier.notify(self._stream_id(context))
 
     async def fail(self, context: LoopContext, error: Exception) -> None:
+        safe_error = sanitize_text(str(error))
         self._logger.error(
             "agent_session_failed",
             session_id=str(context.session.id),
             actor_type=context.session.actor_type,
             error_type=type(error).__name__,
-            error=sanitize_text(str(error)),
+            error=safe_error,
         )
-        await self._store.set_session_status(context.session.id, SessionStatus.FAILED)
         worker = await self._store.get_worker_for_session(context.session.id)
         if worker is not None:
-            await self._store.finish_worker(
+            saved = await self._store.finish_worker_if_active(
                 context.session.id,
                 WorkerStatus.FAILED,
-                error={"code": "AGENT_LOOP_FAILED", "message": str(error)},
+                error={"code": "AGENT_LOOP_FAILED", "message": safe_error},
             )
+            if saved is None:
+                self._logger.info(
+                    "agent_session_failure_ignored_terminal",
+                    session_id=str(context.session.id),
+                    worker_run_id=str(worker.id),
+                )
+                return
+            worker = saved
+        else:
+            await self._store.set_session_status(context.session.id, SessionStatus.FAILED)
         await self._store.append_session_event(
             context.session.id,
             "session.failed",
             worker_run_id=worker.id if worker is not None else None,
-            payload={"message": str(error)},
+            payload={"message": safe_error},
         )
         await self._notifier.notify(self._stream_id(context))
 
@@ -1210,6 +1251,57 @@ class ColonyRuntime:
         return workers
 
     async def _run_worker(self, worker_id: UUID) -> None:
+        worker = await self._storage.get_worker(worker_id)
+        if worker is None or worker.status is not WorkerStatus.QUEUED:
+            return
+        execution_task: asyncio.Task[None] | None = None
+        try:
+            worker_loop = self._build_worker_loop(
+                await self._provider_for_session(worker.worker_session_id)
+            )
+            execution_task = asyncio.create_task(
+                self._execute_worker(worker.id, worker_loop),
+                name=f"agentloom-worker-{worker.id}",
+            )
+            await self._supervise_worker(
+                worker,
+                worker_loop,
+                execution_task,
+                soft_timeout_seconds=float(worker.timeout_seconds),
+                hard_timeout_seconds=worker_hard_timeout_seconds(worker.timeout_seconds),
+            )
+        except asyncio.CancelledError:
+            if execution_task is not None:
+                await self._cancel_worker_execution(execution_task, worker.id)
+            raise
+        except Exception as error:
+            if execution_task is not None:
+                await self._cancel_worker_execution(execution_task, worker.id)
+            safe_error = sanitize_text(str(error))
+            self._logger.error(
+                "worker_execution_failed",
+                worker_run_id=str(worker.id),
+                session_id=str(worker.worker_session_id),
+                error_type=type(error).__name__,
+                error=safe_error,
+            )
+            saved = await self._storage.finish_worker_if_active(
+                worker.worker_session_id,
+                WorkerStatus.FAILED,
+                error={"code": "WORKER_RUNTIME_FAILED", "message": safe_error},
+            )
+            if saved is not None:
+                await self._storage.append_event(
+                    worker.colony_id,
+                    "worker.failed",
+                    session_id=worker.worker_session_id,
+                    worker_run_id=worker.id,
+                    payload={"message": safe_error},
+                )
+                await self._notifier.notify(worker.colony_id)
+        await self._ensure_worker_terminal_report(worker.worker_session_id)
+
+    async def _execute_worker(self, worker_id: UUID, worker_loop: AgentLoop) -> None:
         async with self._worker_semaphore:
             worker = await self._storage.mark_worker_running(worker_id)
             if worker is None:
@@ -1222,29 +1314,136 @@ class ColonyRuntime:
                 payload={"task": worker.task},
             )
             await self._notifier.notify(worker.colony_id)
-            worker_loop = self._build_worker_loop(
-                await self._provider_for_session(worker.worker_session_id)
+            await self._run_serial(worker.worker_session_id, worker_loop)
+
+    async def _supervise_worker(
+        self,
+        worker: WorkerRead,
+        worker_loop: AgentLoop,
+        execution_task: asyncio.Task[None],
+        *,
+        soft_timeout_seconds: float,
+        hard_timeout_seconds: float,
+    ) -> None:
+        if await self._wait_for_worker(execution_task, soft_timeout_seconds):
+            await execution_task
+            return
+
+        current = await self._storage.get_worker(worker.id)
+        if (
+            not execution_task.done()
+            and current is not None
+            and current.status in ACTIVE_WORKER_STATUSES
+            and current.report is None
+        ):
+            grace_seconds = hard_timeout_seconds - soft_timeout_seconds
+            await worker_loop.inject_user_message(
+                "[SOFT_TIMEOUT]\n"
+                "你已达到软超时。请停止扩展调查，立即基于已有结果收尾，"
+                "优先通过 report_to_parent 返回成功、部分结果或失败报告。"
             )
-            try:
-                await asyncio.wait_for(
-                    self._run_serial(worker.worker_session_id, worker_loop),
-                    timeout=worker.timeout_seconds,
-                )
-            except TimeoutError:
-                await self._storage.finish_worker(
-                    worker.worker_session_id,
-                    WorkerStatus.TIMED_OUT,
-                    error={"code": "WORKER_TIMEOUT", "message": "Worker 执行超时"},
-                )
-                await self._storage.append_event(
-                    worker.colony_id,
-                    "worker.timed_out",
-                    session_id=worker.worker_session_id,
-                    worker_run_id=worker.id,
-                    payload={"timeout_seconds": worker.timeout_seconds},
-                )
-                await self._notifier.notify(worker.colony_id)
-            await self._ensure_worker_terminal_report(worker.worker_session_id)
+            await self._storage.append_event(
+                worker.colony_id,
+                "worker.soft_timeout",
+                session_id=worker.worker_session_id,
+                worker_run_id=worker.id,
+                payload={
+                    "soft_timeout_seconds": soft_timeout_seconds,
+                    "hard_timeout_seconds": hard_timeout_seconds,
+                    "grace_seconds": grace_seconds,
+                },
+            )
+            await self._notifier.notify(worker.colony_id)
+            self._logger.warning(
+                "worker_soft_timeout",
+                worker_run_id=str(worker.id),
+                session_id=str(worker.worker_session_id),
+                soft_timeout_seconds=soft_timeout_seconds,
+                hard_timeout_seconds=hard_timeout_seconds,
+            )
+
+        remaining_seconds = max(0.0, hard_timeout_seconds - soft_timeout_seconds)
+        if await self._wait_for_worker(execution_task, remaining_seconds):
+            await execution_task
+            return
+
+        await self._cancel_worker_execution(execution_task, worker.id)
+        current = await self._storage.get_worker(worker.id)
+        if (
+            current is None
+            or current.status not in ACTIVE_WORKER_STATUSES
+            or current.report is not None
+        ):
+            return
+        queued = current.status is WorkerStatus.QUEUED
+        error = {
+            "code": "WORKER_QUEUE_TIMEOUT" if queued else "WORKER_HARD_TIMEOUT",
+            "message": (
+                "Worker 在并发队列中等待超过硬超时"
+                if queued
+                else "Worker 在软超时宽限期后仍未完成，已强制停止"
+            ),
+        }
+        saved = await self._storage.finish_worker_if_active(
+            worker.worker_session_id,
+            WorkerStatus.TIMED_OUT,
+            error=error,
+        )
+        if saved is None:
+            return
+        await self._storage.append_event(
+            worker.colony_id,
+            "worker.timed_out",
+            session_id=worker.worker_session_id,
+            worker_run_id=worker.id,
+            payload={
+                "timeout_seconds": worker.timeout_seconds,
+                "soft_timeout_seconds": soft_timeout_seconds,
+                "hard_timeout_seconds": hard_timeout_seconds,
+            },
+        )
+        await self._notifier.notify(worker.colony_id)
+        self._logger.warning(
+            "worker_hard_timeout",
+            worker_run_id=str(worker.id),
+            session_id=str(worker.worker_session_id),
+            queued=queued,
+            soft_timeout_seconds=soft_timeout_seconds,
+            hard_timeout_seconds=hard_timeout_seconds,
+        )
+
+    @staticmethod
+    async def _wait_for_worker(
+        execution_task: asyncio.Task[None],
+        timeout_seconds: float,
+    ) -> bool:
+        done, _ = await asyncio.wait(
+            {execution_task},
+            timeout=max(0.0, timeout_seconds),
+        )
+        return execution_task in done
+
+    async def _cancel_worker_execution(
+        self,
+        execution_task: asyncio.Task[None],
+        worker_id: UUID,
+    ) -> None:
+        if execution_task.done():
+            await asyncio.gather(execution_task, return_exceptions=True)
+            return
+        execution_task.cancel()
+        done, _ = await asyncio.wait(
+            {execution_task},
+            timeout=WORKER_STOP_TIMEOUT_SECONDS,
+        )
+        if execution_task not in done:
+            self._logger.warning(
+                "worker_cancel_cleanup_timed_out",
+                worker_run_id=str(worker_id),
+                timeout_seconds=WORKER_STOP_TIMEOUT_SECONDS,
+            )
+            return
+        await asyncio.gather(execution_task, return_exceptions=True)
 
     async def _report_worker(self, context: LoopContext, report: WorkerReport) -> None:
         status_map = {
@@ -1253,7 +1452,7 @@ class ColonyRuntime:
             "failed": WorkerStatus.FAILED,
         }
         report_payload = report.model_dump(mode="json")
-        worker = await self._storage.finish_worker(
+        worker = await self._storage.finish_worker_if_active(
             context.session.id,
             status_map[report.status],
             report=report_payload,
@@ -1264,7 +1463,16 @@ class ColonyRuntime:
             ),
         )
         if worker is None:
-            raise SessionConflictError("Worker session has no owning worker run")
+            current = await self._storage.get_worker_for_session(context.session.id)
+            if current is None:
+                raise SessionConflictError("Worker session has no owning worker run")
+            self._logger.info(
+                "worker_report_ignored_terminal",
+                worker_run_id=str(current.id),
+                session_id=str(context.session.id),
+                status=current.status,
+            )
+            return
         await self._publish_worker_report(worker, report_payload)
 
     async def _ensure_worker_terminal_report(self, worker_session_id: UUID) -> None:
@@ -1276,7 +1484,17 @@ class ColonyRuntime:
             WorkerStatus.TIMED_OUT,
             WorkerStatus.CANCELLED,
         }
-        if worker is None or worker.report is not None or worker.status not in terminal_statuses:
+        if worker is None or worker.status not in terminal_statuses:
+            return
+
+        if worker.report is not None:
+            queen_messages = await self._storage.list_messages(worker.queen_session_id)
+            already_published = queen_messages is not None and any(
+                message.metadata.get("worker_run_id") == str(worker.id)
+                for message in queen_messages
+            )
+            if not already_published:
+                await self._publish_worker_report(worker, dict(worker.report))
             return
 
         error_message = worker.error.get("message") if worker.error is not None else None
@@ -1306,14 +1524,27 @@ class ColonyRuntime:
             "summary": summary,
             "data": data,
         }
-        saved = await self._storage.finish_worker(
+        messages = await self._storage.list_messages(worker.worker_session_id)
+        if messages is not None:
+            last_assistant = next(
+                (
+                    message.content
+                    for message in reversed(messages)
+                    if message.role == "assistant" and message.content.strip()
+                ),
+                None,
+            )
+            if last_assistant is not None:
+                data["last_assistant_excerpt"] = sanitize_text(
+                    last_assistant,
+                    maximum=2_000,
+                )
+        saved = await self._storage.attach_worker_report_if_missing(
             worker.worker_session_id,
-            worker.status,
-            report=report_payload,
-            error=worker.error,
+            report_payload,
         )
         if saved is None:
-            raise SessionConflictError("Worker session has no owning worker run")
+            return
         await self._publish_worker_report(saved, report_payload)
 
     async def _publish_worker_report(

@@ -17,7 +17,7 @@ describe("WorkerMap", () => {
     const onSelect = vi.fn();
     render(<WorkerMap onSelect={onSelect} workers={[worker]} />);
     expect(screen.getByRole("heading", { name: "Workers" })).toBeInTheDocument();
-    expect(screen.getByText("独立 AgentLoop · 60 秒上限")).toBeInTheDocument();
+    expect(screen.getByText("独立 AgentLoop · 60 秒软超时")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: /收集竞品资料/ }));
     expect(onSelect).toHaveBeenCalledWith(worker);
   });

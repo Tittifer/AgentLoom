@@ -18,6 +18,7 @@ from agentloom.colony.runtime import (
     FileContextManager,
     conversation_name_from_message,
     normalize_message_history,
+    worker_hard_timeout_seconds,
 )
 from agentloom.colony.schemas import (
     ColonyForkCreate,
@@ -26,6 +27,7 @@ from agentloom.colony.schemas import (
     MessageRead,
     QueenCreate,
     SessionRead,
+    WorkerRead,
     WorkerTask,
 )
 from agentloom.config import Settings
@@ -438,6 +440,10 @@ async def test_timed_out_worker_synthesizes_report_and_wakes_queen(
     store = await create_store(tmp_path)
     _, queen = await store.create("Timed out worker", "", "queen_general", {})
     worker = (await store.create_workers(queen.id, [WorkerTask(task="调研城市")], 30))[0]
+    await store.append_message(
+        worker.worker_session_id,
+        LLMMessage(role="assistant", content="已收集杭州西湖资料"),
+    )
     runtime = ColonyRuntime(
         store,
         SchemaMockLLMProvider(),
@@ -447,11 +453,31 @@ async def test_timed_out_worker_synthesizes_report_and_wakes_queen(
     )
     runtime._stopping = True  # pyright: ignore[reportPrivateUsage]
 
-    async def time_out(session_id: UUID, loop: AgentLoop) -> None:
+    async def never_finishes(session_id: UUID, loop: AgentLoop) -> None:
         del session_id, loop
-        raise TimeoutError
+        await asyncio.Event().wait()
 
-    monkeypatch.setattr(runtime, "_run_serial", time_out)
+    original_supervise = runtime._supervise_worker  # pyright: ignore[reportPrivateUsage]
+
+    async def supervise_quickly(
+        worker_record: WorkerRead,
+        worker_loop: AgentLoop,
+        execution_task: asyncio.Task[None],
+        *,
+        soft_timeout_seconds: float,
+        hard_timeout_seconds: float,
+    ) -> None:
+        del soft_timeout_seconds, hard_timeout_seconds
+        await original_supervise(
+            worker_record,
+            worker_loop,
+            execution_task,
+            soft_timeout_seconds=0.02,
+            hard_timeout_seconds=0.05,
+        )
+
+    monkeypatch.setattr(runtime, "_run_serial", never_finishes)
+    monkeypatch.setattr(runtime, "_supervise_worker", supervise_quickly)
 
     await runtime._run_worker(worker.id)  # pyright: ignore[reportPrivateUsage]
 
@@ -463,13 +489,72 @@ async def test_timed_out_worker_synthesizes_report_and_wakes_queen(
     assert saved_worker.report["data"] == {
         "synthetic_report": True,
         "worker_status": "timed_out",
-        "error_code": "WORKER_TIMEOUT",
+        "error_code": "WORKER_HARD_TIMEOUT",
+        "last_assistant_excerpt": "已收集杭州西湖资料",
     }
     saved_queen = await store.get_session(queen.id)
     assert saved_queen is not None and saved_queen.status is SessionStatus.QUEUED
     queen_messages = await store.list_messages(queen.id)
     assert queen_messages is not None and len(queen_messages) == 1
     assert queen_messages[0].content.startswith("[WORKER_REPORT]\n")
+    events = await store.list_events_after(saved_worker.colony_id, 0)
+    assert events is not None
+    assert "worker.soft_timeout" in [event.type for event in events]
+
+
+def test_worker_hard_timeout_uses_hive_grace_policy() -> None:
+    assert worker_hard_timeout_seconds(60) == 660
+    assert worker_hard_timeout_seconds(600) == 2_400
+    assert worker_hard_timeout_seconds(3_600) == 3_660
+
+
+async def test_worker_hard_timeout_includes_concurrency_queue_time(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    store = await create_store(tmp_path)
+    _, queen = await store.create("Queued timeout", "", "queen_general", {})
+    worker = (await store.create_workers(queen.id, [WorkerTask(task="等待执行")], 30))[0]
+    runtime = ColonyRuntime(
+        store,
+        SchemaMockLLMProvider(),
+        ColonyEventNotifier(),
+        Settings(environment="test", storage_root=tmp_path, max_concurrent_workers=1),
+        create_builtin_tool_registry(),
+    )
+    runtime._stopping = True  # pyright: ignore[reportPrivateUsage]
+    original_supervise = runtime._supervise_worker  # pyright: ignore[reportPrivateUsage]
+
+    async def supervise_quickly(
+        worker_record: WorkerRead,
+        worker_loop: AgentLoop,
+        execution_task: asyncio.Task[None],
+        *,
+        soft_timeout_seconds: float,
+        hard_timeout_seconds: float,
+    ) -> None:
+        del soft_timeout_seconds, hard_timeout_seconds
+        await original_supervise(
+            worker_record,
+            worker_loop,
+            execution_task,
+            soft_timeout_seconds=0.01,
+            hard_timeout_seconds=0.02,
+        )
+
+    monkeypatch.setattr(runtime, "_supervise_worker", supervise_quickly)
+    await runtime._worker_semaphore.acquire()  # pyright: ignore[reportPrivateUsage]
+    try:
+        await runtime._run_worker(worker.id)  # pyright: ignore[reportPrivateUsage]
+    finally:
+        runtime._worker_semaphore.release()  # pyright: ignore[reportPrivateUsage]
+
+    saved = await store.get_worker(worker.id)
+    assert saved is not None
+    assert saved.status is WorkerStatus.TIMED_OUT
+    assert saved.started_at is None
+    assert saved.error is not None
+    assert saved.error["code"] == "WORKER_QUEUE_TIMEOUT"
 
 
 async def test_runtime_exposes_actor_tools_and_executes_builtin(tmp_path: Path) -> None:

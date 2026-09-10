@@ -13,6 +13,7 @@ const EVENT_TYPES = [
   "session.failed",
   "worker.queued",
   "worker.started",
+  "worker.soft_timeout",
   "worker.reported",
   "worker.timed_out",
   "tool.completed",
