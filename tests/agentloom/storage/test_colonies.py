@@ -32,9 +32,7 @@ async def create_store(tmp_path: Path) -> LocalColonyStore:
             api_key="test-key",
         )
     )
-    await store.create_queen(
-        QueenCreate(name="General")
-    )
+    await store.create_queen(QueenCreate(name="General"))
     return store
 
 
@@ -298,9 +296,7 @@ async def test_worker_terminal_transition_and_synthetic_report_are_atomic(
     assert saved.status is WorkerStatus.COMPLETED
     assert saved.report == {"status": "success", "summary": "done"}
 
-    without_report = (
-        await store.create_workers(queen.id, [WorkerTask(task="B")], 30)
-    )[0]
+    without_report = (await store.create_workers(queen.id, [WorkerTask(task="B")], 30))[0]
     failed = await store.finish_worker_if_active(
         without_report.worker_session_id,
         WorkerStatus.FAILED,

@@ -6,6 +6,7 @@ from agentloom.config import Settings
 from agentloom.llm.base import LLMProvider
 from agentloom.memory import LocalMemoryStore, MemoryCoordinator
 from agentloom.storage import LocalColonyStore
+from agentloom.tools.mcp.manager import MCPManager, builtin_server_config
 from agentloom.tools.registry import create_builtin_tool_registry
 
 
@@ -22,6 +23,7 @@ def create_colony_runtime(
         storage,
         settings.llm_timeout_seconds,
     )
+    mcp_manager = MCPManager([builtin_server_config()])
     return ColonyRuntime(
         storage,
         provider,
@@ -29,6 +31,8 @@ def create_colony_runtime(
         settings,
         create_builtin_tool_registry(),
         memory,
+        mcp_manager,
     )
+
 
 __all__ = ["create_colony_runtime"]

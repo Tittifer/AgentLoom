@@ -72,10 +72,7 @@ class LocalQueenStore:
     def _list_sync(self) -> list[QueenRead]:
         if not self._queens.exists():
             return []
-        values = [
-            self._read_profile_sync(path)
-            for path in self._queens.glob("*/profile.yaml")
-        ]
+        values = [self._read_profile_sync(path) for path in self._queens.glob("*/profile.yaml")]
         return sorted(values, key=lambda item: item.created_at)
 
     def _get_sync(self, queen_id: str) -> QueenRead | None:

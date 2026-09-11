@@ -29,7 +29,7 @@ agentloom/                 FastAPI 后端包
   colony/                 Colony DTO、通知器和运行时
   storage/                Queen Profile、会话文件与每 Colony SQLite Tracker
   llm/                    Mock 与 LiteLLM 适配器
-  tools/                  有界只读工具注册表
+  tools/                  MCP 客户端、内置工具服务与有界只读工具注册表
 frontend/                 React Colony 工作台
 tests/agentloom/          与后端源码路径对应的单元测试
 tests/integration/        本地持久化和 HTTP 集成测试
@@ -55,6 +55,8 @@ AgentLoom 不读取 `.env`。持久化根目录固定为项目根目录下的 `.
 长期记忆保存在 `.agentloom/memories/global/*.md` 和 `.agentloom/memories/agents/queens/<queen_id>/*.md`。每条记忆包含 YAML frontmatter 和 Markdown 正文，单文件最多 4096 字节。Worker 不自动继承这些记忆；可以通过顶部“记忆”页面查看、编辑或删除。
 
 模型上下文窗口在全局“设置”页面配置，并动态应用到所有 Queen 与 Worker 的 AgentLoop。压缩 checkpoint 位于 Session 的 `context/compaction.json`；超过限制的完整工具结果保存在 `spillover/*.json`，模型通过 `load_tool_result` 分页读取。`conversations/parts/*.json` 原始消息不会因压缩删除，因此前端仍展示完整对话。
+
+内置实际工具通过独立的 stdio MCP 子进程提供。当前包含 `get_current_time`、`web_fetch`、`workspace_glob`、`workspace_read` 和 `workspace_search`；Queen 与 Worker 通过同一工具注册表调用，但文件工具只允许访问 `.agentloom/workspaces/<session_id>/`。`web_fetch` 仅允许公网 HTTP(S) 地址，并限制重定向、响应大小和返回文本长度。
 
 ## 安装和启动
 
@@ -141,6 +143,6 @@ npm --prefix frontend run build
 
 - 当前版本面向单个可信用户，不包含登录、租户隔离和细粒度权限。
 - Worker 并发由单进程 `asyncio` 信号量控制，不是分布式队列。
-- 内置 `web_search` 是离线确定性示例；接入真实搜索或 MCP 工具前应增加权限、审计和速率限制。
+- 当前 MCP 工具集仅开放只读能力；真实搜索供应商、工具凭据、写文件、终端和第三方写操作尚未开放。
 - 每个 Colony 预留独立的 `artifacts/` 目录；大文件 Artifact API 尚未实现。
 - 本项目不包含生产 Docker 部署方案。

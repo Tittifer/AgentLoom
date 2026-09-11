@@ -58,6 +58,7 @@ from agentloom.runtime.states import SessionStatus, WorkerStatus
 from agentloom.storage import LocalColonyStore, TrackerVersionConflictError
 from agentloom.storage.base import utc_now
 from agentloom.tools.base import ToolContext, ToolError
+from agentloom.tools.mcp.manager import MCPManager
 from agentloom.tools.registry import ToolRegistry
 from agentloom.user_settings import UserLLMRuntimeConfig, UserSettingsRead, UserSettingsUpdate
 
@@ -298,9 +299,7 @@ class FileAgentLoopStore(AgentLoopStore):
             return None
         compaction = await self._store.get_compaction_checkpoint(session_id)
         model_messages = [
-            message
-            for message in messages
-            if not bool(message.metadata.get("exclude_from_model"))
+            message for message in messages if not bool(message.metadata.get("exclude_from_model"))
         ]
         normalized, repaired_groups = normalize_message_history(
             messages_for_checkpoint(model_messages, compaction)
@@ -539,8 +538,7 @@ class FileAgentLoopStore(AgentLoopStore):
                         if llm_error is not None and llm_error.retryable
                         else (
                             f"LLM_{llm_error.category.upper()}"
-                            if llm_error is not None
-                            and type(llm_error) is not LLMProviderError
+                            if llm_error is not None and type(llm_error) is not LLMProviderError
                             else "AGENT_LOOP_FAILED"
                         )
                     ),
@@ -806,12 +804,15 @@ class ColonyRuntime:
         settings: Settings,
         tools: ToolRegistry,
         memory: MemoryCoordinator | None = None,
+        mcp_manager: MCPManager | None = None,
     ) -> None:
         self._storage = store
         self._notifier = notifier
         self._settings = settings
         self._tools = tools
         self._memory = memory
+        self._mcp_manager = mcp_manager
+        self._mcp_tools_registered = False
         self._context_manager = FileContextManager(store, settings.llm_timeout_seconds, memory)
         self._provider_override = provider
         self._queen_loops: dict[UUID, AgentLoop] = {}
@@ -825,6 +826,13 @@ class ColonyRuntime:
         """Recover queued/running sessions after an application restart."""
 
         self._stopping = False
+        if self._mcp_manager is not None:
+            await self._mcp_manager.start()
+            if not self._mcp_tools_registered:
+                adapters = self._mcp_manager.tool_adapters()
+                for tool in adapters:
+                    self._tools.register(tool)
+                self._mcp_tools_registered = bool(adapters)
         if self._memory is not None:
             await self._memory.initialize()
         worker_ids, queen_ids = await self._storage.recover_interrupted()
@@ -849,6 +857,8 @@ class ColonyRuntime:
             await asyncio.gather(*tasks, return_exceptions=True)
         if self._memory is not None:
             await self._memory.stop()
+        if self._mcp_manager is not None:
+            await self._mcp_manager.close()
         self._queen_loops.clear()
 
     async def create_colony(self, payload: ColonyCreate) -> ColonyRead:
@@ -1247,6 +1257,13 @@ class ColonyRuntime:
                 return ToolExecutionResult(value)
             builtin_names = {definition.name for definition in self._tools.definitions()}
             if tool_call.name in builtin_names:
+                workspace_root = self._storage.root / "workspaces" / str(context.session.id)
+                await asyncio.to_thread(workspace_root.mkdir, parents=True, exist_ok=True)
+                worker = (
+                    await self._storage.get_worker_for_session(context.session.id)
+                    if context.session.actor_type == "worker"
+                    else None
+                )
                 value = await self._tools.execute_unbounded(
                     tool_call.name,
                     tool_call.arguments,
@@ -1254,6 +1271,16 @@ class ColonyRuntime:
                     ToolContext(
                         task_context=context.session.task,
                         upstream_outputs={},
+                        session_id=str(context.session.id),
+                        colony_id=(
+                            str(context.session.colony_id)
+                            if context.session.colony_id is not None
+                            else None
+                        ),
+                        queen_id=context.session.queen_id,
+                        actor_type=context.session.actor_type,
+                        worker_id=str(worker.id) if worker is not None else None,
+                        workspace_root=str(workspace_root),
                     ),
                 )
                 return ToolExecutionResult(

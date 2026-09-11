@@ -13,7 +13,7 @@ interface ColonySidebarProps {
   planContent?: ReactNode;
 }
 
-type InspectorTab = "data" | "plan" | "automations" | "workers";
+type InspectorTab = "data" | "plan" | "workers";
 
 export function ColonySidebar({
   tasks,
@@ -44,7 +44,6 @@ export function ColonySidebar({
       <div className="inspector-tabs" role="tablist" aria-label="协作详情分类">
         <InspectorTabButton active={tab === "data"} count={tracker.length} label="Data" onClick={() => setTab("data")} />
         <InspectorTabButton active={tab === "plan"} count={tasks.length + (hasPlanContent ? 1 : 0)} label="Plan" onClick={() => setTab("plan")} />
-        <InspectorTabButton active={tab === "automations"} label="Automations" onClick={() => setTab("automations")} />
         <InspectorTabButton active={tab === "workers"} count={workers.length} label="Workers" onClick={() => setTab("workers")} />
       </div>
 
@@ -105,14 +104,6 @@ export function ColonySidebar({
           </section>
         ) : null}
 
-        {tab === "automations" ? (
-          <section className="inspector-empty" aria-labelledby="automations-title">
-            <span aria-hidden="true">⌁</span>
-            <strong id="automations-title">暂无自动化</strong>
-            <p>周期任务和自动触发流程会集中显示在这里。</p>
-          </section>
-        ) : null}
-
         {tab === "workers" ? (
           <WorkerMap embedded onSelect={onSelectWorker} workers={workers} />
         ) : null}
@@ -150,7 +141,6 @@ function tabAccessibleLabel(label: string): string {
   const labels: Record<string, string> = {
     Data: "数据 Data",
     Plan: "计划 Plan",
-    Automations: "自动化 Automations",
     Workers: "Worker Workers",
   };
   return labels[label] ?? label;

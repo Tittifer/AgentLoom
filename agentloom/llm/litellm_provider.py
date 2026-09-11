@@ -344,9 +344,7 @@ def _normalize_provider_error(error: BaseException, *, operation: str) -> LLMReq
     ):
         category = "permanent"
         retryable = False
-    elif status_code in {429, 503, 529} or any(
-        marker in error_text for marker in capacity_markers
-    ):
+    elif status_code in {429, 503, 529} or any(marker in error_text for marker in capacity_markers):
         category = "capacity"
         retryable = True
     elif (

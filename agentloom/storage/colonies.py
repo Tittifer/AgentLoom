@@ -1143,9 +1143,7 @@ class LocalColonyStore:
             WorkerStatus.REPORTING,
         }:
             return None
-        updated = worker.model_copy(
-            update={"report": JSON_OBJECT.validate_python(dict(report))}
-        )
+        updated = worker.model_copy(update={"report": JSON_OBJECT.validate_python(dict(report))})
         self._write_model(path, updated)
         return updated
 

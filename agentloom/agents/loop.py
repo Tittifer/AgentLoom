@@ -564,9 +564,8 @@ class AgentLoop:
                 if error.category == "capacity":
                     if capacity_started_at is None:
                         capacity_started_at = time.monotonic()
-                    remaining_seconds = (
-                        CAPACITY_RETRY_MAX_SECONDS
-                        - (time.monotonic() - capacity_started_at)
+                    remaining_seconds = CAPACITY_RETRY_MAX_SECONDS - (
+                        time.monotonic() - capacity_started_at
                     )
                     if remaining_seconds <= 0:
                         raise

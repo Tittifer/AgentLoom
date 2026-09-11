@@ -74,9 +74,7 @@ async def create_store(tmp_path: Path) -> LocalColonyStore:
             api_key="test-key",
         )
     )
-    await store.create_queen(
-        QueenCreate(name="General")
-    )
+    await store.create_queen(QueenCreate(name="General"))
     return store
 
 
@@ -575,17 +573,18 @@ async def test_runtime_exposes_actor_tools_and_executes_builtin(tmp_path: Path) 
     )
     queen_names = {item.name for item in runtime.definitions("queen")}
     worker_names = {item.name for item in runtime.definitions("worker")}
-    assert {"run_worker", "web_search", "read_task_context"} <= queen_names
+    assert {"run_worker", "read_task_context"} <= queen_names
+    assert "web_search" not in queen_names
     assert "report_to_parent" in worker_names
     assert "run_worker" not in worker_names
 
     context = make_context()
     result = await runtime.execute(
         context,
-        ToolCall(id="search-1", name="web_search", arguments={"query": "AgentLoom"}),
+        ToolCall(id="context-1", name="read_task_context", arguments={}),
     )
     assert isinstance(result.value, dict)
-    assert result.value["query"] == "AgentLoom"
+    assert result.value == {"goal": "研究"}
 
     invalid_result = await runtime.execute(
         context,

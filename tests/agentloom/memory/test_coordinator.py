@@ -23,9 +23,7 @@ async def test_first_queen_text_turn_schedules_short_reflection(tmp_path: Path) 
             api_key="test-key",
         )
     )
-    queen = await colonies.create_queen(
-        QueenCreate(name="Memory Test")
-    )
+    queen = await colonies.create_queen(QueenCreate(name="Memory Test"))
     colony, session = await colonies.create("测试", "", queen.id, {})
     await colonies.append_message(session.id, LLMMessage(role="user", content="我偏好 FastAPI"))
     await colonies.append_message(session.id, LLMMessage(role="assistant", content="已了解"))

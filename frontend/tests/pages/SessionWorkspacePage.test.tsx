@@ -104,7 +104,7 @@ describe("SessionWorkspacePage", () => {
     expect(screen.getByRole("heading", { name: "独立 Queen 会话" })).toBeInTheDocument();
   });
 
-  it("独立会话右侧始终展示 Colony 的四项工作区", async () => {
+  it("独立会话右侧始终展示 Colony 的三项工作区", async () => {
     vi.mocked(getSession).mockResolvedValue({ ...session, pending_colony_suggestion: null });
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     render(
@@ -117,7 +117,6 @@ describe("SessionWorkspacePage", () => {
 
     expect(await screen.findByRole("tab", { name: /数据 Data/ })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: /计划 Plan/ })).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: /自动化 Automations/ })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: /Worker Workers/ })).toBeInTheDocument();
     expect(screen.getByText("暂无数据")).toBeInTheDocument();
   });

@@ -18,9 +18,7 @@ async def create_store(tmp_path: Path) -> LocalColonyStore:
             api_key="test-key",
         )
     )
-    await store.create_queen(
-        QueenCreate(name="General")
-    )
+    await store.create_queen(QueenCreate(name="General"))
     return store
 
 

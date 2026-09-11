@@ -16,7 +16,6 @@ from agentloom.tools.base import (
     ToolTimeoutError,
 )
 from agentloom.tools.builtin.context import ReadTaskContextTool
-from agentloom.tools.builtin.mock_search import MockWebSearchTool
 
 
 class ToolRegistry:
@@ -105,14 +104,9 @@ def _limit_result(result: JsonValue, maximum: int) -> JsonValue:
 
 
 def create_builtin_tool_registry() -> ToolRegistry:
-    """Create the complete MVP registry without write or command tools."""
+    """Create the in-process registry; external tools are loaded through MCP."""
 
-    return ToolRegistry(
-        [
-            ReadTaskContextTool(),
-            MockWebSearchTool(),
-        ]
-    )
+    return ToolRegistry([ReadTaskContextTool()])
 
 
 __all__ = ["ToolRegistry", "create_builtin_tool_registry"]

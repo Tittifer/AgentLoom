@@ -1,4 +1,4 @@
-"""Contracts and errors shared by read-only worker tools."""
+"""Contracts and errors shared by read-only agent tools."""
 
 from collections.abc import Mapping
 from typing import Protocol
@@ -15,6 +15,12 @@ class ToolContext(BaseModel):
 
     task_context: dict[str, JsonValue]
     upstream_outputs: dict[str, dict[str, JsonValue]]
+    session_id: str | None = None
+    colony_id: str | None = None
+    queen_id: str | None = None
+    actor_type: str | None = None
+    worker_id: str | None = None
+    workspace_root: str | None = None
 
 
 class ReadOnlyTool(Protocol):
@@ -54,12 +60,22 @@ class ToolTimeoutError(ToolError):
     code = "TOOL_TIMEOUT"
 
 
+class ToolUnavailableError(ToolError):
+    code = "TOOL_UNAVAILABLE"
+
+
+class ToolExecutionError(ToolError):
+    code = "TOOL_EXECUTION_FAILED"
+
+
 __all__ = [
     "ReadOnlyTool",
     "ToolArgumentsError",
     "ToolContext",
     "ToolError",
+    "ToolExecutionError",
     "ToolNotAllowedError",
     "ToolNotFoundError",
     "ToolTimeoutError",
+    "ToolUnavailableError",
 ]
