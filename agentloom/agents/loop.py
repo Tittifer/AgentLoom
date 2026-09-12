@@ -68,6 +68,7 @@ class AgentLoopStore(Protocol):
         context: LoopContext,
         message_id: UUID,
         delta: str,
+        snapshot: str,
     ) -> None: ...
 
     async def cancel_message_stream(
@@ -487,6 +488,7 @@ class AgentLoop:
         message_id = uuid4()
         response = None
         stream_visible = False
+        visible_snapshot = ""
         tool_calls_started = False
         try:
             async for chunk in self._provider.stream(request):
@@ -500,10 +502,12 @@ class AgentLoop:
                     and context.session.actor_type == "queen"
                     and not tool_calls_started
                 ):
+                    visible_snapshot += chunk.content_delta
                     await self._store.publish_message_delta(
                         context,
                         message_id,
                         chunk.content_delta,
+                        visible_snapshot,
                     )
                     stream_visible = True
                 if chunk.response is not None:

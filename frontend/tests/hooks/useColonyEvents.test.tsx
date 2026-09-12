@@ -52,11 +52,13 @@ describe("useColonyEvents", () => {
         session_id: "session-1",
         message_id: "message-1",
         delta: "原生",
+        snapshot: "原生",
       });
       MockEventSource.current.emit("message.delta", {
         session_id: "session-1",
         message_id: "message-1",
         delta: "流式",
+        snapshot: "原生流式",
       });
     });
     expect(result.current).toEqual({
@@ -66,6 +68,35 @@ describe("useColonyEvents", () => {
 
     rerender({ persistedIds: ["message-1"] });
     expect(result.current.streamingMessage).toBeNull();
+    unmount();
+  });
+
+  it("uses the latest snapshot to recover from a missing delta", () => {
+    const queryClient = new QueryClient();
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    );
+    const { result, unmount } = renderHook(
+      () => useColonyEvents("colony-1", "session-1"),
+      { wrapper },
+    );
+
+    act(() => {
+      MockEventSource.current.emit("message.delta", {
+        session_id: "session-1",
+        message_id: "message-1",
+        delta: "第一段",
+        snapshot: "第一段",
+      });
+      MockEventSource.current.emit("message.delta", {
+        session_id: "session-1",
+        message_id: "message-1",
+        delta: "第三段",
+        snapshot: "第一段第二段第三段",
+      });
+    });
+
+    expect(result.current.streamingMessage?.content).toBe("第一段第二段第三段");
     unmount();
   });
 

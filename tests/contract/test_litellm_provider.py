@@ -328,6 +328,21 @@ async def test_litellm_provider_streams_native_text_deltas_and_terminal_usage() 
     assert response.output_tokens == 4
 
 
+async def test_litellm_provider_preserves_whitespace_in_text_deltas() -> None:
+    async def chunks():  # type: ignore[no-untyped-def]
+        yield {"choices": [{"delta": {"content": "介绍"}}]}
+        yield {"choices": [{"delta": {"content": "\n\n- 项目"}}]}
+
+    streamed = [
+        chunk
+        async for chunk in LiteLLMProvider(RecordingCompletion(chunks())).stream(request())
+    ]
+
+    assert [chunk.content_delta for chunk in streamed[:-1]] == ["介绍", "\n\n- 项目"]
+    assert streamed[-1].response is not None
+    assert streamed[-1].response.content == "介绍\n\n- 项目"
+
+
 async def test_litellm_provider_accumulates_fragmented_stream_tool_calls() -> None:
     async def chunks():  # type: ignore[no-untyped-def]
         yield {

@@ -196,6 +196,30 @@ async def test_loop_store_injects_authoritative_worker_report_status(tmp_path: P
     assert "不得声称仍在等待" in complete_status["instruction"]
 
 
+async def test_loop_store_publishes_delta_with_complete_snapshot(tmp_path: Path) -> None:
+    store = await create_store(tmp_path)
+    colony, queen = await store.create("Stream", "", "queen_general", {})
+    notifier = ColonyEventNotifier()
+    loop_store = FileAgentLoopStore(store, notifier)
+    context = await loop_store.load(queen.id)
+    assert context is not None
+    message_id = uuid4()
+
+    async with notifier.subscribe(colony.id) as updates:
+        await loop_store.publish_message_delta(
+            context,
+            message_id,
+            "项目",
+            "## 标题\n\n- 项目",
+        )
+        event = await updates.get()
+
+    assert event is not None
+    assert event.type == "message.delta"
+    assert event.payload["delta"] == "项目"
+    assert event.payload["snapshot"] == "## 标题\n\n- 项目"
+
+
 async def test_background_task_failures_are_consumed_and_logged(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,

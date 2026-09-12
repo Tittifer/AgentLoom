@@ -78,7 +78,7 @@ class LLMResponse(LLMModel):
 class LLMStreamChunk(LLMModel):
     """One incremental provider update or the terminal normalized response."""
 
-    content_delta: str = ""
+    content_delta: Annotated[str, StringConstraints(strip_whitespace=False)] = ""
     tool_calls_started: bool = False
     response: LLMResponse | None = None
 

@@ -391,6 +391,7 @@ class FileAgentLoopStore(AgentLoopStore):
         context: LoopContext,
         message_id: UUID,
         delta: str,
+        snapshot: str,
     ) -> None:
         if context.session.actor_type != "queen":
             return
@@ -406,6 +407,7 @@ class FileAgentLoopStore(AgentLoopStore):
                 "session_id": str(context.session.id),
                 "message_id": str(message_id),
                 "delta": delta,
+                "snapshot": snapshot,
             },
         )
 

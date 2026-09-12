@@ -1,5 +1,6 @@
 """Tests for the unified Queen/Worker AgentLoop."""
 
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
@@ -20,6 +21,7 @@ from agentloom.llm.base import (
     LLMProviderError,
     LLMRequestError,
     LLMResponse,
+    LLMStreamChunk,
     ToolCall,
     ToolDefinition,
 )
@@ -73,7 +75,7 @@ class FakeStore:
         self.checkpoint_cursors: list[dict[str, object]] = []
         self.finished = False
         self.failed: Exception | None = None
-        self.deltas: list[tuple[UUID, str]] = []
+        self.deltas: list[tuple[UUID, str, str]] = []
         self.cancelled_streams: list[UUID] = []
         self.message_events: list[str] = []
         self.llm_retries: list[tuple[int, int | None, float]] = []
@@ -108,10 +110,14 @@ class FakeStore:
         )
 
     async def publish_message_delta(
-        self, context: LoopContext, message_id: UUID, delta: str
+        self,
+        context: LoopContext,
+        message_id: UUID,
+        delta: str,
+        snapshot: str,
     ) -> None:
         del context
-        self.deltas.append((message_id, delta))
+        self.deltas.append((message_id, delta, snapshot))
 
     async def cancel_message_stream(self, context: LoopContext, message_id: UUID) -> None:
         del context
@@ -252,6 +258,19 @@ class RecordingLogger:
         self.events.append((event, values))
 
 
+class ChunkedResponseProvider:
+    async def complete(self, request):  # type: ignore[no-untyped-def]
+        raise AssertionError("AgentLoop should use the streaming interface")
+
+    async def stream(self, request) -> AsyncIterator[LLMStreamChunk]:  # type: ignore[no-untyped-def]
+        del request
+        yield LLMStreamChunk(content_delta="## 标题")
+        yield LLMStreamChunk(content_delta="\n\n- 项目")
+        yield LLMStreamChunk(
+            response=LLMResponse(content="## 标题\n\n- 项目", model="mock/test")
+        )
+
+
 async def test_agent_loop_finishes_visible_response() -> None:
     context = make_context()
     store = FakeStore(context)
@@ -267,7 +286,29 @@ async def test_agent_loop_finishes_visible_response() -> None:
     assert tools.finalized == ["完成"]
     assert store.messages[0].reasoning_content == "内部推理"
     assert provider.requests[0].messages[0].role == "system"
-    assert [delta for _, delta in store.deltas] == ["完成"]
+    assert [(delta, snapshot) for _, delta, snapshot in store.deltas] == [
+        ("完成", "完成")
+    ]
+
+
+async def test_agent_loop_publishes_accumulated_stream_snapshots() -> None:
+    context = make_context()
+    store = FakeStore(context)
+    loop = AgentLoop(
+        store,
+        ChunkedResponseProvider(),
+        FakeTools(),
+        JudgePipeline(),
+        default_max_turns=2,
+        timeout_seconds=1,
+    )
+
+    await loop.run(context.session.id)
+
+    assert [(delta, snapshot) for _, delta, snapshot in store.deltas] == [
+        ("## 标题", "## 标题"),
+        ("\n\n- 项目", "## 标题\n\n- 项目"),
+    ]
 
 
 async def test_agent_loop_injects_runtime_message_at_turn_boundary() -> None:

@@ -51,6 +51,7 @@ interface MessageDeltaEvent {
   session_id: string;
   message_id: string;
   delta: string;
+  snapshot?: string;
 }
 
 interface ScopedEvent {
@@ -136,9 +137,11 @@ function useScopedEvents(
       setStreamingMessage((current) => ({
         id: data.message_id,
         sessionId: data.session_id,
-        content: current?.id === data.message_id
-          ? current.content + data.delta
-          : data.delta,
+        content: data.snapshot ?? (
+          current?.id === data.message_id
+            ? current.content + data.delta
+            : data.delta
+        ),
       }));
     };
     const cancelListener = (event: Event) => {
@@ -192,6 +195,7 @@ function parseDeltaEvent(event: Event, requireDelta = true): MessageDeltaEvent |
       session_id: data.session_id,
       message_id: data.message_id,
       delta: typeof data.delta === "string" ? data.delta : "",
+      snapshot: typeof data.snapshot === "string" ? data.snapshot : undefined,
     };
   } catch {
     return null;
