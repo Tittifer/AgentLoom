@@ -50,6 +50,20 @@ describe("ChatPanel", () => {
         content: "正在安排内部任务",
         tool_calls: [{ id: "call-1", name: "run_worker", arguments: {} }],
       },
+      {
+        ...message,
+        id: "colony-handoff",
+        role: "user",
+        content: "[COLONY_FORK] 不应展示的系统交接",
+        metadata: { system_generated: true, visibility: "internal" },
+      },
+      {
+        ...message,
+        id: "legacy-colony-handoff",
+        role: "user",
+        content: "[COLONY_FORK] 旧数据中的系统交接",
+        metadata: { system_generated: true },
+      },
     ];
     render(
       <ChatPanel
@@ -66,6 +80,8 @@ describe("ChatPanel", () => {
     expect(screen.getByText(/内部汇报/)).toBeInTheDocument();
     expect(screen.getByText(/正在安排内部任务/)).toBeInTheDocument();
     expect(screen.getByText(/run_worker/)).toBeInTheDocument();
+    expect(screen.queryByText(/COLONY_FORK/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/旧数据中的系统交接/)).not.toBeInTheDocument();
     await userEvent.type(screen.getByLabelText("输入消息"), "继续执行");
     await userEvent.click(screen.getByRole("button", { name: "发送" }));
     expect(onSend).toHaveBeenCalledWith("继续执行");

@@ -664,9 +664,17 @@ async def test_runtime_spills_and_pages_large_tool_results(tmp_path: Path) -> No
     assert "content" in loaded.value
 
 
-async def test_independent_queen_suggests_then_user_forks_colony(tmp_path: Path) -> None:
+async def test_independent_queen_suggests_then_user_forks_colony(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
     store = await create_store(tmp_path)
     session = await store.create_dm_session("queen_general")
+    original = await store.append_message(
+        session.id,
+        LLMMessage(role="user", content="比较成都和杭州并给出完整推荐"),
+    )
+    assert original is not None
     context = await FileAgentLoopStore(store, ColonyEventNotifier()).load(session.id)
     assert context is not None and context.colony is None
     runtime = ColonyRuntime(
@@ -676,6 +684,16 @@ async def test_independent_queen_suggests_then_user_forks_colony(tmp_path: Path)
         Settings(environment="test", storage_root=tmp_path),
         create_builtin_tool_registry(),
     )
+    scheduled: list[UUID | None] = []
+
+    def record_schedule(
+        coroutine: Coroutine[object, object, None],
+        owner_session_id: UUID | None = None,
+    ) -> None:
+        coroutine.close()
+        scheduled.append(owner_session_id)
+
+    monkeypatch.setattr(runtime, "_schedule", record_schedule)
 
     tool_names = {definition.name for definition in runtime.definitions(context)}
     assert "suggest_colony" in tool_names
@@ -713,10 +731,23 @@ async def test_independent_queen_suggests_then_user_forks_colony(tmp_path: Path)
     tasks = await store.list_tasks(colony.id)
     assert source is not None and source.status is SessionStatus.FORKED
     assert target is not None and target.mode == "colony"
+    assert target.status is SessionStatus.QUEUED
+    assert scheduled == [target.id]
     assert [task.title for task in tasks] == ["调研成都", "调研杭州"]
     target_messages = await store.list_messages(target.id)
     assert target_messages is not None
     assert target_messages[-1].content.startswith("[COLONY_FORK]\n")
+    assert target_messages[-1].metadata["visibility"] == "internal"
+    assert await runtime.list_messages(target.id) == [
+        message for message in target_messages if message.id != target_messages[-1].id
+    ]
+    legacy_handoff = await store.append_message(
+        target.id,
+        LLMMessage(role="user", content="[COLONY_FORK]\n旧版本系统交接"),
+        metadata={"system_generated": True},
+    )
+    assert legacy_handoff is not None
+    assert legacy_handoff not in await runtime.list_messages(target.id)
 
 
 async def test_file_loop_store_loads_compacted_context_without_hiding_transcript(

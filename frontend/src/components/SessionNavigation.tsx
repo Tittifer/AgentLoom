@@ -51,10 +51,12 @@ export function SessionNavigation({ queenId = "", currentSessionId }: SessionNav
         queryKey: ["sessions", selectedQueenId],
         queryFn: () => listSessions(selectedQueenId),
       });
-      const latest = [...sessions].sort(
-        (left, right) => right.updated_at.localeCompare(left.updated_at),
-      )[0];
-      if (latest) return sessionDestination(latest);
+      const knownSessionIds = new Set(sessions.map((session) => session.id));
+      const destination = [...sessions]
+        .sort((left, right) => right.updated_at.localeCompare(left.updated_at))
+        .map((session) => sessionDestination(session, knownSessionIds))
+        .find((value) => value !== undefined);
+      if (destination) return destination;
       const session = await createSession({ queen_id: selectedQueenId });
       queryClient.setQueryData(["session", session.id], session);
       queryClient.setQueryData(["messages", session.id], []);
@@ -228,8 +230,15 @@ function NavigationSection({ count, label, children }: { count: number; label: s
   );
 }
 
-function sessionDestination(session: SessionRead): string {
-  if (session.superseded_by) return `/sessions/${session.superseded_by}`;
+function sessionDestination(
+  session: SessionRead,
+  knownSessionIds: ReadonlySet<string>,
+): string | undefined {
+  if (session.superseded_by) {
+    return knownSessionIds.has(session.superseded_by)
+      ? `/sessions/${session.superseded_by}`
+      : undefined;
+  }
   return `/sessions/${session.id}`;
 }
 

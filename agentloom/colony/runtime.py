@@ -975,7 +975,7 @@ class ColonyRuntime:
         source = await self._storage.get_session(session_id)
         suggestion = source.pending_colony_suggestion if source is not None else None
         if suggestion is not None:
-            await self._storage.append_message(
+            handoff_message = await self._storage.append_message(
                 target.id,
                 LLMMessage(
                     role="user",
@@ -986,14 +986,23 @@ class ColonyRuntime:
                         f"工作交接：{suggestion.handoff}"
                     ),
                 ),
-                metadata={"source_session_id": str(session_id), "system_generated": True},
+                metadata={
+                    "source_session_id": str(session_id),
+                    "system_generated": True,
+                    "visibility": "internal",
+                },
             )
+            if handoff_message is None:
+                raise SessionNotFoundError(str(target.id))
             for position, title in enumerate(suggestion.proposed_tasks):
                 await self._storage.create_task_item(
                     colony.id,
                     target.id,
                     TaskItemCreate(title=title, position=position),
                 )
+        queued = await self._storage.set_session_status(target.id, SessionStatus.QUEUED)
+        if not queued:
+            raise SessionNotFoundError(str(target.id))
         await self._storage.append_event(
             colony.id,
             "colony.created",
@@ -1001,6 +1010,7 @@ class ColonyRuntime:
             payload={"name": colony.name, "source_session_id": str(session_id)},
         )
         await self._notifier.notify(target.id)
+        self._schedule(self._run_queen(target.id), target.id)
         return colony
 
     async def dismiss_colony_suggestion(self, session_id: UUID) -> SessionRead:
@@ -1075,7 +1085,15 @@ class ColonyRuntime:
         result = await self._storage.list_messages(session_id)
         if result is None:
             raise SessionNotFoundError(str(session_id))
-        return result
+        return [
+            message
+            for message in result
+            if message.metadata.get("visibility") != "internal"
+            and not (
+                message.metadata.get("system_generated") is True
+                and message.content.lstrip().startswith("[COLONY_FORK]")
+            )
+        ]
 
     async def submit_message(self, session_id: UUID, content: str) -> MessageRead:
         agent_session = await self._storage.get_session(session_id)

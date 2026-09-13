@@ -209,6 +209,13 @@ function roleText(role: string) {
 }
 
 function isVisibleTimelineMessage(message: MessageRead): boolean {
+  if (message.metadata.visibility === "internal") return false;
+  if (
+    message.metadata.system_generated === true &&
+    message.content.trimStart().startsWith("[COLONY_FORK]")
+  ) {
+    return false;
+  }
   if (message.role === "tool") return false;
   if (isWorkerReport(message) || isToolActivity(message)) return true;
   return ["user", "assistant"].includes(message.role) && Boolean(message.content.trim());

@@ -112,6 +112,40 @@ describe("SessionNavigation", () => {
     expect(screen.getByRole("button", { name: "展开会话导航" })).toBeInTheDocument();
   });
 
+  it("点击 Queen 时跳过指向已删除 Colony 的悬空会话", async () => {
+    vi.mocked(listSessions).mockResolvedValue([
+      {
+        ...session,
+        id: "forked-session",
+        spawned_colony_id: "deleted-colony",
+        superseded_by: "missing-session",
+        status: "forked",
+      },
+    ]);
+    vi.mocked(createSession).mockResolvedValue({ ...session, id: "session-2" });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={["/sessions/session-1"]}>
+          <Routes>
+            <Route
+              path="/sessions/session-1"
+              element={<SessionNavigation currentSessionId="session-1" queenId="queen_general" />}
+            />
+            <Route path="/sessions/session-2" element={<div>新的 Queen 会话</div>} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    await userEvent.click(await screen.findByRole("button", { name: /General/ }));
+
+    await waitFor(() => expect(createSession).toHaveBeenCalledWith({ queen_id: "queen_general" }));
+    expect(await screen.findByText("新的 Queen 会话")).toBeInTheDocument();
+  });
+
   it("在侧栏确认后删除当前会话", async () => {
     vi.mocked(deleteSession).mockResolvedValue();
     vi.mocked(deleteColony).mockResolvedValue();
