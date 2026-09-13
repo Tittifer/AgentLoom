@@ -1,5 +1,4 @@
 import { apiClient } from "./client";
-import type { SessionRead } from "./colonies";
 
 export interface QueenRead {
   id: string;
@@ -22,12 +21,4 @@ export function listQueens(): Promise<QueenRead[]> {
 
 export function createQueen(payload: QueenCreate): Promise<QueenRead> {
   return apiClient.post("/api/queens", payload);
-}
-
-export function listQueenSessions(queenId: string): Promise<SessionRead[]> {
-  return apiClient.get(`/api/queens/${queenId}/sessions`);
-}
-
-export function createQueenSession(queenId: string): Promise<SessionRead> {
-  return apiClient.post(`/api/queens/${queenId}/sessions`, {});
 }

@@ -1,25 +1,29 @@
-import { FormEvent, useState } from "react";
+import { type FormEvent, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link, Navigate, useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 
 import {
   dismissColonySuggestion,
   forkSessionIntoColony,
+  getColony,
   getSession,
   listMessages,
   submitMessage,
   type ColonySuggestion,
+  type WorkerRead,
 } from "../api/colonies";
 import { ChatPanel } from "../components/ChatPanel";
 import { ColonySidebar } from "../components/ColonySidebar";
 import { SessionNavigation } from "../components/SessionNavigation";
-import { useSessionEvents } from "../hooks/useColonyEvents";
+import { WorkerDrawer } from "../components/WorkerDrawer";
+import { useSessionEvents } from "../hooks/useSessionEvents";
 import { formatError } from "../utils/format";
 
 export function SessionWorkspacePage() {
   const { sessionId } = useParams();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const [selectedWorker, setSelectedWorker] = useState<WorkerRead | null>(null);
   const sessionQuery = useQuery({
     queryKey: ["session", sessionId],
     queryFn: () => getSession(requireId(sessionId)),
@@ -30,6 +34,13 @@ export function SessionWorkspacePage() {
     queryKey: ["messages", sessionId],
     queryFn: () => listMessages(requireId(sessionId)),
     enabled: Boolean(sessionId),
+  });
+  const colonyId = sessionQuery.data?.colony_id ?? undefined;
+  const colonyQuery = useQuery({
+    queryKey: ["colony", colonyId],
+    queryFn: () => getColony(requireId(colonyId)),
+    enabled: Boolean(colonyId),
+    refetchInterval: 10_000,
   });
   const messageMutation = useMutation({
     mutationFn: (content: string) => submitMessage(requireId(sessionId), content),
@@ -42,15 +53,16 @@ export function SessionWorkspacePage() {
   });
   const suggestion = sessionQuery.data?.pending_colony_suggestion;
   const forkMutation = useMutation({
-    mutationFn: (draft: { name: string; description: string }) => forkSessionIntoColony(requireId(sessionId), {
-      suggestion_id: requireId(suggestion?.id),
-      name: draft.name,
-      description: draft.description,
+    mutationFn: (draft: { name: string; description: string }) =>
+      forkSessionIntoColony(requireId(sessionId), {
+        suggestion_id: requireId(suggestion?.id),
+        name: draft.name,
+        description: draft.description,
     }),
     onSuccess: async (colony) => {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["colonies"] }),
-        queryClient.invalidateQueries({ queryKey: ["queen-sessions"] }),
+        queryClient.invalidateQueries({ queryKey: ["sessions"] }),
       ]);
       navigate(`/colonies/${colony.id}`);
     },
@@ -75,59 +87,70 @@ export function SessionWorkspacePage() {
     );
   }
   const session = sessionQuery.data;
-  if (session.session_kind !== "dm") {
-    return session.colony_id ? <Navigate replace to={`/colonies/${session.colony_id}`} /> : null;
-  }
+  const snapshot = colonyQuery.data;
+  const workers = snapshot?.workers ?? [];
+  const activeWorkerCount = workers.filter((worker) =>
+    ["queued", "running", "reporting"].includes(worker.status)
+  ).length;
 
   return (
     <section className="workspace-page" aria-labelledby="workspace-title">
-      <div className="workspace-shell dm-workspace-shell">
+      <div className={`workspace-shell${session.mode === "dm" ? " dm-workspace-shell" : ""}`}>
         <SessionNavigation currentSessionId={session.id} queenId={session.queen_id} />
         <div className="conversation-workspace">
           <header className="workspace-heading">
-            <div className="workspace-identity"><span className="workspace-mark" aria-hidden="true">◇</span><h1 id="workspace-title">独立 Queen 会话</h1><span className="role-chip">Private DM</span></div>
+            <div className="workspace-identity">
+              <span className="workspace-mark" aria-hidden="true">Q</span>
+              <h1 id="workspace-title">{snapshot?.colony.name ?? "独立 Queen 会话"}</h1>
+              <span className="role-chip">
+                {session.mode === "colony" ? "Queen Colony" : "Private DM"}
+              </span>
+            </div>
             <div className="workspace-actions">
-              <span className="status-pill">{session.status === "forked" ? "已创建 Colony" : "独立模式"}</span>
+              <span className="status-pill">
+                {session.mode === "colony" ? `${activeWorkerCount} 个 Worker 运行中` : "独立模式"}
+              </span>
             </div>
           </header>
-          {session.status === "forked" && session.forked_to_colony_id ? (
+          {session.status === "forked" && session.superseded_by ? (
             <div className="forked-session-notice">
-              该会话已锁定并转入 Colony。
-              <Link to={`/colonies/${session.forked_to_colony_id}`}>进入协作空间</Link>
+              该会话已转入 Colony，会话上下文已由新的 Session 继续承载。
             </div>
           ) : null}
-          {messageMutation.isError ? <div className="form-error">{formatError(messageMutation.error)}</div> : null}
+          {messageMutation.isError ? (
+            <div className="form-error">{formatError(messageMutation.error)}</div>
+          ) : null}
           <ChatPanel
-            activeWorkerCount={0}
+            activeWorkerCount={activeWorkerCount}
             messages={messagesQuery.data ?? []}
+            onSelectWorker={setSelectedWorker}
             onSend={async (content) => { await messageMutation.mutateAsync(content); }}
             sending={messageMutation.isPending || session.status === "forked"}
             session={session}
             llmRetry={llmRetry}
             streamingMessage={streamingMessage}
+            workers={workers}
           />
         </div>
         <ColonySidebar
           defaultTab={suggestion?.status === "pending" ? "plan" : "data"}
-          key={suggestion?.status === "pending" ? suggestion.id : "empty-colony-inspector"}
-          onSelectWorker={() => undefined}
+          key={suggestion?.status === "pending" ? suggestion.id : session.id}
+          onSelectWorker={setSelectedWorker}
           planContent={suggestion?.status === "pending" ? (
             <ColonySuggestionCard
               busy={forkMutation.isPending || dismissMutation.isPending}
               error={forkMutation.error ?? dismissMutation.error}
-              onConfirm={(name, nextDescription) => forkMutation.mutate({
-                name,
-                description: nextDescription,
-              })}
+              onConfirm={(name, description) => forkMutation.mutate({ name, description })}
               onDismiss={() => dismissMutation.mutate()}
               suggestion={suggestion}
             />
           ) : undefined}
-          tasks={[]}
-          tracker={[]}
-          workers={[]}
+          tasks={snapshot?.tasks ?? []}
+          tracker={snapshot?.tracker ?? []}
+          workers={workers}
         />
       </div>
+      <WorkerDrawer onClose={() => setSelectedWorker(null)} worker={selectedWorker} />
     </section>
   );
 }
@@ -160,19 +183,10 @@ function ColonySuggestionCard({
     <form className="colony-suggestion-card" onSubmit={submit}>
       <span className="suggestion-badge">Queen 建议并行协作</span>
       <p>{suggestion.reason}</p>
-      <label>
-        <span>Colony 名称</span>
-        <input value={name} onChange={(event) => setName(event.target.value)} />
-      </label>
-      <label>
-        <span>目标说明</span>
-        <textarea rows={4} value={description} onChange={(event) => setDescription(event.target.value)} />
-      </label>
+      <label><span>Colony 名称</span><input value={name} onChange={(event) => setName(event.target.value)} /></label>
+      <label><span>目标说明</span><textarea rows={4} value={description} onChange={(event) => setDescription(event.target.value)} /></label>
       {suggestion.proposed_tasks.length > 0 ? (
-        <div>
-          <strong>初始任务</strong>
-          <ul>{suggestion.proposed_tasks.map((task) => <li key={task}>{task}</li>)}</ul>
-        </div>
+        <div><strong>初始任务</strong><ul>{suggestion.proposed_tasks.map((task) => <li key={task}>{task}</li>)}</ul></div>
       ) : null}
       {error ? <div className="form-error">{formatError(error)}</div> : null}
       <div className="suggestion-actions">

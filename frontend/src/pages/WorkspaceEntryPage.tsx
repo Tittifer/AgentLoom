@@ -2,8 +2,8 @@ import { useEffect, useRef } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 
-import type { SessionRead } from "../api/colonies";
-import { createQueenSession, listQueens, listQueenSessions } from "../api/queens";
+import { createSession, listSessions, type SessionRead } from "../api/colonies";
+import { listQueens } from "../api/queens";
 import { ColonySidebar } from "../components/ColonySidebar";
 import { SessionNavigation } from "../components/SessionNavigation";
 import { formatError } from "../utils/format";
@@ -15,12 +15,12 @@ export function WorkspaceEntryPage() {
   const queensQuery = useQuery({ queryKey: ["queens"], queryFn: listQueens });
   const queenId = queensQuery.data?.[0]?.id ?? "";
   const sessionsQuery = useQuery({
-    queryKey: ["queen-sessions", queenId],
-    queryFn: () => listQueenSessions(queenId),
+    queryKey: ["sessions", queenId],
+    queryFn: () => listSessions(queenId),
     enabled: Boolean(queenId),
   });
   const createSessionMutation = useMutation({
-    mutationFn: createQueenSession,
+    mutationFn: (selectedQueenId: string) => createSession({ queen_id: selectedQueenId }),
     onSuccess: (session) => {
       queryClient.setQueryData(["session", session.id], session);
       queryClient.setQueryData(["messages", session.id], []);
@@ -64,6 +64,6 @@ export function WorkspaceEntryPage() {
 
 function latestDirectSession(sessions: SessionRead[]): SessionRead | undefined {
   return sessions
-    .filter((session) => session.session_kind === "dm" && !session.forked_to_colony_id)
+    .filter((session) => session.mode === "dm" && !session.spawned_colony_id)
     .sort((left, right) => right.updated_at.localeCompare(left.updated_at))[0];
 }

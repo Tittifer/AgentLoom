@@ -5,42 +5,38 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  createSession,
   deleteColony,
   deleteSession,
   listColonies,
+  listSessions,
   type ColonyRead,
   type SessionRead,
 } from "../../src/api/colonies";
-import {
-  createQueenSession,
-  listQueens,
-  listQueenSessions,
-} from "../../src/api/queens";
+import { listQueens } from "../../src/api/queens";
 import { SessionNavigation } from "../../src/components/SessionNavigation";
 
 vi.mock("../../src/api/colonies", () => ({
+  createSession: vi.fn(),
   deleteColony: vi.fn(),
   deleteSession: vi.fn(),
   listColonies: vi.fn(),
+  listSessions: vi.fn(),
 }));
 vi.mock("../../src/api/queens", () => ({
   createQueen: vi.fn(),
-  createQueenSession: vi.fn(),
   listQueens: vi.fn(),
-  listQueenSessions: vi.fn(),
 }));
 
 const session: SessionRead = {
+  layout_version: 2,
   id: "session-1",
   colony_id: null,
   queen_id: "queen_general",
-  parent_session_id: null,
-  actor_type: "queen",
-  session_kind: "dm",
-  operating_phase: "independent",
+  mode: "dm",
   pending_colony_suggestion: null,
-  forked_to_colony_id: null,
-  forked_to_session_id: null,
+  spawned_colony_id: null,
+  superseded_by: null,
   status: "idle",
   park_reason: null,
   task: { title: "城市规划" },
@@ -53,6 +49,7 @@ const session: SessionRead = {
 };
 
 const colony: ColonyRead = {
+  layout_version: 2,
   id: "colony-1",
   name: "城市对比",
   description: "",
@@ -60,7 +57,6 @@ const colony: ColonyRead = {
   model: "gpt-5",
   settings: {},
   status: "active",
-  queen_session_id: "queen-1",
   source_session_id: null,
   created_at: "2026-08-30T00:00:00Z",
   updated_at: "2026-08-30T00:00:00Z",
@@ -80,15 +76,15 @@ describe("SessionNavigation", () => {
         updated_at: "2026-08-30T00:00:00Z",
       },
     ]);
-    vi.mocked(listQueenSessions).mockResolvedValue([session]);
+    vi.mocked(listSessions).mockResolvedValue([session]);
     vi.mocked(listColonies).mockResolvedValue([colony]);
-    vi.mocked(createQueenSession).mockReset();
+    vi.mocked(createSession).mockReset();
     vi.mocked(deleteSession).mockReset();
     vi.mocked(deleteColony).mockReset();
   });
 
   it("在侧栏展示资源并直接创建会话", async () => {
-    vi.mocked(createQueenSession).mockResolvedValue({ ...session, id: "session-2" });
+    vi.mocked(createSession).mockResolvedValue({ ...session, id: "session-2" });
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     render(
       <QueryClientProvider client={queryClient}>
@@ -110,7 +106,7 @@ describe("SessionNavigation", () => {
     expect(screen.queryByRole("link", { name: "设置" })).not.toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: "新建会话" }));
-    expect(vi.mocked(createQueenSession).mock.calls[0]?.[0]).toBe("queen_general");
+    expect(vi.mocked(createSession).mock.calls[0]?.[0]).toEqual({ queen_id: "queen_general" });
 
     await userEvent.click(screen.getByRole("button", { name: "收起会话导航" }));
     expect(screen.getByRole("button", { name: "展开会话导航" })).toBeInTheDocument();

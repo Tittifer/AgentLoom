@@ -6,8 +6,9 @@ import type { MessageRead, SessionRead, WorkerRead } from "../../src/api/colonie
 import { ChatPanel } from "../../src/components/ChatPanel";
 
 const session: SessionRead = {
-  id: "session-1", colony_id: "colony-1", parent_session_id: null,
-  actor_type: "queen", status: "idle", park_reason: null, task: {}, cursor: {},
+  layout_version: 2, id: "session-1", colony_id: "colony-1", queen_id: "queen_general",
+  mode: "colony", pending_colony_suggestion: null, spawned_colony_id: null,
+  superseded_by: null, status: "idle", park_reason: null, task: {}, cursor: {},
   budget: {}, usage: {}, created_at: "2026-08-29T00:00:00Z",
   updated_at: "2026-08-29T00:00:00Z", ended_at: null,
 };
@@ -19,11 +20,11 @@ const message: MessageRead = {
 };
 
 const worker: WorkerRead = {
-  id: "worker-1", colony_id: "colony-1", queen_session_id: session.id,
-  worker_session_id: "worker-session-1", status: "completed", task: "整理内部资料",
-  input: {}, report: { summary: "摘要" }, error: null, timeout_seconds: 60,
+  layout_version: 2, id: "worker-1", colony_id: "colony-1", owner_session_id: session.id,
+  queen_id: "queen_general", status: "completed", park_reason: null, task: "整理内部资料",
+  input: {}, cursor: {}, budget: {}, usage: {}, report: { summary: "摘要" }, error: null, timeout_seconds: 60,
   queued_at: "2026-08-29T00:00:01Z", started_at: "2026-08-29T00:00:02Z",
-  ended_at: "2026-08-29T00:00:04Z",
+  updated_at: "2026-08-29T00:00:04Z", ended_at: "2026-08-29T00:00:04Z",
 };
 
 describe("ChatPanel", () => {

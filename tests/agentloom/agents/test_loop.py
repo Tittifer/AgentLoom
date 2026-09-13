@@ -13,7 +13,7 @@ from agentloom.agents.loop import (
     LoopContext,
     ToolExecutionResult,
 )
-from agentloom.colony.schemas import ColonyRead, MessageRead, SessionRead
+from agentloom.colony.schemas import AgentExecutionRead, ColonyRead, MessageRead
 from agentloom.llm.base import (
     LLMContextLengthError,
     LLMMessage,
@@ -42,16 +42,16 @@ def make_context(actor_type: str = "queen") -> LoopContext:
             queen_id="general",
             model="mock/test",
             settings={},
-            queen_session_id=session_id,
             created_at=now,
             updated_at=now,
         ),
-        session=SessionRead(
+        session=AgentExecutionRead(
             id=session_id,
             colony_id=colony_id,
             queen_id="general",
-            parent_session_id=None,
             actor_type=actor_type,  # type: ignore[arg-type]
+            owner_session_id=session_id,
+            mode="colony",
             status=SessionStatus.QUEUED,
             park_reason=None,
             task={"task": "分析"},
@@ -266,9 +266,7 @@ class ChunkedResponseProvider:
         del request
         yield LLMStreamChunk(content_delta="## 标题")
         yield LLMStreamChunk(content_delta="\n\n- 项目")
-        yield LLMStreamChunk(
-            response=LLMResponse(content="## 标题\n\n- 项目", model="mock/test")
-        )
+        yield LLMStreamChunk(response=LLMResponse(content="## 标题\n\n- 项目", model="mock/test"))
 
 
 async def test_agent_loop_finishes_visible_response() -> None:
@@ -286,9 +284,7 @@ async def test_agent_loop_finishes_visible_response() -> None:
     assert tools.finalized == ["完成"]
     assert store.messages[0].reasoning_content == "内部推理"
     assert provider.requests[0].messages[0].role == "system"
-    assert [(delta, snapshot) for _, delta, snapshot in store.deltas] == [
-        ("完成", "完成")
-    ]
+    assert [(delta, snapshot) for _, delta, snapshot in store.deltas] == [("完成", "完成")]
 
 
 async def test_agent_loop_publishes_accumulated_stream_snapshots() -> None:

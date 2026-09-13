@@ -29,7 +29,9 @@ async def test_first_queen_text_turn_schedules_short_reflection(tmp_path: Path) 
     await colonies.append_message(session.id, LLMMessage(role="assistant", content="已了解"))
     messages = await colonies.list_messages(session.id)
     assert messages is not None
-    context = LoopContext(session=session, colony=colony, messages=[], model="mock/test")
+    execution = await colonies.get_execution(session.id)
+    assert execution is not None
+    context = LoopContext(session=execution, colony=colony, messages=[], model="mock/test")
     provider = ScriptedMockLLMProvider(
         [
             LLMResponse(content="无需保存", model="mock/test"),

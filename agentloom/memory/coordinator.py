@@ -59,7 +59,7 @@ class MemoryCoordinator:
 
     async def prepare_recall(self, session_id: UUID, provider: LLMProvider) -> None:
         session = await self._colonies.get_session(session_id)
-        if session is None or session.actor_type != "queen":
+        if session is None:
             return
         queen = await self._colonies.get_queen(session.queen_id)
         llm = await self._colonies.get_user_llm_runtime_config()

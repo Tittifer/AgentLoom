@@ -36,7 +36,7 @@ def atomic_write_json(path: Path, value: dict[str, Any]) -> None:
     """Durably replace a JSON document without exposing partial content."""
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+    temporary = path.with_name(f".{uuid4().hex[:8]}.tmp")
     try:
         with temporary.open("x", encoding="utf-8", newline="\n") as handle:
             json.dump(value, handle, ensure_ascii=False, separators=(",", ":"))
@@ -69,7 +69,7 @@ def atomic_write_yaml(path: Path, value: dict[str, Any]) -> None:
     """Durably replace a YAML document without exposing partial content."""
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+    temporary = path.with_name(f".{uuid4().hex[:8]}.tmp")
     try:
         with temporary.open("x", encoding="utf-8", newline="\n") as handle:
             yaml.safe_dump(value, handle, allow_unicode=True, sort_keys=False)
@@ -91,7 +91,7 @@ def atomic_write_text(path: Path, value: str) -> None:
     """Durably replace one UTF-8 text document."""
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+    temporary = path.with_name(f".{uuid4().hex[:8]}.tmp")
     try:
         with temporary.open("x", encoding="utf-8", newline="\n") as handle:
             handle.write(value)

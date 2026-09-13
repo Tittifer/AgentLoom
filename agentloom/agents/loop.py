@@ -11,7 +11,7 @@ import structlog
 from pydantic import JsonValue
 
 from agentloom.agents.judge import JudgePipeline
-from agentloom.colony.schemas import ColonyRead, MessageRead, QueenRead, SessionRead
+from agentloom.colony.schemas import AgentExecutionRead, ColonyRead, MessageRead, QueenRead
 from agentloom.llm.base import (
     LLMContextLengthError,
     LLMMessage,
@@ -36,7 +36,9 @@ CAPACITY_RETRY_MAX_SECONDS = 600.0
 
 @dataclass(frozen=True)
 class LoopContext:
-    session: SessionRead
+    # `session` is the loop's private execution state. A worker execution is
+    # deliberately not exposed or persisted as a user Session.
+    session: AgentExecutionRead
     colony: ColonyRead | None
     messages: list[LLMMessage]
     model: str = ""
@@ -764,7 +766,7 @@ class AgentLoop:
         return f"Worker 的{trigger}预算已耗尽，未能完成全部任务；已有进度和 Tracker 数据已保留。"
 
     @staticmethod
-    def _restored_budget_reason(session: SessionRead) -> BudgetReason | None:
+    def _restored_budget_reason(session: AgentExecutionRead) -> BudgetReason | None:
         if session.cursor.get("phase") != "budget_grace":
             return None
         reason = session.cursor.get("budget_reason")
@@ -776,7 +778,7 @@ class AgentLoop:
 
     @staticmethod
     def _initial_budget_tool_calls(
-        session: SessionRead,
+        session: AgentExecutionRead,
         usage: dict[str, int],
     ) -> int:
         restored = session.cursor.get("budget_tool_calls")
@@ -791,7 +793,7 @@ class AgentLoop:
     @staticmethod
     def _system_message(context: LoopContext) -> LLMMessage:
         if context.session.actor_type == "queen":
-            if context.session.operating_phase == "independent":
+            if context.session.mode == "dm":
                 runtime_prompt = (
                     "你是 AgentLoom 的独立 Queen，先直接帮助用户验证工作方法。"
                     "你当前没有 Colony、Tracker 或 Worker；不得假装已经派生 Worker。"
@@ -817,7 +819,7 @@ class AgentLoop:
         return LLMMessage(role="system", content=content)
 
     @staticmethod
-    def _initial_usage(session: SessionRead) -> dict[str, int]:
+    def _initial_usage(session: AgentExecutionRead) -> dict[str, int]:
         result: dict[str, int] = {}
         for key in ("input_tokens", "output_tokens", "tool_calls", "last_input_tokens"):
             value = session.usage.get(key)

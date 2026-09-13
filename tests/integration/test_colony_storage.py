@@ -47,7 +47,7 @@ async def test_concurrent_colony_writes_have_unique_events(tmp_path: Path) -> No
         await store.append_event(
             colony.id,
             "worker.queued",
-            session_id=worker.worker_session_id,
+            session_id=worker.owner_session_id,
             worker_run_id=worker.id,
         )
 

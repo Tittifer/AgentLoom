@@ -3,15 +3,15 @@ import { useState, type ReactNode } from "react";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
 
 import {
+  createSession,
   deleteColony,
   deleteSession,
   listColonies,
+  listSessions,
   type SessionRead,
 } from "../api/colonies";
 import {
-  createQueenSession,
   listQueens,
-  listQueenSessions,
   type QueenRead,
 } from "../api/queens";
 import { formatError, statusText } from "../utils/format";
@@ -30,32 +30,32 @@ export function SessionNavigation({ queenId = "", currentSessionId }: SessionNav
   const queryClient = useQueryClient();
   const queensQuery = useQuery({ queryKey: ["queens"], queryFn: listQueens });
   const sessionsQuery = useQuery({
-    queryKey: ["queen-sessions", queenId],
-    queryFn: () => listQueenSessions(queenId),
+    queryKey: ["sessions", queenId],
+    queryFn: () => listSessions(queenId),
     enabled: Boolean(queenId),
   });
   const coloniesQuery = useQuery({ queryKey: ["colonies"], queryFn: listColonies });
 
   const createSessionMutation = useMutation({
-    mutationFn: createQueenSession,
+    mutationFn: (selectedQueenId: string) => createSession({ queen_id: selectedQueenId }),
     onSuccess: async (session) => {
       queryClient.setQueryData(["session", session.id], session);
       queryClient.setQueryData(["messages", session.id], []);
-      await queryClient.invalidateQueries({ queryKey: ["queen-sessions", session.queen_id] });
+      await queryClient.invalidateQueries({ queryKey: ["sessions", session.queen_id] });
       navigate(`/sessions/${session.id}`);
     },
   });
   const openQueenMutation = useMutation({
     mutationFn: async (selectedQueenId: string) => {
       const sessions = await queryClient.fetchQuery({
-        queryKey: ["queen-sessions", selectedQueenId],
-        queryFn: () => listQueenSessions(selectedQueenId),
+        queryKey: ["sessions", selectedQueenId],
+        queryFn: () => listSessions(selectedQueenId),
       });
       const latest = [...sessions].sort(
         (left, right) => right.updated_at.localeCompare(left.updated_at),
       )[0];
       if (latest) return sessionDestination(latest);
-      const session = await createQueenSession(selectedQueenId);
+      const session = await createSession({ queen_id: selectedQueenId });
       queryClient.setQueryData(["session", session.id], session);
       queryClient.setQueryData(["messages", session.id], []);
       return `/sessions/${session.id}`;
@@ -65,7 +65,7 @@ export function SessionNavigation({ queenId = "", currentSessionId }: SessionNav
   const deleteSessionMutation = useMutation({
     mutationFn: deleteSession,
     onSuccess: async (_, sessionId) => {
-      await queryClient.invalidateQueries({ queryKey: ["queen-sessions", queenId] });
+      await queryClient.invalidateQueries({ queryKey: ["sessions", queenId] });
       if (sessionId === currentSessionId) navigate("/");
     },
   });
@@ -74,14 +74,14 @@ export function SessionNavigation({ queenId = "", currentSessionId }: SessionNav
     onSuccess: async (_, colonyId) => {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["colonies"] }),
-        queryClient.invalidateQueries({ queryKey: ["queen-sessions", queenId] }),
+        queryClient.invalidateQueries({ queryKey: ["sessions", queenId] }),
       ]);
       if (location.pathname === `/colonies/${colonyId}`) navigate("/");
     },
   });
 
   const sessions = (sessionsQuery.data ?? [])
-    .filter((session) => session.session_kind === "dm" && !session.forked_to_colony_id)
+    .filter((session) => session.mode === "dm" && !session.spawned_colony_id)
     .sort((left, right) => right.updated_at.localeCompare(left.updated_at));
   const colonies = (coloniesQuery.data ?? [])
     .filter((colony) => colony.queen_id === queenId)
@@ -229,8 +229,7 @@ function NavigationSection({ count, label, children }: { count: number; label: s
 }
 
 function sessionDestination(session: SessionRead): string {
-  if (session.forked_to_colony_id) return `/colonies/${session.forked_to_colony_id}`;
-  if (session.colony_id) return `/colonies/${session.colony_id}`;
+  if (session.superseded_by) return `/sessions/${session.superseded_by}`;
   return `/sessions/${session.id}`;
 }
 

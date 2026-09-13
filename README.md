@@ -50,11 +50,13 @@ AgentLoom 不读取 `.env`。持久化根目录固定为项目根目录下的 `.
 
 首次启动后先进入顶部“设置”页面，填写全局模型名称、不带 API 路径后缀的服务 Base URL 和 API Key，再创建 Queen。后端根据模型名称自动选择协议：`claude-*` 使用 Claude 协议，`gemini-*` 使用 Gemini 协议，其他模型使用 OpenAI 兼容协议。OpenAI 兼容协议会自动给 Base URL 添加 `/v1`。
 
-全局模型配置保存在 `.agentloom/settings.yaml`；Queen 身份配置保存在 `queens/<queen_id>/profile.yaml`，`queen_id` 由后端根据名称自动生成。API Key 只保存在本机设置文件中，不会通过查询接口返回；`.agentloom/` 已被 Git 忽略。独立 DM 保存在 `queens/<queen_id>/sessions/<session_id>/`，删除后会整体移动到 `.agentloom/trash/session-<session_id>-<uuid>/`，便于恢复。每个 Colony 则是 `colonies/<colony_id>/` 下的自包含目录。除每个 Colony 的 `tracker/tracker.db` 外，其余运行状态使用 JSON、JSONL 和普通文件保存。
+全局模型配置保存在 `.agentloom/settings.yaml`；Queen 身份配置保存在 `queens/<queen_id>/profile.yaml`，`queen_id` 由后端根据名称自动生成。API Key 只保存在本机设置文件中，不会通过查询接口返回；`.agentloom/` 已被 Git 忽略。独立 DM 保存在 `queens/<queen_id>/sessions/<session_id>/`，Colony 会话保存在 `colonies/<colony_id>/queens/<queen_id>/sessions/<session_id>/`，Worker 执行状态保存在 `colonies/<colony_id>/workers/<worker_id>/`。Worker 不再作为公开 Session。删除独立 DM 后会整体移动到 `.agentloom/trash/session-<session_id>-<uuid>/`，便于恢复。除每个 Colony 的 `tracker/tracker.db` 外，其余运行状态使用 JSON、JSONL 和普通文件保存。
 
 长期记忆保存在 `.agentloom/memories/global/*.md` 和 `.agentloom/memories/agents/queens/<queen_id>/*.md`。每条记忆包含 YAML frontmatter 和 Markdown 正文，单文件最多 4096 字节。Worker 不自动继承这些记忆；可以通过顶部“记忆”页面查看、编辑或删除。
 
 模型上下文窗口在全局“设置”页面配置，并动态应用到所有 Queen 与 Worker 的 AgentLoop。压缩 checkpoint 位于 Session 的 `context/compaction.json`；超过限制的完整工具结果保存在 `spillover/*.json`，模型通过 `load_tool_result` 分页读取。`conversations/parts/*.json` 原始消息不会因压缩删除，因此前端仍展示完整对话。
+
+运行时由 SessionManager 按 Session 隔离：每条活动会话独占 LLM Provider、Queen AgentLoop、事件流标识和串行执行锁。Worker 拥有自己的 AgentLoop 与执行目录，但作为所属 Session 的协作执行单元存在，不进入公开 Session 列表。
 
 内置实际工具通过独立的 stdio MCP 子进程提供。当前包含 `get_current_time`、`web_fetch`、`workspace_glob`、`workspace_read` 和 `workspace_search`；Queen 与 Worker 通过同一工具注册表调用，但文件工具只允许访问 `.agentloom/workspaces/<session_id>/`。`web_fetch` 仅允许公网 HTTP(S) 地址，并限制重定向、响应大小和返回文本长度。
 
@@ -98,24 +100,24 @@ POST /api/colonies
 GET  /api/colonies
 GET  /api/colonies/{colony_id}
 DELETE /api/colonies/{colony_id}
+POST /api/sessions
+GET  /api/sessions
 GET  /api/sessions/{session_id}
+DELETE /api/sessions/{session_id}
 GET  /api/sessions/{session_id}/messages
 POST /api/sessions/{session_id}/messages
 GET  /api/colonies/{colony_id}/workers
 GET  /api/colonies/{colony_id}/tasks
 GET  /api/colonies/{colony_id}/tracker
-GET  /api/colonies/{colony_id}/events
 POST /api/queens
 GET  /api/queens
 GET  /api/queens/{queen_id}
-GET  /api/queens/{queen_id}/sessions
-POST /api/queens/{queen_id}/sessions
 POST /api/sessions/{session_id}/fork-colony
 POST /api/sessions/{session_id}/dismiss-colony-suggestion
 GET  /api/sessions/{session_id}/events
 ```
 
-SSE 事件先追加到 Colony 或独立 DM 的 `events.jsonl`，再通知客户端；客户端可用 `after` 序号重放断线期间的事件。
+SSE 事件先追加到所属 Session 可读取的 `events.jsonl`，再通过统一的 Session 事件端点通知客户端；客户端可用 `after` 序号重放断线期间的事件。
 
 ## 测试与检查
 

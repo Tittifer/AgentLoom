@@ -5,46 +5,48 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  createSession,
   dismissColonySuggestion,
   deleteSession,
   forkSessionIntoColony,
+  getColony,
   getSession,
   listColonies,
   listMessages,
+  listSessions,
   submitMessage,
   type SessionRead,
 } from "../../src/api/colonies";
-import { createQueenSession, listQueens, listQueenSessions } from "../../src/api/queens";
+import { listQueens } from "../../src/api/queens";
 import { SessionWorkspacePage } from "../../src/pages/SessionWorkspacePage";
 
 vi.mock("../../src/api/colonies", () => ({
+  createSession: vi.fn(),
   deleteColony: vi.fn(),
   dismissColonySuggestion: vi.fn(),
   deleteSession: vi.fn(),
   forkSessionIntoColony: vi.fn(),
+  getColony: vi.fn(),
   getSession: vi.fn(),
   listColonies: vi.fn(),
   listMessages: vi.fn(),
+  listSessions: vi.fn(),
   submitMessage: vi.fn(),
 }));
 vi.mock("../../src/api/queens", () => ({
   createQueen: vi.fn(),
-  createQueenSession: vi.fn(),
   listQueens: vi.fn(),
-  listQueenSessions: vi.fn(),
 }));
-vi.mock("../../src/hooks/useColonyEvents", () => ({
+vi.mock("../../src/hooks/useSessionEvents", () => ({
   useSessionEvents: () => ({ streamingMessage: null, llmRetry: null }),
 }));
 
 const session: SessionRead = {
+  layout_version: 2,
   id: "session-1",
   colony_id: null,
   queen_id: "queen_general",
-  parent_session_id: null,
-  actor_type: "queen",
-  session_kind: "dm",
-  operating_phase: "independent",
+  mode: "dm",
   pending_colony_suggestion: {
     id: "suggestion-1",
     suggested_name: "城市对比",
@@ -55,8 +57,8 @@ const session: SessionRead = {
     status: "pending",
     created_at: "2026-09-06T00:00:00Z",
   },
-  forked_to_colony_id: null,
-  forked_to_session_id: null,
+  spawned_colony_id: null,
+  superseded_by: null,
   status: "idle",
   park_reason: null,
   task: {},
@@ -76,8 +78,8 @@ describe("SessionWorkspacePage", () => {
     vi.mocked(listMessages).mockResolvedValue([]);
     vi.mocked(listColonies).mockResolvedValue([]);
     vi.mocked(listQueens).mockResolvedValue([]);
-    vi.mocked(listQueenSessions).mockResolvedValue([session]);
-    vi.mocked(createQueenSession).mockReset();
+    vi.mocked(listSessions).mockResolvedValue([session]);
+    vi.mocked(createSession).mockReset();
     vi.mocked(submitMessage).mockReset();
     vi.mocked(deleteSession).mockReset();
     vi.mocked(dismissColonySuggestion).mockReset();
@@ -86,7 +88,7 @@ describe("SessionWorkspacePage", () => {
 
   it("在当前工作台直接创建并打开新会话", async () => {
     const nextSession = { ...session, id: "session-2", pending_colony_suggestion: null };
-    vi.mocked(createQueenSession).mockResolvedValue(nextSession);
+    vi.mocked(createSession).mockResolvedValue(nextSession);
     vi.mocked(getSession).mockImplementation(async (sessionId) => ({ ...session, id: sessionId }));
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     render(
@@ -99,7 +101,7 @@ describe("SessionWorkspacePage", () => {
 
     await userEvent.click(await screen.findByRole("button", { name: "新建会话" }));
 
-    expect(vi.mocked(createQueenSession).mock.calls[0]?.[0]).toBe(session.queen_id);
+    expect(vi.mocked(createSession).mock.calls[0]?.[0]).toEqual({ queen_id: session.queen_id });
     await waitFor(() => expect(getSession).toHaveBeenCalledWith("session-2"));
     expect(screen.getByRole("heading", { name: "独立 Queen 会话" })).toBeInTheDocument();
   });
@@ -123,6 +125,7 @@ describe("SessionWorkspacePage", () => {
 
   it("仅在用户确认后按 Queen 建议创建 Colony", async () => {
     vi.mocked(forkSessionIntoColony).mockResolvedValue({
+      layout_version: 2,
       id: "colony-1",
       name: "新城市对比",
       description: "整理完整横向对比",
@@ -130,10 +133,34 @@ describe("SessionWorkspacePage", () => {
       settings: {},
       status: "active",
       model: "mock/test",
-      queen_session_id: "colony-session-1",
       source_session_id: session.id,
       created_at: session.created_at,
       updated_at: session.updated_at,
+    });
+    vi.mocked(getColony).mockResolvedValue({
+      colony: {
+        layout_version: 2,
+        id: "colony-1",
+        name: "城市对比",
+        description: "",
+        queen_id: session.queen_id,
+        settings: {},
+        status: "active",
+        model: "mock/test",
+        source_session_id: session.id,
+        created_at: session.created_at,
+        updated_at: session.updated_at,
+      },
+      session: {
+        ...session,
+        id: "colony-session-1",
+        colony_id: "colony-1",
+        mode: "colony",
+        pending_colony_suggestion: null,
+      },
+      workers: [],
+      tasks: [],
+      tracker: [],
     });
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false }, mutations: { retry: false } },

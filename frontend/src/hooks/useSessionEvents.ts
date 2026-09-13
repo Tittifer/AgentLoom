@@ -65,25 +65,9 @@ interface LLMRetryEvent extends ScopedEvent {
   delay_seconds: number;
 }
 
-export function useColonyEvents(
-  colonyId: string | undefined,
-  queenSessionId?: string,
-  persistedMessageIds: readonly string[] = [],
-) {
-  return useScopedEvents("colonies", colonyId, queenSessionId, persistedMessageIds);
-}
-
+/** Subscribe to the event stream owned by one public Session. */
 export function useSessionEvents(
   sessionId: string | undefined,
-  persistedMessageIds: readonly string[] = [],
-) {
-  return useScopedEvents("sessions", sessionId, sessionId, persistedMessageIds);
-}
-
-function useScopedEvents(
-  scope: "colonies" | "sessions",
-  resourceId: string | undefined,
-  queenSessionId?: string,
   persistedMessageIds: readonly string[] = [],
 ) {
   const queryClient = useQueryClient();
@@ -91,22 +75,17 @@ function useScopedEvents(
   const [activeRetry, setActiveRetry] = useState<(LLMRetryState & { sessionId: string }) | null>(null);
 
   useEffect(() => {
-    if (!resourceId) return undefined;
-    const source = new EventSource(`/api/${scope}/${resourceId}/events?after=0`);
+    if (!sessionId) return undefined;
+    const source = new EventSource(`/api/sessions/${sessionId}/events?after=0`);
 
     const listeners = EVENT_TYPES.map((type) => {
       const listener = (event: Event) => {
-        if (scope === "colonies") {
-          void queryClient.invalidateQueries({ queryKey: ["colony", resourceId] });
-        } else {
-          void queryClient.invalidateQueries({ queryKey: ["session", resourceId] });
-        }
-        if (queenSessionId) {
-          void queryClient.invalidateQueries({ queryKey: ["messages", queenSessionId] });
-        }
+        void queryClient.invalidateQueries({ queryKey: ["session", sessionId] });
+        void queryClient.invalidateQueries({ queryKey: ["colony"] });
+        void queryClient.invalidateQueries({ queryKey: ["messages", sessionId] });
         if (type === "llm.retrying") {
           const data = parseRetryEvent(event);
-          if (data && data.session_id === queenSessionId) {
+          if (data && data.session_id === sessionId) {
             setActiveRetry({
               sessionId: data.session_id,
               category: data.category,
@@ -123,7 +102,7 @@ function useScopedEvents(
           "llm.retry_exhausted",
         ].includes(type)) {
           const data = parseScopedEvent(event);
-          if (data?.session_id === queenSessionId) setActiveRetry(null);
+          if (data?.session_id === sessionId) setActiveRetry(null);
         }
       };
       source.addEventListener(type, listener);
@@ -132,7 +111,7 @@ function useScopedEvents(
 
     const deltaListener = (event: Event) => {
       const data = parseDeltaEvent(event);
-      if (!data || data.session_id !== queenSessionId) return;
+      if (!data || data.session_id !== sessionId) return;
       setActiveRetry(null);
       setStreamingMessage((current) => ({
         id: data.message_id,
@@ -146,7 +125,7 @@ function useScopedEvents(
     };
     const cancelListener = (event: Event) => {
       const data = parseDeltaEvent(event, false);
-      if (!data || data.session_id !== queenSessionId) return;
+      if (!data || data.session_id !== sessionId) return;
       setStreamingMessage((current) => current?.id === data.message_id ? null : current);
     };
     source.addEventListener("message.delta", deltaListener);
@@ -158,14 +137,14 @@ function useScopedEvents(
       source.removeEventListener("message.stream.cancelled", cancelListener);
       source.close();
     };
-  }, [scope, resourceId, queenSessionId, queryClient]);
+  }, [sessionId, queryClient]);
 
   const visibleStreamingMessage = !streamingMessage ||
-    streamingMessage.sessionId !== queenSessionId ||
+    streamingMessage.sessionId !== sessionId ||
     persistedMessageIds.includes(streamingMessage.id)
     ? null
     : streamingMessage;
-  const visibleRetry = activeRetry?.sessionId === queenSessionId ? activeRetry : null;
+  const visibleRetry = activeRetry?.sessionId === sessionId ? activeRetry : null;
   return {
     streamingMessage: visibleStreamingMessage
       ? { id: visibleStreamingMessage.id, content: visibleStreamingMessage.content }

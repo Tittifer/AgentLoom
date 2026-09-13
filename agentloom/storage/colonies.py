@@ -14,6 +14,7 @@ from pydantic import JsonValue, TypeAdapter
 
 from agentloom.colony.message_safety import redact_json, sanitize_json, sanitize_text
 from agentloom.colony.schemas import (
+    AgentExecutionRead,
     ColonyEventRead,
     ColonyForkCreate,
     ColonyRead,
@@ -56,6 +57,13 @@ JSON_OBJECTS = TypeAdapter(list[dict[str, JsonValue]])
 class SessionLocation:
     base: Path
     session: SessionRead
+    lock_id: UUID
+
+
+@dataclass(frozen=True)
+class ExecutionLocation:
+    base: Path
+    execution: AgentExecutionRead
     lock_id: UUID
 
 
@@ -138,7 +146,7 @@ class LocalColonyStore:
             merged.update(JSON_OBJECT.validate_python(dict(settings)))
             now = utc_now()
             colony_id = uuid4()
-            queen_session_id = uuid4()
+            session_id = uuid4()
             colony = ColonyRead(
                 id=colony_id,
                 name=name,
@@ -147,16 +155,14 @@ class LocalColonyStore:
                 queen_id=queen_id,
                 model=llm.model,
                 settings=merged,
-                queen_session_id=queen_session_id,
                 created_at=now,
                 updated_at=now,
             )
             queen = SessionRead(
-                id=queen_session_id,
+                id=session_id,
                 colony_id=colony_id,
                 queen_id=queen_id,
-                parent_session_id=None,
-                actor_type="queen",
+                mode="colony",
                 status=SessionStatus.IDLE,
                 park_reason=None,
                 task={},
@@ -168,7 +174,6 @@ class LocalColonyStore:
                 ended_at=None,
             )
             await asyncio.to_thread(self._create_sync, colony, queen)
-            await self._queens.add_session_reference(queen_id, queen.id, colony.id)
             await self._tracker.initialize(self._tracker_path(colony_id))
             return colony, queen
 
@@ -196,12 +201,18 @@ class LocalColonyStore:
     async def list_queen_sessions(self, queen_id: str) -> list[SessionRead]:
         sessions = await asyncio.to_thread(self._list_dm_sessions_sync, queen_id)
         for colony in await self.list_colonies():
-            if colony.queen_id != queen_id or colony.queen_session_id is None:
+            if colony.queen_id != queen_id:
                 continue
-            session = await self.get_session(colony.queen_session_id)
-            if session is not None:
-                sessions.append(session)
+            sessions.extend(
+                await asyncio.to_thread(self._list_colony_sessions_sync, colony.id, queen_id)
+            )
         return sorted(sessions, key=lambda item: item.created_at, reverse=True)
+
+    async def list_sessions(self) -> list[SessionRead]:
+        sessions: list[SessionRead] = []
+        for queen in await self._queens.list():
+            sessions.extend(await self.list_queen_sessions(queen.id))
+        return sorted(sessions, key=lambda item: item.updated_at, reverse=True)
 
     async def create_dm_session(self, queen_id: str) -> SessionRead:
         queen = await self._queens.get(queen_id)
@@ -217,15 +228,39 @@ class LocalColonyStore:
                 id=uuid4(),
                 colony_id=None,
                 queen_id=queen_id,
-                parent_session_id=None,
-                actor_type="queen",
-                session_kind="dm",
-                operating_phase="independent",
+                mode="dm",
                 status=SessionStatus.IDLE,
                 park_reason=None,
                 task={},
                 cursor={"iteration": 0, "phase": "idle"},
                 budget=settings,
+                usage={"input_tokens": 0, "output_tokens": 0, "tool_calls": 0},
+                created_at=now,
+                updated_at=now,
+                ended_at=None,
+            )
+            await asyncio.to_thread(self._write_session_sync, session)
+            return session
+
+    async def create_colony_session(self, queen_id: str, colony_id: UUID) -> SessionRead:
+        queen = await self._queens.get(queen_id)
+        colony = await self.get(colony_id)
+        if queen is None:
+            raise KeyError(queen_id)
+        if colony is None or colony.queen_id != queen_id:
+            raise ValueError("Colony does not belong to the selected Queen")
+        async with self._lock(colony_id):
+            now = utc_now()
+            session = SessionRead(
+                id=uuid4(),
+                colony_id=colony_id,
+                queen_id=queen_id,
+                mode="colony",
+                status=SessionStatus.IDLE,
+                park_reason=None,
+                task={},
+                cursor={"iteration": 0, "phase": "idle"},
+                budget=colony.settings,
                 usage={"input_tokens": 0, "output_tokens": 0, "tool_calls": 0},
                 created_at=now,
                 updated_at=now,
@@ -259,9 +294,9 @@ class LocalColonyStore:
                 raise KeyError(str(source_session_id))
             source = located.session
             suggestion = source.pending_colony_suggestion
-            if source.session_kind != "dm" or source.operating_phase != "independent":
+            if source.mode != "dm":
                 raise ValueError("只有独立 Queen 会话可以创建 Colony")
-            if source.forked_to_colony_id is not None or source.status is SessionStatus.FORKED:
+            if source.spawned_colony_id is not None or source.status is SessionStatus.FORKED:
                 raise ValueError("该会话已经创建过 Colony")
             if source.status is not SessionStatus.IDLE:
                 raise ValueError("Queen 当前仍在运行，请等待本轮完成后再创建 Colony")
@@ -285,7 +320,6 @@ class LocalColonyStore:
                 queen_id=source.queen_id,
                 model=llm.model,
                 settings=source.budget,
-                queen_session_id=target_session_id,
                 source_session_id=source.id,
                 created_at=now,
                 updated_at=now,
@@ -294,11 +328,10 @@ class LocalColonyStore:
                 update={
                     "id": target_session_id,
                     "colony_id": colony_id,
-                    "session_kind": "colony",
-                    "operating_phase": "colony",
+                    "mode": "colony",
                     "pending_colony_suggestion": None,
-                    "forked_to_colony_id": None,
-                    "forked_to_session_id": None,
+                    "spawned_colony_id": None,
+                    "superseded_by": None,
                     "status": SessionStatus.IDLE,
                     "cursor": {"iteration": 0, "phase": "idle"},
                     "updated_at": now,
@@ -307,13 +340,12 @@ class LocalColonyStore:
             )
             await asyncio.to_thread(self._fork_dm_session_sync, located.base, colony, target)
             await self._tracker.initialize(self._tracker_path(colony_id))
-            await self._queens.add_session_reference(source.queen_id, target.id, colony.id)
             accepted = suggestion.model_copy(update={"status": "accepted"})
             locked_source = source.model_copy(
                 update={
                     "pending_colony_suggestion": accepted,
-                    "forked_to_colony_id": colony.id,
-                    "forked_to_session_id": target.id,
+                    "spawned_colony_id": colony.id,
+                    "superseded_by": target.id,
                     "status": SessionStatus.FORKED,
                     "updated_at": utc_now(),
                     "ended_at": utc_now(),
@@ -324,13 +356,7 @@ class LocalColonyStore:
 
     async def delete_colony(self, colony_id: UUID) -> bool:
         async with self._lock(colony_id):
-            colony = await self.get(colony_id)
-            deleted = await asyncio.to_thread(self._delete_colony_sync, colony_id)
-            if deleted and colony is not None and colony.queen_session_id is not None:
-                await self._queens.remove_session_reference(
-                    colony.queen_id, colony.queen_session_id
-                )
-            return deleted
+            return await asyncio.to_thread(self._delete_colony_sync, colony_id)
 
     async def delete_session(self, session_id: UUID) -> bool:
         located = await asyncio.to_thread(self._find_session_sync, session_id)
@@ -342,7 +368,7 @@ class LocalColonyStore:
             raise ValueError("会话仍在运行，无法删除")
         async with self._lock(located.lock_id):
             return await asyncio.to_thread(
-                self._delete_dm_session_sync,
+                self._delete_session_sync,
                 located.base,
                 session_id,
             )
@@ -364,11 +390,18 @@ class LocalColonyStore:
         located = await asyncio.to_thread(self._find_session_sync, session_id)
         return located.session if located is not None else None
 
+    async def get_execution(self, execution_id: UUID) -> AgentExecutionRead | None:
+        located = await asyncio.to_thread(self._find_execution_sync, execution_id)
+        return located.execution if located is not None else None
+
     async def get_queen_session(self, colony_id: UUID) -> SessionRead | None:
         colony = await self.get(colony_id)
-        if colony is None or colony.queen_session_id is None:
+        if colony is None:
             return None
-        return await asyncio.to_thread(self._read_session_sync, colony_id, colony.queen_session_id)
+        sessions = await asyncio.to_thread(
+            self._list_colony_sessions_sync, colony_id, colony.queen_id
+        )
+        return max(sessions, key=lambda item: item.updated_at) if sessions else None
 
     async def set_session_status(
         self,
@@ -410,6 +443,38 @@ class LocalColonyStore:
             )
             return True
 
+    async def set_execution_status(
+        self,
+        execution_id: UUID,
+        status: SessionStatus | WorkerStatus,
+        *,
+        park_reason: str | None = None,
+        cursor: Mapping[str, object] | None = None,
+        usage: Mapping[str, object] | None = None,
+    ) -> bool:
+        located = await asyncio.to_thread(self._find_execution_sync, execution_id)
+        if located is None:
+            return False
+        if located.execution.actor_type == "queen":
+            if not isinstance(status, SessionStatus):
+                return False
+            return await self.set_session_status(
+                execution_id,
+                status,
+                park_reason=park_reason,
+                cursor=cursor,
+                usage=usage,
+            )
+        async with self._lock(located.lock_id):
+            return await asyncio.to_thread(
+                self._update_worker_execution_sync,
+                located.base,
+                status,
+                park_reason,
+                cursor,
+                usage,
+            )
+
     async def append_message(
         self,
         session_id: UUID,
@@ -418,27 +483,27 @@ class LocalColonyStore:
         message_id: UUID | None = None,
         metadata: Mapping[str, object] | None = None,
     ) -> MessageRead | None:
-        located = await asyncio.to_thread(self._find_session_sync, session_id)
+        located = await asyncio.to_thread(self._find_execution_sync, session_id)
         if located is None:
             return None
         async with self._lock(located.lock_id):
             return await asyncio.to_thread(
                 self._append_message_sync,
                 located.base,
-                located.session,
+                located.execution,
                 message,
                 message_id,
                 metadata,
             )
 
     async def list_messages(self, session_id: UUID) -> list[MessageRead] | None:
-        located = await asyncio.to_thread(self._find_session_sync, session_id)
+        located = await asyncio.to_thread(self._find_execution_sync, session_id)
         if located is None:
             return None
         return await asyncio.to_thread(self._list_messages_at_sync, located.base)
 
     async def get_compaction_checkpoint(self, session_id: UUID) -> CompactionCheckpoint | None:
-        located = await asyncio.to_thread(self._find_session_sync, session_id)
+        located = await asyncio.to_thread(self._find_execution_sync, session_id)
         if located is None:
             return None
         return await asyncio.to_thread(self._get_compaction_checkpoint_at_sync, located.base)
@@ -446,7 +511,7 @@ class LocalColonyStore:
     async def save_compaction_checkpoint(
         self, session_id: UUID, checkpoint: CompactionCheckpoint
     ) -> None:
-        located = await asyncio.to_thread(self._find_session_sync, session_id)
+        located = await asyncio.to_thread(self._find_execution_sync, session_id)
         if located is None:
             raise KeyError(str(session_id))
         async with self._lock(located.lock_id):
@@ -457,7 +522,7 @@ class LocalColonyStore:
             )
 
     async def write_tool_spillover(self, session_id: UUID, tool_name: str, value: JsonValue) -> str:
-        located = await asyncio.to_thread(self._find_session_sync, session_id)
+        located = await asyncio.to_thread(self._find_execution_sync, session_id)
         if located is None:
             raise KeyError(str(session_id))
         async with self._lock(located.lock_id):
@@ -475,7 +540,7 @@ class LocalColonyStore:
         offset: int,
         limit: int,
     ) -> dict[str, JsonValue]:
-        located = await asyncio.to_thread(self._find_session_sync, session_id)
+        located = await asyncio.to_thread(self._find_execution_sync, session_id)
         if located is None:
             raise KeyError(str(session_id))
         return await asyncio.to_thread(
@@ -488,23 +553,19 @@ class LocalColonyStore:
 
     async def create_workers(
         self,
-        queen_session_id: UUID,
+        owner_session_id: UUID,
         tasks: Sequence[WorkerTask],
         timeout_seconds: int,
     ) -> list[WorkerRead]:
-        located = await asyncio.to_thread(self._find_session_sync, queen_session_id)
-        if (
-            located is None
-            or located.session.actor_type != "queen"
-            or located.session.colony_id is None
-        ):
+        located = await asyncio.to_thread(self._find_session_sync, owner_session_id)
+        if located is None or located.session.colony_id is None:
             return []
         colony_id = located.session.colony_id
         async with self._lock(colony_id):
             return await asyncio.to_thread(
                 self._create_workers_sync,
                 colony_id,
-                queen_session_id,
+                owner_session_id,
                 tasks,
                 timeout_seconds,
             )
@@ -516,9 +577,6 @@ class LocalColonyStore:
         located = await asyncio.to_thread(self._find_worker_sync, worker_id)
         return located[1] if located is not None else None
 
-    async def get_worker_for_session(self, session_id: UUID) -> WorkerRead | None:
-        return await asyncio.to_thread(self._get_worker_for_session_sync, session_id)
-
     async def mark_worker_running(self, worker_id: UUID) -> WorkerRead | None:
         located = await asyncio.to_thread(self._find_worker_sync, worker_id)
         if located is None:
@@ -529,12 +587,12 @@ class LocalColonyStore:
 
     async def finish_worker(
         self,
-        session_id: UUID,
+        worker_id: UUID,
         status: WorkerStatus,
         report: Mapping[str, object] | None = None,
         error: Mapping[str, object] | None = None,
     ) -> WorkerRead | None:
-        worker = await self.get_worker_for_session(session_id)
+        worker = await self.get_worker(worker_id)
         if worker is None:
             return None
         async with self._lock(worker.colony_id):
@@ -549,14 +607,14 @@ class LocalColonyStore:
 
     async def finish_worker_if_active(
         self,
-        session_id: UUID,
+        worker_id: UUID,
         status: WorkerStatus,
         report: Mapping[str, object] | None = None,
         error: Mapping[str, object] | None = None,
     ) -> WorkerRead | None:
         """Move an active Worker to a terminal state without overwriting a winner."""
 
-        worker = await self.get_worker_for_session(session_id)
+        worker = await self.get_worker(worker_id)
         if worker is None:
             return None
         async with self._lock(worker.colony_id):
@@ -571,12 +629,12 @@ class LocalColonyStore:
 
     async def attach_worker_report_if_missing(
         self,
-        session_id: UUID,
+        worker_id: UUID,
         report: Mapping[str, object],
     ) -> WorkerRead | None:
         """Attach one synthetic report to an already terminal Worker."""
 
-        worker = await self.get_worker_for_session(session_id)
+        worker = await self.get_worker(worker_id)
         if worker is None:
             return None
         async with self._lock(worker.colony_id):
@@ -675,15 +733,20 @@ class LocalColonyStore:
         worker_run_id: UUID | None = None,
         payload: Mapping[str, object] | None = None,
     ) -> ColonyEventRead | None:
-        located = await asyncio.to_thread(self._find_session_sync, session_id)
+        located = await asyncio.to_thread(self._find_execution_sync, session_id)
         if located is None:
             return None
-        if located.session.colony_id is not None:
+        execution = located.execution
+        if execution.colony_id is not None:
             return await self.append_event(
-                located.session.colony_id,
+                execution.colony_id,
                 event_type,
-                session_id=session_id,
-                worker_run_id=worker_run_id,
+                session_id=execution.owner_session_id,
+                worker_run_id=(
+                    worker_run_id
+                    if worker_run_id is not None
+                    else (execution.id if execution.actor_type == "worker" else None)
+                ),
                 payload=payload,
             )
         async with self._lock(located.lock_id):
@@ -700,17 +763,21 @@ class LocalColonyStore:
     async def list_session_events_after(
         self, session_id: UUID, sequence: int
     ) -> list[ColonyEventRead] | None:
-        located = await asyncio.to_thread(self._find_session_sync, session_id)
+        located = await asyncio.to_thread(self._find_execution_sync, session_id)
         if located is None:
             return None
         path = (
-            self._events_path(located.session.colony_id)
-            if located.session.colony_id is not None
+            self._events_path(located.execution.colony_id)
+            if located.execution.colony_id is not None
             else located.base / "events.jsonl"
         )
         records = await asyncio.to_thread(read_json_lines, path)
         events = [ColonyEventRead.model_validate(record) for record in records]
-        return [event for event in events if event.sequence > sequence]
+        return [
+            event
+            for event in events
+            if event.sequence > sequence and event.session_id == located.execution.owner_session_id
+        ]
 
     def _initialize_sync(self) -> None:
         self._colonies.mkdir(parents=True, exist_ok=True)
@@ -722,7 +789,7 @@ class LocalColonyStore:
     def _create_sync(self, colony: ColonyRead, queen: SessionRead) -> None:
         colony_dir = self._colony_dir(colony.id)
         colony_dir.mkdir(parents=True, exist_ok=False)
-        (colony_dir / "sessions").mkdir()
+        (colony_dir / "queens").mkdir()
         (colony_dir / "workers").mkdir()
         (colony_dir / "tracker").mkdir()
         (colony_dir / "artifacts").mkdir()
@@ -732,10 +799,12 @@ class LocalColonyStore:
     def _list_colonies_sync(self) -> list[ColonyRead]:
         if not self._colonies.exists():
             return []
-        colonies = [
-            ColonyRead.model_validate(read_json(path))
-            for path in self._colonies.glob("*/metadata.json")
-        ]
+        colonies: list[ColonyRead] = []
+        for path in self._colonies.glob("*/metadata.json"):
+            document = read_json(path)
+            if document.get("layout_version") != 2:
+                continue
+            colonies.append(ColonyRead.model_validate(document))
         return sorted(colonies, key=lambda item: item.created_at, reverse=True)
 
     def _delete_colony_sync(self, colony_id: UUID) -> bool:
@@ -748,7 +817,7 @@ class LocalColonyStore:
         metadata.replace(destination)
         return True
 
-    def _delete_dm_session_sync(self, source: Path, session_id: UUID) -> bool:
+    def _delete_session_sync(self, source: Path, session_id: UUID) -> bool:
         if not (source / "meta.json").is_file():
             return False
         self._trash.mkdir(parents=True, exist_ok=True)
@@ -764,27 +833,33 @@ class LocalColonyStore:
 
     def _get_colony_sync(self, colony_id: UUID) -> ColonyRead | None:
         path = self._metadata_path(colony_id)
-        return ColonyRead.model_validate(read_json(path)) if path.is_file() else None
+        if not path.is_file():
+            return None
+        document = read_json(path)
+        if document.get("layout_version") != 2:
+            return None
+        return ColonyRead.model_validate(document)
 
     def _find_session_sync(self, session_id: UUID) -> SessionLocation | None:
         if self._colonies.exists():
             for colony_dir in self._colonies.iterdir():
-                if not (colony_dir / "metadata.json").is_file():
+                metadata = colony_dir / "metadata.json"
+                if not metadata.is_file() or read_json(metadata).get("layout_version") != 2:
                     continue
-                base = colony_dir / "sessions" / str(session_id)
-                path = base / "meta.json"
-                if path.is_file():
-                    return SessionLocation(
-                        base=base,
-                        session=SessionRead.model_validate(read_json(path)),
-                        lock_id=UUID(colony_dir.name),
-                    )
+                for path in (colony_dir / "queens").glob(f"*/sessions/{session_id}/meta.json"):
+                    document = read_json(path)
+                    if document.get("layout_version") == 2:
+                        return SessionLocation(
+                            base=path.parent,
+                            session=SessionRead.model_validate(document),
+                            lock_id=UUID(colony_dir.name),
+                        )
         queens_dir = self.root / "queens"
         if queens_dir.exists():
             for queen_dir in queens_dir.iterdir():
                 base = queen_dir / "sessions" / str(session_id)
                 path = base / "meta.json"
-                if path.is_file():
+                if path.is_file() and read_json(path).get("layout_version") == 2:
                     return SessionLocation(
                         base=base,
                         session=SessionRead.model_validate(read_json(path)),
@@ -792,22 +867,131 @@ class LocalColonyStore:
                     )
         return None
 
+    @staticmethod
+    def _session_execution(session: SessionRead) -> AgentExecutionRead:
+        return AgentExecutionRead(
+            id=session.id,
+            actor_type="queen",
+            colony_id=session.colony_id,
+            queen_id=session.queen_id,
+            owner_session_id=session.id,
+            mode=session.mode,
+            status=session.status,
+            park_reason=session.park_reason,
+            task=session.task,
+            cursor=session.cursor,
+            budget=session.budget,
+            usage=session.usage,
+            created_at=session.created_at,
+            updated_at=session.updated_at,
+            ended_at=session.ended_at,
+        )
+
+    @staticmethod
+    def _worker_execution(worker: WorkerRead) -> AgentExecutionRead:
+        return AgentExecutionRead(
+            id=worker.id,
+            actor_type="worker",
+            colony_id=worker.colony_id,
+            queen_id=worker.queen_id,
+            owner_session_id=worker.owner_session_id,
+            mode="colony",
+            status=worker.status,
+            park_reason=worker.park_reason,
+            task={"description": worker.task, "data": worker.input},
+            cursor=worker.cursor,
+            budget=worker.budget,
+            usage=worker.usage,
+            created_at=worker.queued_at,
+            updated_at=worker.updated_at,
+            ended_at=worker.ended_at,
+        )
+
+    def _find_execution_sync(self, execution_id: UUID) -> ExecutionLocation | None:
+        session = self._find_session_sync(execution_id)
+        if session is not None:
+            return ExecutionLocation(
+                base=session.base,
+                execution=self._session_execution(session.session),
+                lock_id=session.lock_id,
+            )
+        worker = self._find_worker_sync(execution_id)
+        if worker is None:
+            return None
+        colony_id, value = worker
+        return ExecutionLocation(
+            base=self._worker_base(colony_id, value.id),
+            execution=self._worker_execution(value),
+            lock_id=colony_id,
+        )
+
+    def _update_worker_execution_sync(
+        self,
+        base: Path,
+        status: SessionStatus | WorkerStatus,
+        park_reason: str | None,
+        cursor: Mapping[str, object] | None,
+        usage: Mapping[str, object] | None,
+    ) -> bool:
+        path = base / "meta.json"
+        if not path.is_file():
+            return False
+        worker = WorkerRead.model_validate(read_json(path))
+        worker_status = status if isinstance(status, WorkerStatus) else worker.status
+        if status is SessionStatus.QUEUED:
+            worker_status = WorkerStatus.QUEUED
+        elif status is SessionStatus.RUNNING:
+            worker_status = WorkerStatus.RUNNING
+        changes: dict[str, object] = {
+            "status": worker_status,
+            "park_reason": park_reason,
+            "updated_at": utc_now(),
+        }
+        if cursor is not None:
+            changes["cursor"] = JSON_OBJECT.validate_python(dict(cursor))
+        if usage is not None:
+            changes["usage"] = JSON_OBJECT.validate_python(dict(usage))
+        self._write_model(path, worker.model_copy(update=changes))
+        return True
+
     def _list_dm_sessions_sync(self, queen_id: str) -> list[SessionRead]:
         directory = self.root / "queens" / queen_id / "sessions"
         if not directory.is_dir():
             return []
-        return [
-            SessionRead.model_validate(read_json(path)) for path in directory.glob("*/meta.json")
-        ]
+        sessions: list[SessionRead] = []
+        for path in directory.glob("*/meta.json"):
+            document = read_json(path)
+            if document.get("layout_version") == 2:
+                sessions.append(SessionRead.model_validate(document))
+        return sessions
+
+    def _list_colony_sessions_sync(
+        self, colony_id: UUID, queen_id: str | None = None
+    ) -> list[SessionRead]:
+        directory = self._colony_dir(colony_id) / "queens"
+        pattern = f"{queen_id}/sessions/*/meta.json" if queen_id else "*/sessions/*/meta.json"
+        sessions: list[SessionRead] = []
+        for path in directory.glob(pattern):
+            document = read_json(path)
+            if document.get("layout_version") == 2:
+                sessions.append(SessionRead.model_validate(document))
+        return sessions
 
     def _read_session_sync(self, colony_id: UUID, session_id: UUID) -> SessionRead | None:
-        path = self._session_meta_path(colony_id, session_id)
-        return SessionRead.model_validate(read_json(path)) if path.is_file() else None
+        for session in self._list_colony_sessions_sync(colony_id):
+            if session.id == session_id:
+                return session
+        return None
 
     @staticmethod
     def _read_session_at_sync(base: Path) -> SessionRead | None:
         path = base / "meta.json"
-        return SessionRead.model_validate(read_json(path)) if path.is_file() else None
+        if not path.is_file():
+            return None
+        document = read_json(path)
+        if document.get("layout_version") != 2:
+            return None
+        return SessionRead.model_validate(document)
 
     def _fork_dm_session_sync(
         self,
@@ -821,13 +1005,13 @@ class LocalColonyStore:
         staging = self._colonies / f".tmp-{colony.id.hex[:8]}"
         staging.mkdir(parents=True, exist_ok=False)
         try:
-            (staging / "sessions").mkdir()
+            (staging / "queens").mkdir()
             (staging / "workers").mkdir()
             (staging / "tracker").mkdir()
             (staging / "artifacts").mkdir()
             self._write_model(staging / "metadata.json", colony)
 
-            target_base = staging / "sessions" / str(target.id)
+            target_base = staging / "queens" / target.queen_id / "sessions" / str(target.id)
             (target_base / "conversations" / "parts").mkdir(parents=True)
             (target_base / "conversations" / "partials").mkdir()
             (target_base / "data").mkdir()
@@ -859,15 +1043,21 @@ class LocalColonyStore:
         (base / "data").mkdir(parents=True, exist_ok=True)
         self._write_model(base / "meta.json", session)
 
+    def _initialize_worker_execution_sync(self, worker: WorkerRead) -> None:
+        base = self._worker_base(worker.colony_id, worker.id)
+        (base / "conversations" / "parts").mkdir(parents=True, exist_ok=True)
+        (base / "conversations" / "partials").mkdir(parents=True, exist_ok=True)
+        (base / "data").mkdir(parents=True, exist_ok=True)
+
     def _append_message_sync(
         self,
         base: Path,
-        session: SessionRead,
+        session: AgentExecutionRead,
         message: LLMMessage,
         message_id: UUID | None,
         metadata: Mapping[str, object] | None,
     ) -> MessageRead | None:
-        if self._read_session_at_sync(base) is None:
+        if not (base / "meta.json").is_file():
             return None
         parts = base / "conversations" / "parts"
         sequences = [int(path.stem) for path in parts.glob("*.json")]
@@ -955,27 +1145,26 @@ class LocalColonyStore:
     def _create_workers_sync(
         self,
         colony_id: UUID,
-        queen_session_id: UUID,
+        owner_session_id: UUID,
         tasks: Sequence[WorkerTask],
         timeout_seconds: int,
     ) -> list[WorkerRead]:
         now = utc_now()
-        parent = self._read_session_sync(colony_id, queen_session_id)
+        parent = self._read_session_sync(colony_id, owner_session_id)
         if parent is None:
-            raise RuntimeError(f"Queen session {queen_session_id} does not exist")
+            raise RuntimeError(f"Owner session {owner_session_id} does not exist")
         workers: list[WorkerRead] = []
         for task in tasks:
-            session_id = uuid4()
             worker_id = uuid4()
-            session = SessionRead(
-                id=session_id,
+            worker = WorkerRead(
+                id=worker_id,
                 colony_id=colony_id,
+                owner_session_id=owner_session_id,
                 queen_id=parent.queen_id,
-                parent_session_id=queen_session_id,
-                actor_type="worker",
-                status=SessionStatus.QUEUED,
+                status=WorkerStatus.QUEUED,
                 park_reason=None,
-                task={"description": task.task, "data": task.data},
+                task=task.task,
+                input=task.data,
                 cursor={"iteration": 0, "phase": "queued"},
                 budget={
                     "max_turns": 8,
@@ -996,26 +1185,15 @@ class LocalColonyStore:
                     },
                 },
                 usage={"input_tokens": 0, "output_tokens": 0, "tool_calls": 0},
-                created_at=now,
-                updated_at=now,
-                ended_at=None,
-            )
-            worker = WorkerRead(
-                id=worker_id,
-                colony_id=colony_id,
-                queen_session_id=queen_session_id,
-                worker_session_id=session_id,
-                status=WorkerStatus.QUEUED,
-                task=task.task,
-                input=task.data,
                 report=None,
                 error=None,
                 timeout_seconds=timeout_seconds,
                 queued_at=now,
                 started_at=None,
+                updated_at=now,
                 ended_at=None,
             )
-            self._write_session_sync(session)
+            self._initialize_worker_execution_sync(worker)
             self._write_model(self._worker_meta_path(colony_id, worker_id), worker)
             workers.append(worker)
         return workers
@@ -1024,17 +1202,12 @@ class LocalColonyStore:
         directory = self._workers_dir(colony_id)
         if not directory.exists():
             return []
-        workers = [
-            WorkerRead.model_validate(read_json(path)) for path in directory.glob("*/meta.json")
-        ]
+        workers: list[WorkerRead] = []
+        for path in directory.glob("*/meta.json"):
+            document = read_json(path)
+            if document.get("layout_version") == 2:
+                workers.append(WorkerRead.model_validate(document))
         return sorted(workers, key=lambda item: item.queued_at, reverse=True)
-
-    def _get_worker_for_session_sync(self, session_id: UUID) -> WorkerRead | None:
-        for colony in self._list_colonies_sync():
-            for worker in self._list_workers_sync(colony.id):
-                if worker.worker_session_id == session_id:
-                    return worker
-        return None
 
     def _find_worker_sync(self, worker_id: UUID) -> tuple[UUID, WorkerRead] | None:
         for colony in self._list_colonies_sync():
@@ -1051,23 +1224,18 @@ class LocalColonyStore:
         if worker.status is not WorkerStatus.QUEUED:
             return None
         now = utc_now()
-        updated = worker.model_copy(update={"status": WorkerStatus.RUNNING, "started_at": now})
-        self._write_model(path, updated)
-        session = self._read_session_sync(colony_id, worker.worker_session_id)
-        if session is None:
-            raise RuntimeError(f"Worker {worker_id} has no session")
-        cursor = dict(session.cursor)
+        cursor = dict(worker.cursor)
         if cursor.get("phase") in {"queued", "idle"}:
             cursor["phase"] = "running"
-        self._write_session_sync(
-            session.model_copy(
-                update={
-                    "status": SessionStatus.RUNNING,
-                    "cursor": cursor,
-                    "updated_at": now,
-                }
-            )
+        updated = worker.model_copy(
+            update={
+                "status": WorkerStatus.RUNNING,
+                "started_at": now,
+                "updated_at": now,
+                "cursor": cursor,
+            }
         )
+        self._write_model(path, updated)
         return updated
 
     def _finish_worker_sync(
@@ -1088,23 +1256,11 @@ class LocalColonyStore:
                 "status": status,
                 "report": JSON_OBJECT.validate_python(dict(report)) if report is not None else None,
                 "error": JSON_OBJECT.validate_python(dict(error)) if error is not None else None,
+                "updated_at": now,
                 "ended_at": now,
             }
         )
         self._write_model(path, updated)
-        session = self._read_session_sync(colony_id, worker.worker_session_id)
-        if session is None:
-            raise RuntimeError(f"Worker {worker_id} has no session")
-        session_status = (
-            SessionStatus.COMPLETED
-            if status in {WorkerStatus.COMPLETED, WorkerStatus.PARTIAL}
-            else SessionStatus.FAILED
-        )
-        self._write_session_sync(
-            session.model_copy(
-                update={"status": session_status, "updated_at": now, "ended_at": now}
-            )
-        )
         return updated
 
     def _finish_worker_if_active_sync(
@@ -1177,14 +1333,10 @@ class LocalColonyStore:
 
     def _find_task_sync(self, task_id: UUID) -> tuple[UUID, UUID, TaskItemRead] | None:
         for colony in self._list_colonies_sync():
-            sessions_dir = self._sessions_dir(colony.id)
-            if not sessions_dir.exists():
-                continue
-            for session_dir in sessions_dir.iterdir():
-                session_id = UUID(session_dir.name)
-                for task in self._read_tasks_sync(colony.id, session_id):
+            for session in self._list_colony_sessions_sync(colony.id):
+                for task in self._read_tasks_sync(colony.id, session.id):
                     if task.id == task_id:
-                        return colony.id, session_id, task
+                        return colony.id, session.id, task
         return None
 
     def _update_task_sync(
@@ -1208,12 +1360,9 @@ class LocalColonyStore:
         return updated
 
     def _list_tasks_sync(self, colony_id: UUID) -> list[TaskItemRead]:
-        directory = self._sessions_dir(colony_id)
-        if not directory.exists():
-            return []
         tasks: list[TaskItemRead] = []
-        for session_dir in directory.iterdir():
-            tasks.extend(self._read_tasks_sync(colony_id, UUID(session_dir.name)))
+        for session in self._list_colony_sessions_sync(colony_id):
+            tasks.extend(self._read_tasks_sync(colony_id, session.id))
         return sorted(tasks, key=lambda item: (item.position, item.created_at))
 
     def _read_tasks_sync(self, colony_id: UUID, session_id: UUID) -> list[TaskItemRead]:
@@ -1281,25 +1430,20 @@ class LocalColonyStore:
             current = worker
             if worker.status is WorkerStatus.RUNNING:
                 current = worker.model_copy(
-                    update={"status": WorkerStatus.QUEUED, "started_at": None}
+                    update={
+                        "status": WorkerStatus.QUEUED,
+                        "started_at": None,
+                        "updated_at": utc_now(),
+                    }
                 )
                 self._write_model(self._worker_meta_path(colony_id, worker.id), current)
-                session = self._read_session_sync(colony_id, worker.worker_session_id)
-                if session is not None:
-                    self._write_session_sync(
-                        session.model_copy(
-                            update={"status": SessionStatus.QUEUED, "updated_at": utc_now()}
-                        )
-                    )
             if current.status is WorkerStatus.QUEUED:
                 worker_ids.append(current.id)
 
         queen_ids: list[UUID] = []
-        sessions_dir = self._sessions_dir(colony_id)
-        for path in sessions_dir.glob("*/meta.json"):
+        sessions_dir = self._colony_dir(colony_id) / "queens"
+        for path in sessions_dir.glob("*/sessions/*/meta.json"):
             session = SessionRead.model_validate(read_json(path))
-            if session.actor_type != "queen":
-                continue
             current = session
             if session.status is SessionStatus.RUNNING:
                 current = session.model_copy(
@@ -1320,15 +1464,24 @@ class LocalColonyStore:
         return self._colony_dir(colony_id) / "metadata.json"
 
     def _sessions_dir(self, colony_id: UUID) -> Path:
-        return self._colony_dir(colony_id) / "sessions"
+        return self._colony_dir(colony_id) / "queens"
 
     def _session_base(self, session: SessionRead) -> Path:
         if session.colony_id is not None:
-            return self._session_dir(session.colony_id, session.id)
+            return (
+                self._colony_dir(session.colony_id)
+                / "queens"
+                / session.queen_id
+                / "sessions"
+                / str(session.id)
+            )
         return self.root / "queens" / session.queen_id / "sessions" / str(session.id)
 
     def _session_dir(self, colony_id: UUID, session_id: UUID) -> Path:
-        return self._sessions_dir(colony_id) / str(session_id)
+        located = self._find_session_sync(session_id)
+        if located is None or located.session.colony_id != colony_id:
+            return self._colony_dir(colony_id) / "queens" / "unknown" / "sessions" / str(session_id)
+        return located.base
 
     def _session_meta_path(self, colony_id: UUID, session_id: UUID) -> Path:
         return self._session_dir(colony_id, session_id) / "meta.json"
@@ -1348,8 +1501,11 @@ class LocalColonyStore:
     def _workers_dir(self, colony_id: UUID) -> Path:
         return self._colony_dir(colony_id) / "workers"
 
+    def _worker_base(self, colony_id: UUID, worker_id: UUID) -> Path:
+        return self._workers_dir(colony_id) / str(worker_id)
+
     def _worker_meta_path(self, colony_id: UUID, worker_id: UUID) -> Path:
-        return self._workers_dir(colony_id) / str(worker_id) / "meta.json"
+        return self._worker_base(colony_id, worker_id) / "meta.json"
 
     def _tracker_path(self, colony_id: UUID) -> Path:
         return self._colony_dir(colony_id) / "tracker" / "tracker.db"

@@ -10,8 +10,7 @@ from agentloom.runtime.states import ColonyStatus, SessionStatus, TaskItemStatus
 
 JsonObject = dict[str, JsonValue]
 ActorType = Literal["queen", "worker"]
-SessionKind = Literal["dm", "colony"]
-OperatingPhase = Literal["independent", "colony"]
+SessionMode = Literal["dm", "colony"]
 ReportStatus = Literal["success", "partial", "failed"]
 
 
@@ -45,6 +44,7 @@ class ColonyCreate(ColonyModel):
 
 
 class ColonyRead(ColonyModel):
+    layout_version: Literal[2] = 2
     id: UUID
     name: str
     description: str
@@ -52,7 +52,6 @@ class ColonyRead(ColonyModel):
     queen_id: str
     model: str
     settings: JsonObject
-    queen_session_id: UUID | None = None
     source_session_id: UUID | None = None
     created_at: AwareDatetime
     updated_at: AwareDatetime
@@ -75,17 +74,21 @@ class ColonyForkCreate(ColonyModel):
     description: str = Field(default="", max_length=2_000)
 
 
+class SessionCreate(ColonyModel):
+    queen_id: str = Field(min_length=1, max_length=100)
+    colony_id: UUID | None = None
+    source_session_id: UUID | None = None
+
+
 class SessionRead(ColonyModel):
+    layout_version: Literal[2] = 2
     id: UUID
     colony_id: UUID | None = None
     queen_id: str
-    parent_session_id: UUID | None
-    actor_type: ActorType
-    session_kind: SessionKind = "colony"
-    operating_phase: OperatingPhase = "colony"
+    mode: SessionMode = "dm"
     pending_colony_suggestion: ColonySuggestion | None = None
-    forked_to_colony_id: UUID | None = None
-    forked_to_session_id: UUID | None = None
+    spawned_colony_id: UUID | None = None
+    superseded_by: UUID | None = None
     status: SessionStatus
     park_reason: str | None
     task: JsonObject
@@ -120,18 +123,44 @@ class WorkerTask(ColonyModel):
 
 
 class WorkerRead(ColonyModel):
+    layout_version: Literal[2] = 2
     id: UUID
     colony_id: UUID
-    queen_session_id: UUID
-    worker_session_id: UUID
+    owner_session_id: UUID
+    queen_id: str
     status: WorkerStatus
+    park_reason: str | None = None
     task: str
     input: JsonObject
+    cursor: JsonObject
+    budget: JsonObject
+    usage: JsonObject
     report: JsonObject | None
     error: JsonObject | None
     timeout_seconds: int = Field(gt=0)
     queued_at: AwareDatetime
     started_at: AwareDatetime | None
+    updated_at: AwareDatetime
+    ended_at: AwareDatetime | None
+
+
+class AgentExecutionRead(ColonyModel):
+    """Internal AgentLoop state; workers are executions, never public sessions."""
+
+    id: UUID
+    actor_type: ActorType
+    colony_id: UUID | None = None
+    queen_id: str
+    owner_session_id: UUID
+    mode: SessionMode
+    status: SessionStatus | WorkerStatus
+    park_reason: str | None
+    task: JsonObject
+    cursor: JsonObject
+    budget: JsonObject
+    usage: JsonObject
+    created_at: AwareDatetime
+    updated_at: AwareDatetime
     ended_at: AwareDatetime | None
 
 
@@ -202,7 +231,7 @@ class ColonyEventRead(ColonyModel):
 
 class ColonySnapshot(ColonyModel):
     colony: ColonyRead
-    queen_session: SessionRead
+    session: SessionRead
     workers: list[WorkerRead]
     tasks: list[TaskItemRead]
     tracker: list[TrackerEntryRead]
@@ -210,6 +239,7 @@ class ColonySnapshot(ColonyModel):
 
 __all__ = [
     "ActorType",
+    "AgentExecutionRead",
     "ColonyCreate",
     "ColonyEventRead",
     "ColonyForkCreate",
@@ -219,11 +249,11 @@ __all__ = [
     "JsonObject",
     "MessageCreate",
     "MessageRead",
-    "OperatingPhase",
     "QueenCreate",
     "QueenRead",
     "ReportStatus",
-    "SessionKind",
+    "SessionCreate",
+    "SessionMode",
     "SessionRead",
     "TaskItemCreate",
     "TaskItemRead",

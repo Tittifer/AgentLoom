@@ -3,35 +3,38 @@ import { render, screen } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 
-import { listColonies, type SessionRead } from "../../src/api/colonies";
-import { createQueenSession, listQueens, listQueenSessions } from "../../src/api/queens";
+import {
+  createSession,
+  listColonies,
+  listSessions,
+  type SessionRead,
+} from "../../src/api/colonies";
+import { listQueens } from "../../src/api/queens";
 import { WorkspaceEntryPage } from "../../src/pages/WorkspaceEntryPage";
 
 vi.mock("../../src/api/colonies", () => ({
+  createSession: vi.fn(),
   deleteColony: vi.fn(),
   deleteSession: vi.fn(),
   listColonies: vi.fn(),
+  listSessions: vi.fn(),
 }));
 vi.mock("../../src/api/queens", () => ({
   createQueen: vi.fn(),
-  createQueenSession: vi.fn(),
   listQueens: vi.fn(),
-  listQueenSessions: vi.fn(),
 }));
 
 describe("WorkspaceEntryPage", () => {
   it("首页没有独立会话时自动创建并进入会话工作台", async () => {
     const session: SessionRead = {
+      layout_version: 2,
       id: "session-1",
       colony_id: null,
       queen_id: "queen-1",
-      parent_session_id: null,
-      actor_type: "queen",
-      session_kind: "dm",
-      operating_phase: "independent",
+      mode: "dm",
       pending_colony_suggestion: null,
-      forked_to_colony_id: null,
-      forked_to_session_id: null,
+      spawned_colony_id: null,
+      superseded_by: null,
       status: "idle",
       park_reason: null,
       task: {},
@@ -51,8 +54,8 @@ describe("WorkspaceEntryPage", () => {
       updated_at: session.updated_at,
     }]);
     vi.mocked(listColonies).mockResolvedValue([]);
-    vi.mocked(listQueenSessions).mockResolvedValue([]);
-    vi.mocked(createQueenSession).mockResolvedValue(session);
+    vi.mocked(listSessions).mockResolvedValue([]);
+    vi.mocked(createSession).mockResolvedValue(session);
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
     });
@@ -69,6 +72,6 @@ describe("WorkspaceEntryPage", () => {
     );
 
     expect(await screen.findByText("会话工作区")).toBeInTheDocument();
-    expect(vi.mocked(createQueenSession).mock.calls[0]?.[0]).toBe("queen-1");
+    expect(vi.mocked(createSession).mock.calls[0]?.[0]).toEqual({ queen_id: "queen-1" });
   });
 });

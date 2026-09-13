@@ -3,7 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { useColonyEvents } from "../../src/hooks/useColonyEvents";
+import { useSessionEvents } from "../../src/hooks/useSessionEvents";
 
 class MockEventSource {
   static current: MockEventSource;
@@ -32,7 +32,7 @@ class MockEventSource {
   }
 }
 
-describe("useColonyEvents", () => {
+describe("useSessionEvents", () => {
   beforeEach(() => {
     vi.stubGlobal("EventSource", MockEventSource);
   });
@@ -43,9 +43,10 @@ describe("useColonyEvents", () => {
       <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
     );
     const { result, rerender, unmount } = renderHook(
-      ({ persistedIds }) => useColonyEvents("colony-1", "session-1", persistedIds),
+      ({ persistedIds }) => useSessionEvents("session-1", persistedIds),
       { initialProps: { persistedIds: [] as string[] }, wrapper },
     );
+    expect(MockEventSource.current.url).toBe("/api/sessions/session-1/events?after=0");
 
     act(() => {
       MockEventSource.current.emit("message.delta", {
@@ -77,7 +78,7 @@ describe("useColonyEvents", () => {
       <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
     );
     const { result, unmount } = renderHook(
-      () => useColonyEvents("colony-1", "session-1"),
+      () => useSessionEvents("session-1"),
       { wrapper },
     );
 
@@ -106,7 +107,7 @@ describe("useColonyEvents", () => {
       <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
     );
     const { result, unmount } = renderHook(
-      () => useColonyEvents("colony-1", "session-1"),
+      () => useSessionEvents("session-1"),
       { wrapper },
     );
 
@@ -131,7 +132,7 @@ describe("useColonyEvents", () => {
       <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
     );
     const { result, unmount } = renderHook(
-      () => useColonyEvents("colony-1", "session-1"),
+      () => useSessionEvents("session-1"),
       { wrapper },
     );
 

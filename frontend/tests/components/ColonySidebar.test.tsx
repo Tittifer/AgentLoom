@@ -31,7 +31,7 @@ describe("ColonySidebar", () => {
       />,
     );
 
-    expect(screen.getAllByRole("tab")).toHaveLength(4);
+    expect(screen.getAllByRole("tab")).toHaveLength(3);
     expect(screen.getByText("暂无数据")).toBeInTheDocument();
   });
 

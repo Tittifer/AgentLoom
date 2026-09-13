@@ -28,10 +28,10 @@ export interface ColonyCreate {
 }
 
 export interface ColonyRead extends ColonyCreate {
+  layout_version: 2;
   id: string;
   status: ColonyStatus;
   model: string;
-  queen_session_id: string;
   source_session_id: string | null;
   created_at: string;
   updated_at: string;
@@ -55,16 +55,14 @@ export interface ColonyForkCreate {
 }
 
 export interface SessionRead {
+  layout_version: 2;
   id: string;
   colony_id: string | null;
   queen_id: string;
-  parent_session_id: string | null;
-  actor_type: "queen" | "worker";
-  session_kind: "dm" | "colony";
-  operating_phase: "independent" | "colony";
+  mode: "dm" | "colony";
   pending_colony_suggestion: ColonySuggestion | null;
-  forked_to_colony_id: string | null;
-  forked_to_session_id: string | null;
+  spawned_colony_id: string | null;
+  superseded_by: string | null;
   status: SessionStatus;
   park_reason: string | null;
   task: Record<string, unknown>;
@@ -89,18 +87,24 @@ export interface MessageRead {
 }
 
 export interface WorkerRead {
+  layout_version: 2;
   id: string;
   colony_id: string;
-  queen_session_id: string;
-  worker_session_id: string;
+  owner_session_id: string;
+  queen_id: string;
   status: WorkerStatus;
+  park_reason: string | null;
   task: string;
   input: Record<string, unknown>;
+  cursor: Record<string, unknown>;
+  budget: Record<string, unknown>;
+  usage: Record<string, unknown>;
   report: Record<string, unknown> | null;
   error: Record<string, unknown> | null;
   timeout_seconds: number;
   queued_at: string;
   started_at: string | null;
+  updated_at: string;
   ended_at: string | null;
 }
 
@@ -134,10 +138,25 @@ export interface TrackerEntryRead {
 
 export interface ColonySnapshot {
   colony: ColonyRead;
-  queen_session: SessionRead;
+  session: SessionRead;
   workers: WorkerRead[];
   tasks: TaskItemRead[];
   tracker: TrackerEntryRead[];
+}
+
+export interface SessionCreate {
+  queen_id: string;
+  colony_id?: string;
+  source_session_id?: string;
+}
+
+export function listSessions(queenId?: string): Promise<SessionRead[]> {
+  const query = queenId ? `?queen_id=${encodeURIComponent(queenId)}` : "";
+  return apiClient.get(`/api/sessions${query}`);
+}
+
+export function createSession(payload: SessionCreate): Promise<SessionRead> {
+  return apiClient.post("/api/sessions", payload);
 }
 
 export function listColonies(): Promise<ColonyRead[]> {

@@ -6,10 +6,10 @@ import type { WorkerRead } from "../../src/api/colonies";
 import { WorkerMap } from "../../src/components/WorkerMap";
 
 const worker = {
-  id: "w", colony_id: "c", queen_session_id: "q", worker_session_id: "ws",
+  layout_version: 2, id: "w", colony_id: "c", owner_session_id: "q", queen_id: "queen_general",
   status: "completed", task: "收集竞品资料", input: {}, report: { summary: "完成" },
-  error: null, timeout_seconds: 60, queued_at: "2026-08-29T00:00:00Z",
-  started_at: "2026-08-29T00:00:01Z", ended_at: "2026-08-29T00:00:02Z",
+  error: null, park_reason: null, cursor: {}, budget: {}, usage: {}, timeout_seconds: 60, queued_at: "2026-08-29T00:00:00Z",
+  started_at: "2026-08-29T00:00:01Z", updated_at: "2026-08-29T00:00:02Z", ended_at: "2026-08-29T00:00:02Z",
 } satisfies WorkerRead;
 
 describe("WorkerMap", () => {

@@ -3,7 +3,7 @@
 import asyncio
 from collections.abc import AsyncIterator
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -51,6 +51,13 @@ async def colony_client(tmp_path: Path) -> AsyncIterator[tuple[AsyncClient, str]
             yield client, prefix
 
 
+async def colony_session_id(client: AsyncClient, colony_id: UUID) -> UUID:
+    snapshot = ColonySnapshot.model_validate(
+        (await client.get(f"/api/colonies/{colony_id}")).json()
+    )
+    return snapshot.session.id
+
+
 async def test_colony_api_creates_chats_and_lists(colony_client: tuple[AsyncClient, str]) -> None:
     client, prefix = colony_client
     created_response = await client.post(
@@ -59,10 +66,13 @@ async def test_colony_api_creates_chats_and_lists(colony_client: tuple[AsyncClie
     )
     assert created_response.status_code == 201
     colony = ColonyRead.model_validate(created_response.json())
-    assert colony.queen_session_id is not None
+    initial_snapshot = ColonySnapshot.model_validate(
+        (await client.get(f"/api/colonies/{colony.id}")).json()
+    )
+    session_id = initial_snapshot.session.id
 
     message_response = await client.post(
-        f"/api/sessions/{colony.queen_session_id}/messages",
+        f"/api/sessions/{session_id}/messages",
         json={"content": "请分析这个目标"},
     )
     assert message_response.status_code == 202
@@ -70,7 +80,7 @@ async def test_colony_api_creates_chats_and_lists(colony_client: tuple[AsyncClie
 
     messages: list[MessageRead] = []
     for _ in range(30):
-        response = await client.get(f"/api/sessions/{colony.queen_session_id}/messages")
+        response = await client.get(f"/api/sessions/{session_id}/messages")
         messages = [MessageRead.model_validate(item) for item in response.json()]
         if any(item.role == "assistant" for item in messages):
             break
@@ -81,13 +91,13 @@ async def test_colony_api_creates_chats_and_lists(colony_client: tuple[AsyncClie
         (await client.get(f"/api/colonies/{colony.id}")).json()
     )
     for _ in range(30):
-        if snapshot.queen_session.status == "idle":
+        if snapshot.session.status == "idle":
             break
         await asyncio.sleep(0.02)
         snapshot = ColonySnapshot.model_validate(
             (await client.get(f"/api/colonies/{colony.id}")).json()
         )
-    assert snapshot.queen_session.status == "idle"
+    assert snapshot.session.status == "idle"
     assert snapshot.workers == []
     list_response = await client.get("/api/colonies")
     assert any(item["id"] == str(colony.id) for item in list_response.json())
@@ -125,7 +135,7 @@ async def test_first_message_names_an_untitled_colony(
     first_message = f"{prefix} 请制定完整计划"
     try:
         response = await client.post(
-            f"/api/sessions/{colony.queen_session_id}/messages",
+            f"/api/sessions/{await colony_session_id(client, colony.id)}/messages",
             json={"content": first_message},
         )
         assert response.status_code == 202
@@ -153,9 +163,8 @@ async def test_one_queen_owns_multiple_isolated_sessions(
         assert response.status_code == 201
         colonies.append(ColonyRead.model_validate(response.json()))
 
-    first_session_id = colonies[0].queen_session_id
-    second_session_id = colonies[1].queen_session_id
-    assert first_session_id is not None and second_session_id is not None
+    first_session_id = await colony_session_id(client, colonies[0].id)
+    second_session_id = await colony_session_id(client, colonies[1].id)
     await client.post(
         f"/api/sessions/{first_session_id}/messages",
         json={"content": "只属于第一条会话"},
@@ -163,7 +172,7 @@ async def test_one_queen_owns_multiple_isolated_sessions(
     second_messages = await client.get(f"/api/sessions/{second_session_id}/messages")
     assert second_messages.json() == []
 
-    sessions_response = await client.get("/api/queens/queen_general/sessions")
+    sessions_response = await client.get("/api/sessions?queen_id=queen_general")
     assert sessions_response.status_code == 200
     sessions = [SessionRead.model_validate(item) for item in sessions_response.json()]
     assert {session.id for session in sessions} == {first_session_id, second_session_id}
@@ -175,13 +184,24 @@ async def test_one_queen_owns_multiple_isolated_sessions(
 
 async def test_independent_session_can_be_deleted(colony_client: tuple[AsyncClient, str]) -> None:
     client, _ = colony_client
-    created = await client.post("/api/queens/queen_general/sessions")
+    created = await client.post("/api/sessions", json={"queen_id": "queen_general"})
     session = SessionRead.model_validate(created.json())
 
     deleted = await client.delete(f"/api/sessions/{session.id}")
 
     assert deleted.status_code == 204
     assert (await client.get(f"/api/sessions/{session.id}")).status_code == 404
+
+
+async def test_session_list_rejects_an_unknown_queen(
+    colony_client: tuple[AsyncClient, str],
+) -> None:
+    client, _ = colony_client
+
+    response = await client.get("/api/sessions?queen_id=queen_missing")
+
+    assert response.status_code == 404
+    assert response.json()["code"] == "QUEEN_NOT_FOUND"
 
 
 async def test_custom_queen_uses_global_model_config(
@@ -227,7 +247,7 @@ async def test_message_requires_global_llm_settings(tmp_path: Path) -> None:
     async with app.router.lifespan_context(app):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             queen = await client.post("/api/queens", json={"name": "Empty"})
-            session = await client.post(f"/api/queens/{queen.json()['id']}/sessions")
+            session = await client.post("/api/sessions", json={"queen_id": queen.json()["id"]})
             response = await client.post(
                 f"/api/sessions/{session.json()['id']}/messages",
                 json={"content": "开始"},

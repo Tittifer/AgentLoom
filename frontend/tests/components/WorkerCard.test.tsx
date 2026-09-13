@@ -6,18 +6,24 @@ import type { WorkerRead } from "../../src/api/colonies";
 import { WorkerCard } from "../../src/components/WorkerCard";
 
 const worker: WorkerRead = {
+  layout_version: 2,
   id: "worker-12345678",
   colony_id: "colony-1",
-  queen_session_id: "queen-1",
-  worker_session_id: "worker-session-1",
+  owner_session_id: "queen-1",
+  queen_id: "queen_general",
   status: "completed",
+  park_reason: null,
   task: "分析 Hive 的 Worker 展示方式",
   input: {},
+  cursor: {},
+  budget: {},
+  usage: {},
   report: { summary: "已经完成界面对比。" },
   error: null,
   timeout_seconds: 300,
   queued_at: "2026-09-08T08:00:00Z",
   started_at: "2026-09-08T08:00:01Z",
+  updated_at: "2026-09-08T08:00:04Z",
   ended_at: "2026-09-08T08:00:04Z",
 };
 

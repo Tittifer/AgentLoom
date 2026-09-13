@@ -1,7 +1,7 @@
 import { FormEvent, useEffect, useRef, useState } from "react";
 
 import type { MessageRead, SessionRead, WorkerRead } from "../api/colonies";
-import type { LLMRetryState, StreamingAssistantMessage } from "../hooks/useColonyEvents";
+import type { LLMRetryState, StreamingAssistantMessage } from "../hooks/useSessionEvents";
 import { formatDateTime } from "../utils/format";
 import { MarkdownContent } from "./MarkdownContent";
 import { WorkerCard } from "./WorkerCard";

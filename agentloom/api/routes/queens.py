@@ -1,4 +1,4 @@
-"""Queen identity and owned-session endpoints."""
+"""Queen identity endpoints."""
 
 from fastapi import APIRouter, status
 from fastapi.responses import JSONResponse
@@ -6,7 +6,7 @@ from fastapi.responses import JSONResponse
 from agentloom.api.routes.colonies import RuntimeDependency, error_response
 from agentloom.api.schemas import ApiError
 from agentloom.colony.runtime import QueenNotFoundError
-from agentloom.colony.schemas import QueenCreate, QueenRead, SessionRead
+from agentloom.colony.schemas import QueenCreate, QueenRead
 
 router = APIRouter(prefix="/queens", tags=["queens"])
 
@@ -43,37 +43,6 @@ async def get_queen(
 ) -> QueenRead | JSONResponse:
     try:
         return await runtime.get_queen(queen_id)
-    except QueenNotFoundError:
-        return error_response(404, "QUEEN_NOT_FOUND", "Queen 不存在")
-
-
-@router.get(
-    "/{queen_id}/sessions",
-    response_model=list[SessionRead],
-    responses={status.HTTP_404_NOT_FOUND: {"model": ApiError}},
-)
-async def list_queen_sessions(
-    queen_id: str,
-    runtime: RuntimeDependency,
-) -> list[SessionRead] | JSONResponse:
-    try:
-        return await runtime.list_queen_sessions(queen_id)
-    except QueenNotFoundError:
-        return error_response(404, "QUEEN_NOT_FOUND", "Queen 不存在")
-
-
-@router.post(
-    "/{queen_id}/sessions",
-    response_model=SessionRead,
-    status_code=status.HTTP_201_CREATED,
-    responses={status.HTTP_404_NOT_FOUND: {"model": ApiError}},
-)
-async def create_queen_session(
-    queen_id: str,
-    runtime: RuntimeDependency,
-) -> SessionRead | JSONResponse:
-    try:
-        return await runtime.create_queen_session(queen_id)
     except QueenNotFoundError:
         return error_response(404, "QUEEN_NOT_FOUND", "Queen 不存在")
 

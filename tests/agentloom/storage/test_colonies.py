@@ -43,8 +43,9 @@ async def test_colony_state_uses_files_and_one_tracker_database(tmp_path: Path) 
     colony_dir = tmp_path / "colonies" / str(colony.id)
     assert (colony_dir / "metadata.json").is_file()
     assert (tmp_path / "queens" / "queen_general" / "profile.yaml").is_file()
-    assert (tmp_path / "queens" / "queen_general" / "sessions" / f"{queen.id}.json").is_file()
-    assert (colony_dir / "sessions" / str(queen.id) / "meta.json").is_file()
+    assert (
+        colony_dir / "queens" / "queen_general" / "sessions" / str(queen.id) / "meta.json"
+    ).is_file()
     assert (colony_dir / "tracker" / "tracker.db").is_file()
     assert (colony_dir / "artifacts").is_dir()
     assert await store.get_queen_session(colony.id) == queen
@@ -84,8 +85,7 @@ async def test_dm_session_is_stored_under_queen_without_colony(tmp_path: Path) -
     session = await store.create_dm_session("queen_general")
 
     assert session.colony_id is None
-    assert session.session_kind == "dm"
-    assert session.operating_phase == "independent"
+    assert session.mode == "dm"
     assert (
         tmp_path / "queens" / "queen_general" / "sessions" / str(session.id) / "meta.json"
     ).is_file()
@@ -146,13 +146,12 @@ async def test_dm_fork_preserves_transcript_and_locks_source(tmp_path: Path) -> 
     copied = await store.list_messages(target.id)
     original = await store.list_messages(source.id)
     assert locked is not None and locked.status is SessionStatus.FORKED
-    assert locked.forked_to_colony_id == colony.id
-    assert locked.forked_to_session_id == target.id
+    assert locked.spawned_colony_id == colony.id
+    assert locked.superseded_by == target.id
     assert locked.pending_colony_suggestion is not None
     assert locked.pending_colony_suggestion.status == "accepted"
     assert target.colony_id == colony.id
-    assert target.session_kind == "colony"
-    assert target.operating_phase == "colony"
+    assert target.mode == "colony"
     assert copied is not None and original is not None
     assert [item.content for item in copied] == [item.content for item in original]
     assert all(item.session_id == target.id for item in copied)
@@ -176,6 +175,8 @@ async def test_reasoning_content_is_persisted_but_not_publicly_serialized(
         tmp_path
         / "colonies"
         / str(colony.id)
+        / "queens"
+        / "queen_general"
         / "sessions"
         / str(queen.id)
         / "conversations"
@@ -220,6 +221,8 @@ async def test_compaction_checkpoint_and_spillover_preserve_original_messages(
         tmp_path
         / "colonies"
         / str(queen.colony_id)
+        / "queens"
+        / "queen_general"
         / "sessions"
         / str(queen.id)
         / "spillover"
@@ -240,15 +243,17 @@ async def test_workers_tasks_status_and_delete_are_persisted(tmp_path: Path) -> 
     running = await store.mark_worker_running(workers[0].id)
     assert running is not None and running.status is WorkerStatus.RUNNING
     finished = await store.finish_worker(
-        running.worker_session_id,
+        running.id,
         WorkerStatus.COMPLETED,
         report={"summary": "done"},
     )
     assert finished is not None and finished.report == {"summary": "done"}
-    worker_session = await store.get_session(running.worker_session_id)
-    assert worker_session is not None and worker_session.status is SessionStatus.COMPLETED
-    assert worker_session.budget["max_tool_calls"] == 30
-    assert worker_session.budget["grace_turns"] == 2
+    assert await store.get_session(running.id) is None
+    worker_execution = await store.get_execution(running.id)
+    assert worker_execution is not None
+    assert worker_execution.status is WorkerStatus.COMPLETED
+    assert worker_execution.budget["max_tool_calls"] == 30
+    assert worker_execution.budget["grace_turns"] == 2
     assert queen.budget["grace_turns"] == 1
 
     task = await store.create_task_item(
@@ -279,12 +284,12 @@ async def test_worker_terminal_transition_and_synthetic_report_are_atomic(
     await store.mark_worker_running(worker.id)
 
     completed = await store.finish_worker_if_active(
-        worker.worker_session_id,
+        worker.id,
         WorkerStatus.COMPLETED,
         report={"status": "success", "summary": "done"},
     )
     overwritten = await store.finish_worker_if_active(
-        worker.worker_session_id,
+        worker.id,
         WorkerStatus.TIMED_OUT,
         error={"code": "WORKER_HARD_TIMEOUT"},
     )
@@ -298,18 +303,18 @@ async def test_worker_terminal_transition_and_synthetic_report_are_atomic(
 
     without_report = (await store.create_workers(queen.id, [WorkerTask(task="B")], 30))[0]
     failed = await store.finish_worker_if_active(
-        without_report.worker_session_id,
+        without_report.id,
         WorkerStatus.FAILED,
         error={"code": "WORKER_RUNTIME_FAILED"},
     )
     assert failed is not None and failed.report is None
 
     attached = await store.attach_worker_report_if_missing(
-        without_report.worker_session_id,
+        without_report.id,
         {"status": "failed", "summary": "partial progress"},
     )
     duplicate = await store.attach_worker_report_if_missing(
-        without_report.worker_session_id,
+        without_report.id,
         {"status": "failed", "summary": "duplicate"},
     )
 
@@ -330,8 +335,8 @@ async def test_recovery_requeues_running_workers_and_queens(tmp_path: Path) -> N
         "budget_tool_calls": 30,
         "grace_turn": 1,
     }
-    await store.set_session_status(
-        worker.worker_session_id,
+    await store.set_execution_status(
+        worker.id,
         SessionStatus.RUNNING,
         cursor=worker_cursor,
     )
@@ -347,6 +352,6 @@ async def test_recovery_requeues_running_workers_and_queens(tmp_path: Path) -> N
     assert recovered_queen is not None and recovered_queen.status is SessionStatus.QUEUED
 
     await store.mark_worker_running(worker.id)
-    resumed_session = await store.get_session(worker.worker_session_id)
-    assert resumed_session is not None
-    assert resumed_session.cursor == worker_cursor
+    resumed_execution = await store.get_execution(worker.id)
+    assert resumed_execution is not None
+    assert resumed_execution.cursor == worker_cursor

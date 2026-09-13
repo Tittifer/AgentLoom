@@ -21,12 +21,12 @@ from agentloom.colony.runtime import (
     worker_hard_timeout_seconds,
 )
 from agentloom.colony.schemas import (
+    AgentExecutionRead,
     ColonyForkCreate,
     ColonyRead,
     JsonObject,
     MessageRead,
     QueenCreate,
-    SessionRead,
     WorkerRead,
     WorkerTask,
 )
@@ -161,7 +161,7 @@ async def test_loop_store_injects_authoritative_worker_report_status(tmp_path: P
     loop_store = FileAgentLoopStore(store, ColonyEventNotifier())
 
     await store.finish_worker(
-        workers[0].worker_session_id,
+        workers[0].id,
         WorkerStatus.COMPLETED,
         report={"summary": "杭州完成"},
     )
@@ -178,7 +178,7 @@ async def test_loop_store_injects_authoritative_worker_report_status(tmp_path: P
     assert partial_status["pending_workers"][0]["task"] == "成都"
 
     await store.finish_worker(
-        workers[1].worker_session_id,
+        workers[1].id,
         WorkerStatus.COMPLETED,
         report={"summary": "成都完成"},
     )
@@ -198,14 +198,14 @@ async def test_loop_store_injects_authoritative_worker_report_status(tmp_path: P
 
 async def test_loop_store_publishes_delta_with_complete_snapshot(tmp_path: Path) -> None:
     store = await create_store(tmp_path)
-    colony, queen = await store.create("Stream", "", "queen_general", {})
+    _, queen = await store.create("Stream", "", "queen_general", {})
     notifier = ColonyEventNotifier()
     loop_store = FileAgentLoopStore(store, notifier)
     context = await loop_store.load(queen.id)
     assert context is not None
     message_id = uuid4()
 
-    async with notifier.subscribe(colony.id) as updates:
+    async with notifier.subscribe(queen.id) as updates:
         await loop_store.publish_message_delta(
             context,
             message_id,
@@ -297,9 +297,7 @@ async def test_each_worker_runs_with_an_independent_agent_loop(
 
     assert len(built_loops) == 2
     assert built_loops[0] is not built_loops[1]
-    assert {session_id for session_id, _ in runs} == {
-        worker.worker_session_id for worker in workers
-    }
+    assert {session_id for session_id, _ in runs} == {worker.id for worker in workers}
     assert {id(loop) for _, loop in runs} == {id(loop) for loop in built_loops}
     assert all(loop is not queen_loop for loop in built_loops)
 
@@ -333,8 +331,8 @@ async def test_budget_exhausted_worker_reports_partial_and_wakes_queen(
             30,
         )
     )[0]
-    worker_session = await store.get_session(worker.worker_session_id)
-    assert worker_session is not None
+    worker_execution = await store.get_execution(worker.id)
+    assert worker_execution is not None
     runtime = ColonyRuntime(
         store,
         SchemaMockLLMProvider(),
@@ -345,12 +343,12 @@ async def test_budget_exhausted_worker_reports_partial_and_wakes_queen(
     runtime._stopping = True  # pyright: ignore[reportPrivateUsage]
 
     await runtime.finalize_budget_exhausted(
-        LoopContext(session=worker_session, colony=colony, messages=[]),
+        LoopContext(session=worker_execution, colony=colony, messages=[]),
         "工具预算已耗尽，已保留当前进度。",
         "tool_calls",
     )
 
-    saved_worker = await store.get_worker_for_session(worker.worker_session_id)
+    saved_worker = await store.get_worker(worker.id)
     assert saved_worker is not None
     assert saved_worker.status is WorkerStatus.PARTIAL
     assert saved_worker.report == {
@@ -366,12 +364,12 @@ async def test_budget_exhausted_worker_reports_partial_and_wakes_queen(
     assert queen_messages[-1].content.startswith("[WORKER_REPORT]\n")
 
 
-async def test_budget_grace_report_keeps_worker_session_completed(tmp_path: Path) -> None:
+async def test_budget_grace_report_keeps_worker_execution_terminal(tmp_path: Path) -> None:
     store = await create_store(tmp_path)
     _, queen = await store.create("Budget report", "", "queen_general", {})
     worker = (await store.create_workers(queen.id, [WorkerTask(task="整理资料")], 30))[0]
-    await store.set_session_status(
-        worker.worker_session_id,
+    await store.set_execution_status(
+        worker.id,
         SessionStatus.QUEUED,
         cursor={
             "iteration": 8,
@@ -409,12 +407,12 @@ async def test_budget_grace_report_keeps_worker_session_completed(tmp_path: Path
     )
     runtime._stopping = True  # pyright: ignore[reportPrivateUsage]
 
-    await runtime._build_worker_loop().run(worker.worker_session_id)  # pyright: ignore[reportPrivateUsage]
+    await runtime._build_worker_loop().run(worker.id)  # pyright: ignore[reportPrivateUsage]
 
-    saved_worker = await store.get_worker_for_session(worker.worker_session_id)
-    saved_session = await store.get_session(worker.worker_session_id)
+    saved_worker = await store.get_worker(worker.id)
+    saved_session = await store.get_execution(worker.id)
     assert saved_worker is not None and saved_worker.status is WorkerStatus.PARTIAL
-    assert saved_session is not None and saved_session.status is SessionStatus.COMPLETED
+    assert saved_session is not None and saved_session.status is WorkerStatus.PARTIAL
     assert saved_session.cursor == {"iteration": 0, "phase": "completed"}
 
 
@@ -433,10 +431,10 @@ async def test_failed_worker_synthesizes_report_and_wakes_queen(tmp_path: Path) 
 
     await runtime._run_worker(worker.id)  # pyright: ignore[reportPrivateUsage]
     await runtime._ensure_worker_terminal_report(  # pyright: ignore[reportPrivateUsage]
-        worker.worker_session_id
+        worker.id
     )
 
-    saved_worker = await store.get_worker_for_session(worker.worker_session_id)
+    saved_worker = await store.get_worker(worker.id)
     assert saved_worker is not None
     assert saved_worker.status is WorkerStatus.FAILED
     assert saved_worker.report is not None
@@ -470,7 +468,7 @@ async def test_timed_out_worker_synthesizes_report_and_wakes_queen(
     _, queen = await store.create("Timed out worker", "", "queen_general", {})
     worker = (await store.create_workers(queen.id, [WorkerTask(task="调研城市")], 30))[0]
     await store.append_message(
-        worker.worker_session_id,
+        worker.id,
         LLMMessage(role="assistant", content="已收集杭州西湖资料"),
     )
     runtime = ColonyRuntime(
@@ -510,7 +508,7 @@ async def test_timed_out_worker_synthesizes_report_and_wakes_queen(
 
     await runtime._run_worker(worker.id)  # pyright: ignore[reportPrivateUsage]
 
-    saved_worker = await store.get_worker_for_session(worker.worker_session_id)
+    saved_worker = await store.get_worker(worker.id)
     assert saved_worker is not None
     assert saved_worker.status is WorkerStatus.TIMED_OUT
     assert saved_worker.report is not None
@@ -714,7 +712,7 @@ async def test_independent_queen_suggests_then_user_forks_colony(tmp_path: Path)
     target = await store.get_queen_session(colony.id)
     tasks = await store.list_tasks(colony.id)
     assert source is not None and source.status is SessionStatus.FORKED
-    assert target is not None and target.operating_phase == "colony"
+    assert target is not None and target.mode == "colony"
     assert [task.title for task in tasks] == ["调研成都", "调研杭州"]
     target_messages = await store.list_messages(target.id)
     assert target_messages is not None
@@ -805,7 +803,11 @@ async def test_queen_llm_failure_parks_session_and_next_message_resumes(
         create_builtin_tool_registry(),
     )
 
-    def discard(coroutine: Coroutine[object, object, object]) -> None:
+    def discard(
+        coroutine: Coroutine[object, object, object],
+        owner_session_id: UUID | None = None,
+    ) -> None:
+        del owner_session_id
         coroutine.close()
 
     monkeypatch.setattr(runtime, "_schedule", discard)
@@ -881,16 +883,16 @@ def make_context() -> LoopContext:
             queen_id="general",
             model="mock/schema",
             settings={},
-            queen_session_id=session_id,
             created_at=now,
             updated_at=now,
         ),
-        session=SessionRead(
+        session=AgentExecutionRead(
             id=session_id,
             colony_id=colony_id,
             queen_id="general",
-            parent_session_id=None,
             actor_type="queen",
+            owner_session_id=session_id,
+            mode="colony",
             status=SessionStatus.IDLE,
             park_reason=None,
             task={"goal": "研究"},
