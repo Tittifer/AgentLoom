@@ -1,8 +1,8 @@
-import { useEffect, useRef } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 
-import { createSession, listSessions, type SessionRead } from "../api/colonies";
+import { listSessions, type SessionRead } from "../api/colonies";
 import { listQueens } from "../api/queens";
 import { ColonySidebar } from "../components/ColonySidebar";
 import { SessionNavigation } from "../components/SessionNavigation";
@@ -10,8 +10,6 @@ import { formatError } from "../utils/format";
 
 export function WorkspaceEntryPage() {
   const navigate = useNavigate();
-  const queryClient = useQueryClient();
-  const creatingSession = useRef(false);
   const queensQuery = useQuery({ queryKey: ["queens"], queryFn: listQueens });
   const queenId = queensQuery.data?.[0]?.id ?? "";
   const sessionsQuery = useQuery({
@@ -19,30 +17,16 @@ export function WorkspaceEntryPage() {
     queryFn: () => listSessions(queenId),
     enabled: Boolean(queenId),
   });
-  const createSessionMutation = useMutation({
-    mutationFn: (selectedQueenId: string) => createSession({ queen_id: selectedQueenId }),
-    onSuccess: (session) => {
-      queryClient.setQueryData(["session", session.id], session);
-      queryClient.setQueryData(["messages", session.id], []);
-      navigate(`/sessions/${session.id}`, { replace: true });
-    },
-    onError: () => {
-      creatingSession.current = false;
-    },
-  });
-
   useEffect(() => {
-    if (!queenId || !sessionsQuery.isSuccess || creatingSession.current) return;
+    if (!queenId || !sessionsQuery.isSuccess) return;
     const latest = latestDirectSession(sessionsQuery.data);
-    if (latest) {
-      navigate(`/sessions/${latest.id}`, { replace: true });
-      return;
-    }
-    creatingSession.current = true;
-    createSessionMutation.mutate(queenId);
-  }, [createSessionMutation, navigate, queenId, sessionsQuery.data, sessionsQuery.isSuccess]);
+    if (latest) navigate(`/sessions/${latest.id}`, { replace: true });
+  }, [navigate, queenId, sessionsQuery.data, sessionsQuery.isSuccess]);
 
-  const error = queensQuery.error ?? sessionsQuery.error ?? createSessionMutation.error;
+  const error = queensQuery.error ?? sessionsQuery.error;
+  const openingExistingSession = Boolean(
+    queenId && (!sessionsQuery.isSuccess || latestDirectSession(sessionsQuery.data)),
+  );
 
   return (
     <section className="workspace-page" aria-labelledby="workspace-entry-title">
@@ -51,8 +35,16 @@ export function WorkspaceEntryPage() {
         <div className="conversation-workspace workspace-entry">
           <div className="chat-empty">
             <div className="empty-icon" aria-hidden="true">Q</div>
-            <h1 id="workspace-entry-title">{queenId ? "正在打开会话" : "开始一段新会话"}</h1>
-            <p>{queenId ? "正在准备最近的独立会话。" : "在左侧新建第一个 Queen 后，会自动进入会话工作台。"}</p>
+            <h1 id="workspace-entry-title">
+              {openingExistingSession ? "正在打开会话" : "开始一段新会话"}
+            </h1>
+            <p>
+              {openingExistingSession
+                ? "正在准备最近的独立会话。"
+                : queenId
+                ? "点击左侧的新建会话开始与 Queen 对话。"
+                : "在左侧新建第一个 Queen 后，即可开始会话。"}
+            </p>
             {error ? <div className="form-error" role="alert">{formatError(error)}</div> : null}
           </div>
         </div>

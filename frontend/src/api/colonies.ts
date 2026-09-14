@@ -150,13 +150,29 @@ export interface SessionCreate {
   source_session_id?: string;
 }
 
+const pendingSessionCreates = new Map<string, Promise<SessionRead>>();
+
 export function listSessions(queenId?: string): Promise<SessionRead[]> {
   const query = queenId ? `?queen_id=${encodeURIComponent(queenId)}` : "";
   return apiClient.get(`/api/sessions${query}`);
 }
 
 export function createSession(payload: SessionCreate): Promise<SessionRead> {
-  return apiClient.post("/api/sessions", payload);
+  const key = JSON.stringify({
+    queen_id: payload.queen_id,
+    colony_id: payload.colony_id ?? null,
+    source_session_id: payload.source_session_id ?? null,
+  });
+  const pending = pendingSessionCreates.get(key);
+  if (pending) return pending;
+
+  const request = apiClient.post<SessionRead>("/api/sessions", payload);
+  pendingSessionCreates.set(key, request);
+  const clearPending = () => {
+    if (pendingSessionCreates.get(key) === request) pendingSessionCreates.delete(key);
+  };
+  void request.then(clearPending, clearPending);
+  return request;
 }
 
 export function listColonies(): Promise<ColonyRead[]> {

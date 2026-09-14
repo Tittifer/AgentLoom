@@ -10,6 +10,7 @@ import {
   listMessages,
   submitMessage,
   type ColonySuggestion,
+  type MessageRead,
   type WorkerRead,
 } from "../api/colonies";
 import { ChatPanel } from "../components/ChatPanel";
@@ -44,7 +45,37 @@ export function SessionWorkspacePage() {
   });
   const messageMutation = useMutation({
     mutationFn: (content: string) => submitMessage(requireId(sessionId), content),
-    onSuccess: async () => {
+    onMutate: (content: string) => {
+      const optimisticId = `optimistic-${Date.now()}-${++optimisticMessageSequence}`;
+      const queryKey = ["messages", sessionId];
+      queryClient.setQueryData<MessageRead[]>(queryKey, (current = []) => [
+        ...current,
+        {
+          id: optimisticId,
+          session_id: requireId(sessionId),
+          sequence: (current.at(-1)?.sequence ?? 0) + 1,
+          role: "user",
+          content,
+          tool_call_id: null,
+          tool_calls: [],
+          metadata: { optimistic: true },
+          created_at: new Date().toISOString(),
+        },
+      ]);
+      return { optimisticId };
+    },
+    onError: (_error, _content, context) => {
+      queryClient.setQueryData<MessageRead[]>(["messages", sessionId], (current = []) =>
+        current.filter((message) => message.id !== context?.optimisticId)
+      );
+    },
+    onSuccess: async (savedMessage, _content, context) => {
+      queryClient.setQueryData<MessageRead[]>(["messages", sessionId], (current = []) => {
+        const withoutOptimistic = current.filter((message) => message.id !== context?.optimisticId);
+        return withoutOptimistic.some((message) => message.id === savedMessage.id)
+          ? withoutOptimistic
+          : [...withoutOptimistic, savedMessage];
+      });
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["messages", sessionId] }),
         queryClient.invalidateQueries({ queryKey: ["session", sessionId] }),
@@ -203,3 +234,5 @@ function requireId(value: string | undefined): string {
   if (!value) throw new Error("缺少资源标识");
   return value;
 }
+
+let optimisticMessageSequence = 0;

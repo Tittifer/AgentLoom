@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, renderHook } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { useSessionEvents } from "../../src/hooks/useSessionEvents";
 
@@ -35,6 +35,11 @@ class MockEventSource {
 describe("useSessionEvents", () => {
   beforeEach(() => {
     vi.stubGlobal("EventSource", MockEventSource);
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it("拼接原生消息增量，并在完整消息持久化后交还给查询结果", () => {
@@ -62,6 +67,8 @@ describe("useSessionEvents", () => {
         snapshot: "原生流式",
       });
     });
+    expect(result.current.streamingMessage).toBeNull();
+    act(() => vi.advanceTimersByTime(250));
     expect(result.current).toEqual({
       streamingMessage: { id: "message-1", content: "原生流式" },
       llmRetry: null,
@@ -97,6 +104,8 @@ describe("useSessionEvents", () => {
       });
     });
 
+    expect(result.current.streamingMessage).toBeNull();
+    act(() => vi.advanceTimersByTime(250));
     expect(result.current.streamingMessage?.content).toBe("第一段第二段第三段");
     unmount();
   });
@@ -122,6 +131,7 @@ describe("useSessionEvents", () => {
         message_id: "message-2",
       });
     });
+    act(() => vi.advanceTimersByTime(250));
     expect(result.current.streamingMessage).toBeNull();
     unmount();
   });

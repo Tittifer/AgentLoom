@@ -64,6 +64,13 @@ describe("ChatPanel", () => {
         content: "[COLONY_FORK] 旧数据中的系统交接",
         metadata: { system_generated: true },
       },
+      {
+        ...message,
+        id: "worker-system-prompt",
+        role: "user",
+        content: "Worker 必须执行的内部系统提示词",
+        metadata: { system_generated: true },
+      },
     ];
     render(
       <ChatPanel
@@ -82,6 +89,7 @@ describe("ChatPanel", () => {
     expect(screen.getByText(/run_worker/)).toBeInTheDocument();
     expect(screen.queryByText(/COLONY_FORK/)).not.toBeInTheDocument();
     expect(screen.queryByText(/旧数据中的系统交接/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Worker 必须执行/)).not.toBeInTheDocument();
     await userEvent.type(screen.getByLabelText("输入消息"), "继续执行");
     await userEvent.click(screen.getByRole("button", { name: "发送" }));
     expect(onSend).toHaveBeenCalledWith("继续执行");

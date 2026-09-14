@@ -15,6 +15,7 @@ import {
   listMessages,
   listSessions,
   submitMessage,
+  type MessageRead,
   type SessionRead,
 } from "../../src/api/colonies";
 import { listQueens } from "../../src/api/queens";
@@ -104,6 +105,45 @@ describe("SessionWorkspacePage", () => {
     expect(vi.mocked(createSession).mock.calls[0]?.[0]).toEqual({ queen_id: session.queen_id });
     await waitFor(() => expect(getSession).toHaveBeenCalledWith("session-2"));
     expect(screen.getByRole("heading", { name: "独立 Queen 会话" })).toBeInTheDocument();
+  });
+
+  it("提交后立即把用户消息加入会话，不等待接口完成", async () => {
+    let resolveSubmit!: (message: MessageRead) => void;
+    vi.mocked(submitMessage).mockReturnValue(new Promise((resolve) => {
+      resolveSubmit = resolve;
+    }));
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={["/sessions/session-1"]}>
+          <Routes><Route path="/sessions/:sessionId" element={<SessionWorkspacePage />} /></Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    const input = await screen.findByRole("textbox", { name: "输入消息" });
+    await userEvent.type(input, "立即显示的要求{Enter}");
+
+    expect(screen.getByText("立即显示的要求")).toBeInTheDocument();
+    expect(submitMessage).toHaveBeenCalledWith("session-1", "立即显示的要求");
+
+    const savedMessage: MessageRead = {
+      id: "message-user-1",
+      session_id: session.id,
+      sequence: 1,
+      role: "user",
+      content: "立即显示的要求",
+      tool_call_id: null,
+      tool_calls: [],
+      metadata: {},
+      created_at: session.created_at,
+    };
+    vi.mocked(listMessages).mockResolvedValue([savedMessage]);
+    resolveSubmit(savedMessage);
+    await waitFor(() => expect(queryClient.getQueryData<MessageRead[]>(["messages", session.id]))
+      .toContainEqual(expect.objectContaining({ id: "message-user-1" })));
   });
 
   it("独立会话右侧始终展示 Colony 的三项工作区", async () => {

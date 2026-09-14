@@ -43,6 +43,8 @@ export interface AgentEventState {
   llmRetry: LLMRetryState | null;
 }
 
+const STREAM_REVEAL_DELAY_MS = 250;
+
 interface ActiveStreamingMessage extends StreamingAssistantMessage {
   sessionId: string;
 }
@@ -72,11 +74,14 @@ export function useSessionEvents(
 ) {
   const queryClient = useQueryClient();
   const [streamingMessage, setStreamingMessage] = useState<ActiveStreamingMessage | null>(null);
+  const [revealedMessageId, setRevealedMessageId] = useState<string | null>(null);
   const [activeRetry, setActiveRetry] = useState<(LLMRetryState & { sessionId: string }) | null>(null);
 
   useEffect(() => {
     if (!sessionId) return undefined;
     const source = new EventSource(`/api/sessions/${sessionId}/events?after=0`);
+    let bufferedMessageId: string | null = null;
+    let revealTimer: number | null = null;
 
     const listeners = EVENT_TYPES.map((type) => {
       const listener = (event: Event) => {
@@ -113,6 +118,15 @@ export function useSessionEvents(
       const data = parseDeltaEvent(event);
       if (!data || data.session_id !== sessionId) return;
       setActiveRetry(null);
+      if (bufferedMessageId !== data.message_id) {
+        bufferedMessageId = data.message_id;
+        setRevealedMessageId(null);
+        if (revealTimer !== null) window.clearTimeout(revealTimer);
+        revealTimer = window.setTimeout(() => {
+          setRevealedMessageId(data.message_id);
+          revealTimer = null;
+        }, STREAM_REVEAL_DELAY_MS);
+      }
       setStreamingMessage((current) => ({
         id: data.message_id,
         sessionId: data.session_id,
@@ -126,6 +140,12 @@ export function useSessionEvents(
     const cancelListener = (event: Event) => {
       const data = parseDeltaEvent(event, false);
       if (!data || data.session_id !== sessionId) return;
+      if (bufferedMessageId === data.message_id) {
+        bufferedMessageId = null;
+        if (revealTimer !== null) window.clearTimeout(revealTimer);
+        revealTimer = null;
+        setRevealedMessageId(null);
+      }
       setStreamingMessage((current) => current?.id === data.message_id ? null : current);
     };
     source.addEventListener("message.delta", deltaListener);
@@ -135,12 +155,14 @@ export function useSessionEvents(
       listeners.forEach(([type, listener]) => source.removeEventListener(type, listener));
       source.removeEventListener("message.delta", deltaListener);
       source.removeEventListener("message.stream.cancelled", cancelListener);
+      if (revealTimer !== null) window.clearTimeout(revealTimer);
       source.close();
     };
   }, [sessionId, queryClient]);
 
   const visibleStreamingMessage = !streamingMessage ||
     streamingMessage.sessionId !== sessionId ||
+    streamingMessage.id !== revealedMessageId ||
     persistedMessageIds.includes(streamingMessage.id)
     ? null
     : streamingMessage;

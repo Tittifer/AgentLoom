@@ -585,14 +585,14 @@ h1, h2, h3 { color: #292722; }
 }
 .chat-panel > .panel-title-row .status-pill { padding: .25rem .52rem; font-size: .62rem; }
 .chat-messages {
-  gap: .8rem; padding: 1.15rem max(1.35rem, calc((100% - 900px) / 2)) 1.6rem;
+  gap: .8rem; padding: 1.15rem clamp(1.35rem, 3vw, 3rem) 1.6rem;
   background: #fbfaf7;
 }
 .chat-empty-mark, .message-avatar {
   color: #8f551d; background: #ead8bf; box-shadow: none;
 }
 .chat-empty-mark { border-radius: 50%; }
-.chat-message { max-width: min(92%, 860px); }
+.chat-message { max-width: 92%; }
 .message-avatar { width: 32px; height: 32px; border-radius: 50%; }
 .message-surface { padding: .72rem .92rem; border-radius: 14px; }
 .role-assistant .message-surface {
@@ -646,7 +646,7 @@ h1, h2, h3 { color: #292722; }
 .waiting-orbit i { background: var(--loom-accent); box-shadow: none; }
 .waiting-orbit i:nth-child(2), .waiting-orbit i:nth-child(3) { background: #dc9a58; }
 .chat-composer {
-  padding: .85rem max(1.25rem, calc((100% - 900px) / 2)) 1rem;
+  padding: .85rem clamp(1.25rem, 3vw, 3rem) 1rem;
   border-color: var(--loom-line); background: #fbfaf7; box-shadow: 0 -10px 24px rgb(77 62 43 / 2%);
 }
 .composer-field { border-color: #ded8cf; border-radius: 13px; background: #f4f1ec; }

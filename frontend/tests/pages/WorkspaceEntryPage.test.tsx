@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 
@@ -25,7 +26,7 @@ vi.mock("../../src/api/queens", () => ({
 }));
 
 describe("WorkspaceEntryPage", () => {
-  it("首页没有独立会话时自动创建并进入会话工作台", async () => {
+  it("首页没有独立会话时仅在点击后创建一次并进入工作台", async () => {
     const session: SessionRead = {
       layout_version: 2,
       id: "session-1",
@@ -71,7 +72,13 @@ describe("WorkspaceEntryPage", () => {
       </QueryClientProvider>,
     );
 
+    expect(await screen.findByText("点击左侧的新建会话开始与 Queen 对话。")).toBeInTheDocument();
+    expect(createSession).not.toHaveBeenCalled();
+
+    await userEvent.click(screen.getByRole("button", { name: "新建会话" }));
+
     expect(await screen.findByText("会话工作区")).toBeInTheDocument();
-    expect(vi.mocked(createSession).mock.calls[0]?.[0]).toEqual({ queen_id: "queen-1" });
+    expect(createSession).toHaveBeenCalledTimes(1);
+    expect(createSession).toHaveBeenCalledWith({ queen_id: "queen-1" });
   });
 });
