@@ -285,7 +285,8 @@ class LiteLLMProvider:
                 for tool in request.tools
             ]
         if request.response_schema is not None:
-            if self._response_format == "json_object":
+            response_format = request.response_format or self._response_format
+            if response_format == "json_object":
                 parameters["response_format"] = {"type": "json_object"}
             else:
                 parameters["response_format"] = {

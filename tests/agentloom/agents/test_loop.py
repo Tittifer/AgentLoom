@@ -467,6 +467,29 @@ async def test_queen_recalled_memory_is_inserted_before_latest_user_message() ->
     assert "用户偏好 FastAPI" in request_messages[1].content
 
 
+async def test_refreshed_memory_is_injected_without_becoming_conversation_history() -> None:
+    context = make_context()
+    store = FakeStore(context)
+    provider = ScriptedMockLLMProvider([LLMResponse(content="完成", model="mock/test")])
+    loop = AgentLoop(
+        store,
+        provider,
+        FakeTools(),
+        JudgePipeline(),
+        default_max_turns=2,
+        timeout_seconds=1,
+    )
+
+    await loop.inject_recalled_memory("User prefers FastAPI")
+    await loop.run(context.session.id)
+
+    request_messages = provider.requests[0].messages
+    assert [message.role for message in request_messages] == ["system", "user", "system"]
+    assert "User prefers FastAPI" in request_messages[-1].content
+    assert "message.injected" not in store.message_events
+    assert all("User prefers FastAPI" not in message.content for message in store.messages)
+
+
 async def test_agent_loop_executes_tool_and_can_terminate() -> None:
     context = make_context("worker")
     store = FakeStore(context)

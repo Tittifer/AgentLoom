@@ -2031,8 +2031,25 @@ class ColonyRuntime:
                 self._build_queen_loop,
             )
         if self._memory is not None:
-            await self._memory.prepare_recall(session_id, live_session.provider)
+            seeded = await self._memory.seed_recall(session_id, live_session.provider)
+            if not seeded:
+                self._memory.schedule_recall(
+                    session_id,
+                    live_session.provider,
+                    lambda content: self._inject_refreshed_memory(session_id, content),
+                )
         await self._run_serial(session_id, live_session.queen_loop)
+
+    async def _inject_refreshed_memory(self, session_id: UUID, content: str) -> None:
+        execution = await self._storage.get_execution(session_id)
+        live_session = self._sessions.get(session_id)
+        if (
+            execution is None
+            or execution.status is not SessionStatus.RUNNING
+            or live_session is None
+        ):
+            return
+        await live_session.queen_loop.inject_recalled_memory(content)
 
     async def _provider_for_session(self, session_id: UUID) -> LLMProvider:
         if self._provider_override is not None:

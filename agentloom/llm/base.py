@@ -58,6 +58,7 @@ class LLMRequest(LLMModel):
     messages: list[LLMMessage] = Field(min_length=1)
     tools: list[ToolDefinition] = Field(default_factory=lambda: list[ToolDefinition]())
     response_schema: JsonObject | None = None
+    response_format: Literal["json_schema", "json_object"] | None = None
     timeout_seconds: float = Field(default=60, gt=0, le=600)
     max_output_tokens: int | None = Field(default=None, ge=1)
     purpose: RequestPurpose = "agent"

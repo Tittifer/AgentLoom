@@ -62,6 +62,12 @@ class ToolExecutionResult:
     terminate: bool = False
 
 
+@dataclass(frozen=True)
+class _InjectedMessage:
+    message: LLMMessage
+    persist: bool
+
+
 class AgentLoopStore(Protocol):
     async def load(self, session_id: UUID) -> LoopContext | None: ...
 
@@ -185,7 +191,7 @@ class AgentLoop:
         self._timeout_seconds = timeout_seconds
         self._observer = observer
         self._context_manager = context_manager
-        self._injected_messages: asyncio.Queue[LLMMessage] = asyncio.Queue()
+        self._injected_messages: asyncio.Queue[_InjectedMessage] = asyncio.Queue()
         self._logger = structlog.get_logger(__name__)
 
     async def inject_user_message(self, content: str) -> None:
@@ -194,7 +200,19 @@ class AgentLoop:
         normalized = content.strip()
         if not normalized:
             raise ValueError("Injected message must not be empty")
-        await self._injected_messages.put(LLMMessage(role="user", content=normalized))
+        await self._injected_messages.put(
+            _InjectedMessage(LLMMessage(role="user", content=normalized), persist=True)
+        )
+
+    async def inject_recalled_memory(self, content: str) -> None:
+        """Queue refreshed memory for the active Queen without exposing it to users."""
+
+        normalized = content.strip()
+        if not normalized:
+            return
+        await self._injected_messages.put(
+            _InjectedMessage(self._recalled_memory_message(normalized), persist=False)
+        )
 
     async def run(self, session_id: UUID) -> None:
         context = await self._store.load(session_id)
@@ -212,14 +230,7 @@ class AgentLoop:
     async def _run(self, context: LoopContext) -> None:
         messages = [self._system_message(context), *context.messages]
         if context.recalled_memory:
-            reminder = LLMMessage(
-                role="system",
-                content=(
-                    "<system-reminder>\n以下是与用户本轮请求相关的长期记忆。"
-                    "这些信息可能已经过时，请结合当前上下文核实。\n\n"
-                    f"{context.recalled_memory}\n</system-reminder>"
-                ),
-            )
+            reminder = self._recalled_memory_message(context.recalled_memory)
             insert_at = max(
                 (index for index, message in enumerate(messages) if message.role == "user"),
                 default=len(messages),
@@ -805,11 +816,13 @@ class AgentLoop:
         injected = 0
         while True:
             try:
-                message = self._injected_messages.get_nowait()
+                injected_message = self._injected_messages.get_nowait()
             except asyncio.QueueEmpty:
                 break
+            message = injected_message.message
             messages.append(message)
-            await self._store.append_message(context, message, "message.injected")
+            if injected_message.persist:
+                await self._store.append_message(context, message, "message.injected")
             injected += 1
         if injected:
             self._logger.info(
@@ -818,6 +831,17 @@ class AgentLoop:
                 actor_type=context.session.actor_type,
                 count=injected,
             )
+
+    @staticmethod
+    def _recalled_memory_message(content: str) -> LLMMessage:
+        return LLMMessage(
+            role="system",
+            content=(
+                "<system-reminder>\n以下是与用户本轮请求相关的长期记忆。"
+                "这些信息可能已经过时，请结合当前上下文核实。\n\n"
+                f"{content}\n</system-reminder>"
+            ),
+        )
 
     async def _complete_turn(
         self,

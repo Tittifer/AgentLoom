@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import Coroutine
+from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
@@ -21,6 +21,7 @@ from agentloom.storage.colonies import LocalColonyStore
 LONG_REFLECT_INTERVAL = 5
 SHORT_REFLECT_TURN_INTERVAL = 3
 SHORT_REFLECT_COOLDOWN_SECONDS = 300.0
+RECALL_SEED_TIMEOUT_SECONDS = 3.0
 
 
 @dataclass
@@ -44,6 +45,8 @@ class MemoryCoordinator:
         self._states: dict[UUID, ReflectionSessionState] = {}
         self._active_contexts: dict[UUID, tuple[LoopContext, LLMProvider]] = {}
         self._recall_cache: dict[UUID, str] = {}
+        self._recall_seeded: set[UUID] = set()
+        self._recall_refreshing: set[UUID] = set()
         self._reflection_lock = asyncio.Lock()
         self._reflection_scheduled = False
         self._tasks: set[asyncio.Task[None]] = set()
@@ -57,28 +60,103 @@ class MemoryCoordinator:
     def recalled_memory(self, session_id: UUID) -> str:
         return self._recall_cache.get(session_id, "")
 
-    async def prepare_recall(self, session_id: UUID, provider: LLMProvider) -> None:
+    async def seed_recall(self, session_id: UUID, provider: LLMProvider) -> bool:
+        """Bound the first recall attempt so a new Queen turn cannot stall."""
+
+        if not self._accepting or session_id in self._recall_seeded:
+            return False
+        self._recall_seeded.add(session_id)
+        try:
+            async with asyncio.timeout(RECALL_SEED_TIMEOUT_SECONDS):
+                self._set_recalled_memory(
+                    session_id,
+                    await self._select_recalled_memory(session_id, provider),
+                )
+        except TimeoutError:
+            self._logger.debug(
+                "memory_recall_seed_timeout",
+                session_id=str(session_id),
+                timeout_seconds=RECALL_SEED_TIMEOUT_SECONDS,
+            )
+        except Exception as error:
+            self._logger.debug(
+                "memory_recall_seed_failed",
+                session_id=str(session_id),
+                error_type=type(error).__name__,
+                error=str(error),
+            )
+        return True
+
+    def schedule_recall(
+        self,
+        session_id: UUID,
+        provider: LLMProvider,
+        on_changed: Callable[[str], Awaitable[None]],
+    ) -> None:
+        """Refresh recall in the background after the cached block is available."""
+
+        if (
+            not self._accepting
+            or session_id not in self._recall_seeded
+            or session_id in self._recall_refreshing
+        ):
+            return
+        self._recall_refreshing.add(session_id)
+        self._schedule(self._refresh_recall(session_id, provider, on_changed))
+
+    async def _refresh_recall(
+        self,
+        session_id: UUID,
+        provider: LLMProvider,
+        on_changed: Callable[[str], Awaitable[None]],
+    ) -> None:
+        try:
+            previous = self.recalled_memory(session_id)
+            refreshed = await self._select_recalled_memory(session_id, provider)
+            self._set_recalled_memory(session_id, refreshed)
+            if refreshed and refreshed != previous:
+                await on_changed(refreshed)
+        except Exception as error:
+            self._logger.debug(
+                "memory_recall_refresh_failed",
+                session_id=str(session_id),
+                error_type=type(error).__name__,
+                error=str(error),
+            )
+        finally:
+            self._recall_refreshing.discard(session_id)
+
+    async def _select_recalled_memory(
+        self,
+        session_id: UUID,
+        provider: LLMProvider,
+    ) -> str:
         session = await self._colonies.get_session(session_id)
         if session is None:
-            return
+            return ""
         queen = await self._colonies.get_queen(session.queen_id)
         llm = await self._colonies.get_user_llm_runtime_config()
         messages = await self._colonies.list_messages(session_id)
         if queen is None or llm is None or messages is None:
-            return
+            return ""
         query = next(
             (message.content for message in reversed(messages) if message.role == "user"),
             "",
         )
         if not query:
-            self._recall_cache.pop(session_id, None)
-            return
-        self._recall_cache[session_id] = await self._recall.recall(
+            return ""
+        return await self._recall.recall(
             query,
             session.queen_id,
             llm.model,
             provider,
         )
+
+    def _set_recalled_memory(self, session_id: UUID, content: str) -> None:
+        if content:
+            self._recall_cache[session_id] = content
+        else:
+            self._recall_cache.pop(session_id, None)
 
     async def on_turn_completed(
         self,
@@ -131,6 +209,8 @@ class MemoryCoordinator:
                     task.cancel()
                 await asyncio.gather(*tasks, return_exceptions=True)
         self._recall_cache.clear()
+        self._recall_seeded.clear()
+        self._recall_refreshing.clear()
         self._states.clear()
         self._active_contexts.clear()
 

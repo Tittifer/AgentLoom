@@ -179,6 +179,19 @@ async def test_litellm_provider_supports_json_object_compatibility() -> None:
     assert response.structured_output == {"answer": "done"}
 
 
+async def test_litellm_provider_allows_request_response_format_override() -> None:
+    completion = RecordingCompletion(
+        {
+            "choices": [{"message": {"content": '{"answer":"done"}', "tool_calls": None}}],
+        }
+    )
+    provider = LiteLLMProvider(completion, response_format="json_schema")
+
+    await provider.complete(request().model_copy(update={"response_format": "json_object"}))
+
+    assert completion.parameters["response_format"] == {"type": "json_object"}
+
+
 async def test_litellm_provider_uses_queen_connection_configuration() -> None:
     completion = RecordingCompletion({"choices": [{"message": {"content": '{"answer":"done"}'}}]})
 

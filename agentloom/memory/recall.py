@@ -85,6 +85,7 @@ class RecallSelector:
                 ),
             ],
             response_schema=SELECT_SCHEMA,
+            response_format="json_object",
             timeout_seconds=self._timeout_seconds,
             purpose="recall",
         )
