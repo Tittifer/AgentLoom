@@ -27,6 +27,7 @@ from agentloom.colony.schemas import (
     JsonObject,
     MessageRead,
     QueenCreate,
+    TaskItemCreate,
     WorkerRead,
     WorkerTask,
 )
@@ -41,7 +42,7 @@ from agentloom.llm.base import (
     ToolDefinition,
 )
 from agentloom.llm.mock import SchemaMockLLMProvider, ScriptedMockLLMProvider
-from agentloom.runtime.states import ColonyStatus, SessionStatus, WorkerStatus
+from agentloom.runtime.states import ColonyStatus, SessionStatus, TaskItemStatus, WorkerStatus
 from agentloom.storage import LocalColonyStore
 from agentloom.tools.base import ToolContext
 from agentloom.tools.registry import ToolRegistry, create_builtin_tool_registry
@@ -300,6 +301,88 @@ async def test_each_worker_runs_with_an_independent_agent_loop(
     assert {session_id for session_id, _ in runs} == {worker.id for worker in workers}
     assert {id(loop) for _, loop in runs} == {id(loop) for loop in built_loops}
     assert all(loop is not queen_loop for loop in built_loops)
+
+
+async def test_worker_reports_sync_tasks_and_wake_queen_once_after_batch(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    store = await create_store(tmp_path)
+    colony, queen = await store.create("Bound workers", "", "queen_general", {})
+    task_a = await store.create_task_item(
+        colony.id,
+        queen.id,
+        TaskItemCreate(title="Research A"),
+    )
+    task_b = await store.create_task_item(
+        colony.id,
+        queen.id,
+        TaskItemCreate(title="Research B", position=1),
+    )
+    queen_execution = await store.get_execution(queen.id)
+    assert queen_execution is not None
+    runtime = ColonyRuntime(
+        store,
+        SchemaMockLLMProvider(),
+        ColonyEventNotifier(),
+        Settings(environment="test", storage_root=tmp_path),
+        create_builtin_tool_registry(),
+    )
+    scheduled: list[UUID | None] = []
+
+    def record_schedule(
+        coroutine: Coroutine[object, object, None],
+        owner_session_id: UUID | None = None,
+    ) -> None:
+        coroutine.close()
+        scheduled.append(owner_session_id)
+
+    monkeypatch.setattr(runtime, "_schedule", record_schedule)
+    workers = await runtime._spawn_workers(  # pyright: ignore[reportPrivateUsage]
+        LoopContext(session=queen_execution, colony=colony, messages=[]),
+        [
+            WorkerTask(task="Research A", data={"task_id": str(task_a.id)}),
+            WorkerTask(task="Research B", data={"task_id": str(task_b.id)}),
+        ],
+        30,
+    )
+    scheduled.clear()
+
+    saved_a = await store.finish_worker(
+        workers[0].id,
+        WorkerStatus.COMPLETED,
+        report={"status": "success", "summary": "A done", "data": {}},
+    )
+    saved_b = await store.finish_worker(
+        workers[1].id,
+        WorkerStatus.PARTIAL,
+        report={"status": "partial", "summary": "B partial", "data": {}},
+    )
+    assert saved_a is not None and saved_b is not None
+    await runtime._publish_worker_report(  # pyright: ignore[reportPrivateUsage]
+        saved_a,
+        dict(saved_a.report or {}),
+    )
+
+    tasks_after_a = {item.id: item for item in await store.list_tasks(colony.id)}
+    assert tasks_after_a[task_a.id].assigned_worker_id == workers[0].id
+    assert tasks_after_a[task_a.id].status is TaskItemStatus.COMPLETED
+    assert tasks_after_a[task_b.id].assigned_worker_id == workers[1].id
+    assert tasks_after_a[task_b.id].status is TaskItemStatus.IN_PROGRESS
+    assert scheduled == []
+    waiting_queen = await store.get_session(queen.id)
+    assert waiting_queen is not None and waiting_queen.status is SessionStatus.IDLE
+
+    await runtime._publish_worker_report(  # pyright: ignore[reportPrivateUsage]
+        saved_b,
+        dict(saved_b.report or {}),
+    )
+
+    tasks_after_b = {item.id: item for item in await store.list_tasks(colony.id)}
+    assert tasks_after_b[task_b.id].status is TaskItemStatus.BLOCKED
+    assert scheduled == [queen.id]
+    saved_queen = await store.get_session(queen.id)
+    assert saved_queen is not None and saved_queen.status is SessionStatus.QUEUED
 
 
 def test_each_queen_session_has_an_independent_reusable_agent_loop(tmp_path: Path) -> None:
@@ -737,6 +820,7 @@ async def test_independent_queen_suggests_then_user_forks_colony(
     target_messages = await store.list_messages(target.id)
     assert target_messages is not None
     assert target_messages[-1].content.startswith("[COLONY_FORK]\n")
+    assert all(str(task.id) in target_messages[-1].content for task in tasks)
     assert target_messages[-1].metadata["visibility"] == "internal"
     assert await runtime.list_messages(target.id) == [
         message for message in target_messages if message.id != target_messages[-1].id

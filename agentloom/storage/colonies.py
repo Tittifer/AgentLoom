@@ -690,6 +690,31 @@ class LocalColonyStore:
                 self._update_task_sync, colony_id, session_id, task_id, status
             )
 
+    async def assign_worker_to_task(
+        self,
+        task_id: UUID,
+        worker_id: UUID,
+    ) -> TaskItemRead | None:
+        located = await asyncio.to_thread(self._find_task_sync, task_id)
+        worker = await self.get_worker(worker_id)
+        if located is None or worker is None:
+            return None
+        colony_id, session_id, task = located
+        if (
+            worker.colony_id != colony_id
+            or worker.owner_session_id != session_id
+            or (task.assigned_worker_id is not None and task.assigned_worker_id != worker_id)
+        ):
+            return None
+        async with self._lock(colony_id):
+            return await asyncio.to_thread(
+                self._assign_worker_to_task_sync,
+                colony_id,
+                session_id,
+                task_id,
+                worker_id,
+            )
+
     async def list_tasks(self, colony_id: UUID) -> list[TaskItemRead]:
         return await asyncio.to_thread(self._list_tasks_sync, colony_id)
 
@@ -1355,6 +1380,34 @@ class LocalColonyStore:
                 result.append(updated)
             else:
                 result.append(task)
+        if updated is not None:
+            self._write_tasks_sync(colony_id, session_id, result)
+        return updated
+
+    def _assign_worker_to_task_sync(
+        self,
+        colony_id: UUID,
+        session_id: UUID,
+        task_id: UUID,
+        worker_id: UUID,
+    ) -> TaskItemRead | None:
+        tasks = self._read_tasks_sync(colony_id, session_id)
+        updated: TaskItemRead | None = None
+        result: list[TaskItemRead] = []
+        for task in tasks:
+            if task.id != task_id:
+                result.append(task)
+                continue
+            if task.assigned_worker_id not in {None, worker_id}:
+                return None
+            updated = task.model_copy(
+                update={
+                    "assigned_worker_id": worker_id,
+                    "status": TaskItemStatus.IN_PROGRESS,
+                    "updated_at": utc_now(),
+                }
+            )
+            result.append(updated)
         if updated is not None:
             self._write_tasks_sync(colony_id, session_id, result)
         return updated

@@ -803,7 +803,9 @@ class AgentLoop:
             else:
                 runtime_prompt = (
                     "你是 AgentLoom Colony 的 Queen。持续与用户协作，维护计划和共享 Tracker。"
-                    "当任务可并行时调用 run_worker；Worker 报告会作为用户消息回到当前会话。"
+                    "当任务可并行时先用 task_create 建立任务，再调用 run_worker；"
+                    "run_worker 的每个 tasks[].data.task_id 必须使用对应任务 UUID。"
+                    "Worker 报告会作为用户消息回到当前会话。"
                     "不要虚构工具结果，最终回复必须使用中文。"
                 )
             identity_prompt = context.queen.system_prompt if context.queen is not None else ""

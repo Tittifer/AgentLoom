@@ -275,6 +275,30 @@ async def test_workers_tasks_status_and_delete_are_persisted(tmp_path: Path) -> 
     assert any((tmp_path / "trash").iterdir())
 
 
+async def test_worker_assignment_is_persisted_on_task(tmp_path: Path) -> None:
+    store = await create_store(tmp_path)
+    colony, queen = await store.create("Assigned work", "", "queen_general", {})
+    task = await store.create_task_item(
+        colony.id,
+        queen.id,
+        TaskItemCreate(title="Research"),
+    )
+    worker = (
+        await store.create_workers(
+            queen.id,
+            [WorkerTask(task="Research", data={"task_id": str(task.id)})],
+            30,
+        )
+    )[0]
+
+    assigned = await store.assign_worker_to_task(task.id, worker.id)
+
+    assert assigned is not None
+    assert assigned.assigned_worker_id == worker.id
+    assert assigned.status is TaskItemStatus.IN_PROGRESS
+    assert await store.list_tasks(colony.id) == [assigned]
+
+
 async def test_worker_terminal_transition_and_synthetic_report_are_atomic(
     tmp_path: Path,
 ) -> None:

@@ -119,7 +119,10 @@ class MessageRead(ColonyModel):
 
 class WorkerTask(ColonyModel):
     task: str = Field(min_length=1)
-    data: JsonObject = Field(default_factory=dict)
+    data: JsonObject = Field(
+        default_factory=dict,
+        description="Worker 输入；run_worker 调度时必须包含 task_id（task_create 返回的 UUID）",
+    )
 
 
 class WorkerRead(ColonyModel):

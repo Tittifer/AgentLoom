@@ -55,7 +55,7 @@ from agentloom.llm.base import (
 from agentloom.llm.factory import create_llm_provider
 from agentloom.memory.coordinator import MemoryCoordinator
 from agentloom.memory.store import LocalMemoryStore
-from agentloom.runtime.states import SessionStatus, WorkerStatus
+from agentloom.runtime.states import SessionStatus, TaskItemStatus, WorkerStatus
 from agentloom.sessions import SessionManager
 from agentloom.storage import LocalColonyStore, TrackerVersionConflictError
 from agentloom.storage.base import utc_now
@@ -827,6 +827,7 @@ class ColonyRuntime:
         self._sessions = SessionManager[AgentLoop]()
         self._worker_semaphore = asyncio.Semaphore(settings.max_concurrent_workers)
         self._background_tasks: set[asyncio.Task[None]] = set()
+        self._pending_queen_resumes: set[UUID] = set()
         self._stopping = False
         self._logger = structlog.get_logger(__name__)
 
@@ -872,6 +873,7 @@ class ColonyRuntime:
         if self._mcp_manager is not None:
             await self._mcp_manager.close()
         self._sessions.clear()
+        self._pending_queen_resumes.clear()
 
     async def create_colony(self, payload: ColonyCreate) -> ColonyRead:
         queen = await self._storage.get_queen(payload.queen_id)
@@ -975,6 +977,15 @@ class ColonyRuntime:
         source = await self._storage.get_session(session_id)
         suggestion = source.pending_colony_suggestion if source is not None else None
         if suggestion is not None:
+            initial_tasks = [
+                await self._storage.create_task_item(
+                    colony.id,
+                    target.id,
+                    TaskItemCreate(title=title, position=position),
+                )
+                for position, title in enumerate(suggestion.proposed_tasks)
+            ]
+            task_manifest = "\n".join(f"- {task.id}: {task.title}" for task in initial_tasks)
             handoff_message = await self._storage.append_message(
                 target.id,
                 LLMMessage(
@@ -983,7 +994,9 @@ class ColonyRuntime:
                         "[COLONY_FORK]\n"
                         f"目标：{suggestion.goal}\n"
                         f"创建原因：{suggestion.reason}\n"
-                        f"工作交接：{suggestion.handoff}"
+                        f"工作交接：{suggestion.handoff}\n"
+                        "初始任务（调用 run_worker 时将对应 UUID 放入 data.task_id）：\n"
+                        f"{task_manifest or '- 无'}"
                     ),
                 ),
                 metadata={
@@ -994,12 +1007,6 @@ class ColonyRuntime:
             )
             if handoff_message is None:
                 raise SessionNotFoundError(str(target.id))
-            for position, title in enumerate(suggestion.proposed_tasks):
-                await self._storage.create_task_item(
-                    colony.id,
-                    target.id,
-                    TaskItemCreate(title=title, position=position),
-                )
         queued = await self._storage.set_session_status(target.id, SessionStatus.QUEUED)
         if not queued:
             raise SessionNotFoundError(str(target.id))
@@ -1211,7 +1218,11 @@ class ColonyRuntime:
                 *builtins,
                 ToolDefinition(
                     name="run_worker",
-                    description="动态创建一个或多个并行 Worker，调用立即返回。",
+                    description=(
+                        "动态创建一个或多个并行 Worker，调用立即返回。"
+                        "每个 tasks[].data.task_id 必须填写对应 task_create 返回的任务 UUID；"
+                        "Worker 终态会自动同步该任务状态。"
+                    ),
                     parameters=RunWorkersInput.model_json_schema(),
                 ),
             ]
@@ -1420,8 +1431,25 @@ class ColonyRuntime:
         self, context: LoopContext, tasks: list[WorkerTask], timeout: int
     ) -> list[WorkerRead]:
         colony_id = self._require_colony_id(context)
+        task_items = {item.id: item for item in await self._storage.list_tasks(colony_id)}
+        bound_tasks: list[TaskItemRead] = []
+        seen_task_ids: set[UUID] = set()
+        for worker_task in tasks:
+            task_id = self._worker_task_id(worker_task)
+            task_item = task_items.get(task_id)
+            if task_item is None or task_item.session_id != context.session.owner_session_id:
+                raise ValueError(f"Worker 绑定的任务项不存在：{task_id}")
+            if task_item.status in {TaskItemStatus.COMPLETED, TaskItemStatus.CANCELLED}:
+                raise ValueError(f"Worker 不能绑定已结束的任务项：{task_id}")
+            if task_item.assigned_worker_id is not None or task_id in seen_task_ids:
+                raise ValueError(f"任务项已经绑定 Worker：{task_id}")
+            seen_task_ids.add(task_id)
+            bound_tasks.append(task_item)
         workers = await self._storage.create_workers(context.session.id, tasks, timeout)
-        for worker in workers:
+        for worker, task_item in zip(workers, bound_tasks, strict=True):
+            assigned = await self._storage.assign_worker_to_task(task_item.id, worker.id)
+            if assigned is None:
+                raise RuntimeError(f"无法绑定 Worker {worker.id} 到任务 {task_item.id}")
             await self._storage.append_event(
                 colony_id,
                 "worker.queued",
@@ -1429,10 +1457,31 @@ class ColonyRuntime:
                 worker_run_id=worker.id,
                 payload={"task": worker.task},
             )
+            await self._storage.append_event(
+                colony_id,
+                "task.updated",
+                session_id=worker.owner_session_id,
+                worker_run_id=worker.id,
+                payload={
+                    "task_id": str(assigned.id),
+                    "status": assigned.status,
+                    "assigned_worker_id": str(worker.id),
+                },
+            )
         await self._notifier.notify(context.session.owner_session_id)
         for worker in workers:
             self._schedule(self._run_worker(worker.id), worker.owner_session_id)
         return workers
+
+    @staticmethod
+    def _worker_task_id(worker_task: WorkerTask) -> UUID:
+        value = worker_task.data.get("task_id")
+        if not isinstance(value, str):
+            raise ValueError("run_worker 的每个 tasks[].data 必须包含 task_id")
+        try:
+            return UUID(value)
+        except ValueError as error:
+            raise ValueError("run_worker 的 tasks[].data.task_id 必须是有效 UUID") from error
 
     async def _run_worker(self, worker_id: UUID) -> None:
         worker = await self._storage.get_worker(worker_id)
@@ -1734,6 +1783,7 @@ class ColonyRuntime:
         worker: WorkerRead,
         report: dict[str, JsonValue],
     ) -> None:
+        await self._sync_bound_task(worker)
         queen_message = LLMMessage(
             role="user",
             content="[WORKER_REPORT]\n"
@@ -1744,7 +1794,6 @@ class ColonyRuntime:
             queen_message,
             metadata={"worker_run_id": str(worker.id)},
         )
-        await self._storage.set_session_status(worker.owner_session_id, SessionStatus.QUEUED)
         await self._storage.append_event(
             worker.colony_id,
             "worker.reported",
@@ -1756,7 +1805,67 @@ class ColonyRuntime:
             },
         )
         await self._notifier.notify(worker.owner_session_id)
-        self._schedule(self._run_queen(worker.owner_session_id), worker.owner_session_id)
+        workers = [
+            item
+            for item in await self._storage.list_workers(worker.colony_id)
+            if item.owner_session_id == worker.owner_session_id
+        ]
+        messages = await self._storage.list_messages(worker.owner_session_id)
+        reported_worker_ids = {
+            worker_id
+            for message in messages or []
+            if isinstance((worker_id := message.metadata.get("worker_run_id")), str)
+        }
+        if any(item.status in ACTIVE_WORKER_STATUSES for item in workers) or any(
+            str(item.id) not in reported_worker_ids for item in workers
+        ):
+            return
+        await self._storage.set_session_status(worker.owner_session_id, SessionStatus.QUEUED)
+        self._schedule_queen_resume(worker.owner_session_id)
+
+    async def _sync_bound_task(self, worker: WorkerRead) -> None:
+        tasks = await self._storage.list_tasks(worker.colony_id)
+        task = next((item for item in tasks if item.assigned_worker_id == worker.id), None)
+        if task is None or task.status in {TaskItemStatus.COMPLETED, TaskItemStatus.CANCELLED}:
+            return
+        status_map = {
+            WorkerStatus.COMPLETED: TaskItemStatus.COMPLETED,
+            WorkerStatus.PARTIAL: TaskItemStatus.BLOCKED,
+            WorkerStatus.FAILED: TaskItemStatus.BLOCKED,
+            WorkerStatus.TIMED_OUT: TaskItemStatus.BLOCKED,
+            WorkerStatus.CANCELLED: TaskItemStatus.CANCELLED,
+        }
+        status = status_map.get(worker.status)
+        if status is None:
+            return
+        updated = await self._storage.update_task_status(task.id, status)
+        if updated is None:
+            raise RuntimeError(f"Worker {worker.id} 的绑定任务不存在：{task.id}")
+        await self._storage.append_event(
+            worker.colony_id,
+            "task.updated",
+            session_id=worker.owner_session_id,
+            worker_run_id=worker.id,
+            payload={
+                "task_id": str(updated.id),
+                "status": updated.status,
+                "assigned_worker_id": str(worker.id),
+                "automatic": True,
+            },
+        )
+
+    def _schedule_queen_resume(self, session_id: UUID) -> None:
+        if self._stopping or session_id in self._pending_queen_resumes:
+            return
+        self._pending_queen_resumes.add(session_id)
+
+        async def resume() -> None:
+            try:
+                await self._run_queen(session_id)
+            finally:
+                self._pending_queen_resumes.discard(session_id)
+
+        self._schedule(resume(), session_id)
 
     async def _tracker_upsert(
         self, context: LoopContext, payload: TrackerUpsert
