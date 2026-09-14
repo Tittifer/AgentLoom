@@ -21,6 +21,7 @@ from agentloom.agents.loop import (
 from agentloom.colony.message_safety import sanitize_text
 from agentloom.colony.notifier import ColonyEventNotifier
 from agentloom.colony.schemas import (
+    DEFAULT_WORKER_MAX_ITERATIONS,
     ActorType,
     ColonyCreate,
     ColonyEventRead,
@@ -86,7 +87,6 @@ class LLMSettingsNotConfiguredError(RuntimeError):
 
 
 UNTITLED_COLONY_NAME = "新会话"
-DEFAULT_WORKER_MAX_TURNS = 8
 DEFAULT_WORKER_SOFT_TIMEOUT_SECONDS = 600
 WORKER_HARD_TIMEOUT_CAP_SECONDS = 3600
 WORKER_HARD_TIMEOUT_EXTRA_SECONDS = 600
@@ -127,6 +127,42 @@ class RunWorkersInput(ToolInput):
         le=3600,
         description="触发 Worker 收尾提醒的软超时秒数",
     )
+    max_iterations: int | None = Field(
+        default=None,
+        ge=1,
+        le=1000,
+        description="外层工作迭代上限；默认 3，工具往返不会消耗该次数",
+    )
+    grace_iterations: int | None = Field(
+        default=None,
+        ge=0,
+        le=3,
+        description="预算耗尽后的收尾迭代数；默认 1",
+    )
+    tool_call_budget: int | None = Field(
+        default=None,
+        ge=0,
+        le=200,
+        description="每个工作迭代的工具调用软阈值；默认 30，0 表示关闭该限制",
+    )
+    tool_call_lifetime_budget: int | None = Field(
+        default=None,
+        ge=0,
+        le=2000,
+        description="整个 Worker 生命周期的工具调用上限；默认 200，0 表示关闭该限制",
+    )
+
+    def budget_overrides(self) -> dict[str, int]:
+        return {
+            key: value
+            for key, value in {
+                "max_iterations": self.max_iterations,
+                "grace_iterations": self.grace_iterations,
+                "tool_call_budget": self.tool_call_budget,
+                "tool_call_lifetime_budget": self.tool_call_lifetime_budget,
+            }.items()
+            if value is not None
+        }
 
 
 class ReportInput(ToolInput):
@@ -472,6 +508,8 @@ class FileAgentLoopStore(AgentLoopStore):
         budget_tool_calls: int = 0,
         budget_reason: BudgetReason | None = None,
         grace_turn: int = 0,
+        inner_turn: int = 0,
+        turn_tool_calls: int = 0,
     ) -> None:
         cursor: dict[str, object] = {
             "iteration": iteration,
@@ -481,6 +519,9 @@ class FileAgentLoopStore(AgentLoopStore):
         if budget_reason is not None:
             cursor["budget_reason"] = budget_reason
             cursor["grace_turn"] = grace_turn
+        if phase.startswith("nested_") or inner_turn or turn_tool_calls:
+            cursor["inner_turn"] = inner_turn
+            cursor["turn_tool_calls"] = turn_tool_calls
         await self._store.set_execution_status(
             context.session.id,
             SessionStatus.RUNNING,
@@ -1222,6 +1263,7 @@ class ColonyRuntime:
                         "动态创建一个或多个并行 Worker，调用立即返回。"
                         "每个 tasks[].data.task_id 必须填写对应 task_create 返回的任务 UUID；"
                         "Worker 终态会自动同步该任务状态。"
+                        "可按批次覆盖外层迭代、收尾迭代和工具调用预算。"
                     ),
                     parameters=RunWorkersInput.model_json_schema(),
                 ),
@@ -1252,7 +1294,12 @@ class ColonyRuntime:
                 if context.session.actor_type != "queen" or context.session.mode != "colony":
                     return self._tool_error("TOOL_NOT_ALLOWED", "只有 Colony Queen 可以派生 Worker")
                 payload = RunWorkersInput.model_validate(tool_call.arguments)
-                workers = await self._spawn_workers(context, payload.tasks, payload.timeout)
+                workers = await self._spawn_workers(
+                    context,
+                    payload.tasks,
+                    payload.timeout,
+                    payload.budget_overrides(),
+                )
                 return ToolExecutionResult(
                     await self._spill_tool_result(
                         context,
@@ -1428,7 +1475,11 @@ class ColonyRuntime:
             )
 
     async def _spawn_workers(
-        self, context: LoopContext, tasks: list[WorkerTask], timeout: int
+        self,
+        context: LoopContext,
+        tasks: list[WorkerTask],
+        timeout: int,
+        budget_overrides: dict[str, int] | None = None,
     ) -> list[WorkerRead]:
         colony_id = self._require_colony_id(context)
         task_items = {item.id: item for item in await self._storage.list_tasks(colony_id)}
@@ -1445,7 +1496,12 @@ class ColonyRuntime:
                 raise ValueError(f"任务项已经绑定 Worker：{task_id}")
             seen_task_ids.add(task_id)
             bound_tasks.append(task_item)
-        workers = await self._storage.create_workers(context.session.id, tasks, timeout)
+        workers = await self._storage.create_workers(
+            context.session.id,
+            tasks,
+            timeout,
+            budget_overrides,
+        )
         for worker, task_item in zip(workers, bound_tasks, strict=True):
             assigned = await self._storage.assign_worker_to_task(task_item.id, worker.id)
             if assigned is None:
@@ -1960,7 +2016,7 @@ class ColonyRuntime:
             selected_provider,
             self,
             JudgePipeline(),
-            default_max_turns=DEFAULT_WORKER_MAX_TURNS,
+            default_max_turns=DEFAULT_WORKER_MAX_ITERATIONS,
             timeout_seconds=self._settings.llm_timeout_seconds,
             context_manager=self._context_manager,
         )

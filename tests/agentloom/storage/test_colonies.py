@@ -252,8 +252,11 @@ async def test_workers_tasks_status_and_delete_are_persisted(tmp_path: Path) -> 
     worker_execution = await store.get_execution(running.id)
     assert worker_execution is not None
     assert worker_execution.status is WorkerStatus.COMPLETED
-    assert worker_execution.budget["max_tool_calls"] == 30
-    assert worker_execution.budget["grace_turns"] == 2
+    assert worker_execution.budget["max_iterations"] == 3
+    assert worker_execution.budget["grace_iterations"] == 1
+    assert worker_execution.budget["tool_call_budget"] == 30
+    assert worker_execution.budget["tool_call_hard_multiple"] == 3
+    assert worker_execution.budget["tool_call_lifetime_budget"] == 200
     assert queen.budget["grace_turns"] == 1
 
     task = await store.create_task_item(
@@ -273,6 +276,31 @@ async def test_workers_tasks_status_and_delete_are_persisted(tmp_path: Path) -> 
     assert await store.get_session(queen.id) is None
     assert not (tmp_path / "queens" / "general" / "sessions" / f"{queen.id}.json").exists()
     assert any((tmp_path / "trash").iterdir())
+
+
+async def test_worker_loop_budget_overrides_are_persisted(tmp_path: Path) -> None:
+    store = await create_store(tmp_path)
+    _, queen = await store.create("Worker budget", "", "queen_general", {})
+
+    worker = (
+        await store.create_workers(
+            queen.id,
+            [WorkerTask(task="Research")],
+            30,
+            {
+                "max_iterations": 12,
+                "grace_iterations": 2,
+                "tool_call_budget": 50,
+                "tool_call_lifetime_budget": 400,
+            },
+        )
+    )[0]
+
+    assert worker.budget["max_iterations"] == 12
+    assert worker.budget["grace_iterations"] == 2
+    assert worker.budget["tool_call_budget"] == 50
+    assert worker.budget["tool_call_hard_multiple"] == 3
+    assert worker.budget["tool_call_lifetime_budget"] == 400
 
 
 async def test_worker_assignment_is_persisted_on_task(tmp_path: Path) -> None:

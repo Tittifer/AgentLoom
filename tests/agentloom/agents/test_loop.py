@@ -56,7 +56,7 @@ def make_context(actor_type: str = "queen") -> LoopContext:
             park_reason=None,
             task={"task": "分析"},
             cursor={},
-            budget={"max_turns": 2},
+            budget={"max_turns": 2} if actor_type == "queen" else {},
             usage={},
             created_at=now,
             updated_at=now,
@@ -144,6 +144,8 @@ class FakeStore:
         budget_tool_calls: int = 0,
         budget_reason: BudgetReason | None = None,
         grace_turn: int = 0,
+        inner_turn: int = 0,
+        turn_tool_calls: int = 0,
     ) -> None:
         del context, usage
         self.checkpoints.append(phase)
@@ -154,6 +156,8 @@ class FakeStore:
                 "budget_tool_calls": budget_tool_calls,
                 "budget_reason": budget_reason,
                 "grace_turn": grace_turn,
+                "inner_turn": inner_turn,
+                "turn_tool_calls": turn_tool_calls,
             }
         )
 
@@ -680,7 +684,13 @@ async def test_agent_loop_skips_only_tool_calls_beyond_remaining_budget() -> Non
 
 async def test_worker_can_report_during_turn_budget_grace() -> None:
     context = make_context("worker")
-    context.session.budget["max_turns"] = 1
+    context.session.budget = {
+        "max_iterations": 3,
+        "grace_iterations": 1,
+        "tool_call_budget": 30,
+        "tool_call_hard_multiple": 3,
+        "tool_call_lifetime_budget": 1,
+    }
     store = FakeStore(context)
     tools = FakeTools()
     provider = ScriptedMockLLMProvider(
@@ -725,7 +735,7 @@ async def test_worker_resumes_inside_budget_grace() -> None:
         "phase": "budget_grace",
         "budget_reason": "tool_calls",
         "budget_tool_calls": 30,
-        "grace_turn": 1,
+        "grace_turn": 0,
     }
     store = FakeStore(context)
     tools = FakeTools()
@@ -783,4 +793,245 @@ async def test_queen_tool_budget_is_per_activation_not_lifetime_usage() -> None:
 
     assert [call.name for call in tools.calls] == ["lookup"]
     assert tools.budget_finalized == [("本轮总结", "model_turns")]
+    assert store.failed is None
+
+
+async def test_nested_worker_keeps_tool_cycles_in_one_work_iteration() -> None:
+    context = make_context("worker")
+    context.session.budget = {
+        "max_iterations": 1,
+        "grace_iterations": 1,
+        "tool_call_budget": 30,
+        "tool_call_hard_multiple": 3,
+        "tool_call_lifetime_budget": 200,
+    }
+    store = FakeStore(context)
+    tools = FakeTools()
+    provider = ScriptedMockLLMProvider(
+        [
+            LLMResponse(
+                content="",
+                tool_calls=[ToolCall(id="lookup-1", name="lookup", arguments={})],
+                model="mock/test",
+            ),
+            LLMResponse(
+                content="",
+                tool_calls=[ToolCall(id="lookup-2", name="lookup", arguments={})],
+                model="mock/test",
+            ),
+            LLMResponse(
+                content="",
+                tool_calls=[ToolCall(id="report", name="report_to_parent", arguments={})],
+                model="mock/test",
+            ),
+        ]
+    )
+    loop = AgentLoop(
+        store,
+        provider,
+        tools,
+        JudgePipeline(),
+        default_max_turns=1,
+        timeout_seconds=1,
+    )
+
+    await loop.run(context.session.id)
+
+    nested = [
+        cursor for cursor in store.checkpoint_cursors if cursor["phase"] == "nested_after_tools"
+    ]
+    assert [cursor["iteration"] for cursor in nested] == [1, 1]
+    assert [cursor["inner_turn"] for cursor in nested] == [1, 2]
+    assert [call.name for call in tools.calls] == ["lookup", "lookup", "report_to_parent"]
+    assert store.finished
+    assert store.failed is None
+
+
+async def test_nested_worker_defers_calls_at_iteration_hard_limit() -> None:
+    context = make_context("worker")
+    context.session.budget = {
+        "max_iterations": 2,
+        "grace_iterations": 1,
+        "tool_call_budget": 1,
+        "tool_call_hard_multiple": 3,
+        "tool_call_lifetime_budget": 20,
+    }
+    calls = [
+        ToolCall(id=f"lookup-{index}", name="lookup", arguments={"index": index})
+        for index in range(4)
+    ]
+    store = FakeStore(context)
+    tools = FakeTools()
+    provider = ScriptedMockLLMProvider(
+        [
+            LLMResponse(content="", tool_calls=calls, model="mock/test"),
+            LLMResponse(
+                content="",
+                tool_calls=[ToolCall(id="report", name="report_to_parent", arguments={})],
+                model="mock/test",
+            ),
+        ]
+    )
+    loop = AgentLoop(
+        store,
+        provider,
+        tools,
+        JudgePipeline(),
+        default_max_turns=2,
+        timeout_seconds=1,
+    )
+
+    await loop.run(context.session.id)
+
+    assert tools.calls[:3] == calls[:3]
+    assert tools.calls[-1].name == "report_to_parent"
+    deferred = [message for message in store.messages if "TOOL_CALL_DEFERRED" in message.content]
+    assert len(deferred) == 1
+    assert any(
+        cursor["phase"] == "nested_iteration_complete" and cursor["iteration"] == 1
+        for cursor in store.checkpoint_cursors
+    )
+    assert store.failed is None
+
+
+async def test_nested_worker_enters_grace_at_lifetime_tool_limit() -> None:
+    context = make_context("worker")
+    context.session.budget = {
+        "max_iterations": 3,
+        "grace_iterations": 1,
+        "tool_call_budget": 30,
+        "tool_call_hard_multiple": 3,
+        "tool_call_lifetime_budget": 1,
+    }
+    store = FakeStore(context)
+    tools = FakeTools()
+    provider = ScriptedMockLLMProvider(
+        [
+            LLMResponse(
+                content="",
+                tool_calls=[ToolCall(id="lookup", name="lookup", arguments={})],
+                model="mock/test",
+            ),
+            LLMResponse(
+                content="",
+                tool_calls=[ToolCall(id="report", name="report_to_parent", arguments={})],
+                model="mock/test",
+            ),
+        ]
+    )
+    loop = AgentLoop(
+        store,
+        provider,
+        tools,
+        JudgePipeline(),
+        default_max_turns=3,
+        timeout_seconds=1,
+    )
+
+    await loop.run(context.session.id)
+
+    assert [call.name for call in tools.calls] == ["lookup", "report_to_parent"]
+    assert {definition.name for definition in provider.requests[-1].tools} == {
+        "report_to_parent",
+        "tracker_upsert",
+        "task_update",
+    }
+    assert any(
+        cursor["phase"] == "budget_grace" and cursor["budget_reason"] == "tool_calls"
+        for cursor in store.checkpoint_cursors
+    )
+    assert store.failed is None
+
+
+async def test_nested_worker_restores_inner_loop_cursor() -> None:
+    context = make_context("worker")
+    context.session.budget = {
+        "max_iterations": 3,
+        "grace_iterations": 1,
+        "tool_call_budget": 30,
+        "tool_call_hard_multiple": 3,
+        "tool_call_lifetime_budget": 200,
+    }
+    context.session.cursor = {
+        "iteration": 2,
+        "phase": "nested_after_tools",
+        "inner_turn": 4,
+        "turn_tool_calls": 5,
+        "budget_tool_calls": 10,
+    }
+    store = FakeStore(context)
+    tools = FakeTools()
+    provider = ScriptedMockLLMProvider(
+        [
+            LLMResponse(
+                content="",
+                tool_calls=[ToolCall(id="lookup", name="lookup", arguments={})],
+                model="mock/test",
+            ),
+            LLMResponse(
+                content="",
+                tool_calls=[ToolCall(id="report", name="report_to_parent", arguments={})],
+                model="mock/test",
+            ),
+        ]
+    )
+    loop = AgentLoop(
+        store,
+        provider,
+        tools,
+        JudgePipeline(),
+        default_max_turns=3,
+        timeout_seconds=1,
+    )
+
+    await loop.run(context.session.id)
+
+    checkpoint = store.checkpoint_cursors[0]
+    assert checkpoint["iteration"] == 2
+    assert checkpoint["inner_turn"] == 5
+    assert checkpoint["turn_tool_calls"] == 6
+    assert checkpoint["budget_tool_calls"] == 11
+    assert store.failed is None
+
+
+async def test_nested_worker_adds_soft_tool_budget_reminder() -> None:
+    context = make_context("worker")
+    context.session.budget = {
+        "max_iterations": 1,
+        "grace_iterations": 1,
+        "tool_call_budget": 1,
+        "tool_call_hard_multiple": 3,
+        "tool_call_lifetime_budget": 20,
+    }
+    store = FakeStore(context)
+    tools = FakeTools()
+    provider = ScriptedMockLLMProvider(
+        [
+            LLMResponse(
+                content="",
+                tool_calls=[ToolCall(id="lookup", name="lookup", arguments={})],
+                model="mock/test",
+            ),
+            LLMResponse(
+                content="",
+                tool_calls=[ToolCall(id="report", name="report_to_parent", arguments={})],
+                model="mock/test",
+            ),
+        ]
+    )
+    loop = AgentLoop(
+        store,
+        provider,
+        tools,
+        JudgePipeline(),
+        default_max_turns=1,
+        timeout_seconds=1,
+    )
+
+    await loop.run(context.session.id)
+
+    assert any(
+        message.role == "system" and "本工作迭代已调用 1 次工具" in message.content
+        for message in provider.requests[1].messages
+    )
     assert store.failed is None

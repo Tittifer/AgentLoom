@@ -12,6 +12,11 @@ JsonObject = dict[str, JsonValue]
 ActorType = Literal["queen", "worker"]
 SessionMode = Literal["dm", "colony"]
 ReportStatus = Literal["success", "partial", "failed"]
+DEFAULT_WORKER_MAX_ITERATIONS = 3
+DEFAULT_WORKER_GRACE_ITERATIONS = 1
+DEFAULT_WORKER_TOOL_CALL_BUDGET = 30
+WORKER_TOOL_CALL_HARD_MULTIPLE = 3
+DEFAULT_WORKER_TOOL_CALL_LIFETIME_BUDGET = 200
 
 
 class ColonyModel(BaseModel):
@@ -249,6 +254,10 @@ __all__ = [
     "ColonyRead",
     "ColonySuggestion",
     "ColonySnapshot",
+    "DEFAULT_WORKER_GRACE_ITERATIONS",
+    "DEFAULT_WORKER_MAX_ITERATIONS",
+    "DEFAULT_WORKER_TOOL_CALL_BUDGET",
+    "DEFAULT_WORKER_TOOL_CALL_LIFETIME_BUDGET",
     "JsonObject",
     "MessageCreate",
     "MessageRead",
@@ -266,4 +275,5 @@ __all__ = [
     "WorkerRead",
     "WorkerReport",
     "WorkerTask",
+    "WORKER_TOOL_CALL_HARD_MULTIPLE",
 ]

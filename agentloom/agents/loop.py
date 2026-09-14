@@ -11,7 +11,17 @@ import structlog
 from pydantic import JsonValue
 
 from agentloom.agents.judge import JudgePipeline
-from agentloom.colony.schemas import AgentExecutionRead, ColonyRead, MessageRead, QueenRead
+from agentloom.colony.schemas import (
+    DEFAULT_WORKER_GRACE_ITERATIONS,
+    DEFAULT_WORKER_MAX_ITERATIONS,
+    DEFAULT_WORKER_TOOL_CALL_BUDGET,
+    DEFAULT_WORKER_TOOL_CALL_LIFETIME_BUDGET,
+    WORKER_TOOL_CALL_HARD_MULTIPLE,
+    AgentExecutionRead,
+    ColonyRead,
+    MessageRead,
+    QueenRead,
+)
 from agentloom.llm.base import (
     LLMContextLengthError,
     LLMMessage,
@@ -27,7 +37,7 @@ from agentloom.llm.base import (
 BudgetReason = Literal["model_turns", "tool_calls"]
 
 GRACE_TERMINAL_TOOL_NAMES = frozenset({"report_to_parent", "tracker_upsert", "task_update"})
-DEFAULT_GRACE_TURNS = {"queen": 1, "worker": 2}
+DEFAULT_QUEEN_GRACE_TURNS = 1
 MAX_LLM_TRANSIENT_RETRIES = 5
 LLM_RETRY_BACKOFF_BASE_SECONDS = 2.0
 LLM_RETRY_MAX_DELAY_SECONDS = 60.0
@@ -98,6 +108,8 @@ class AgentLoopStore(Protocol):
         budget_tool_calls: int = 0,
         budget_reason: BudgetReason | None = None,
         grace_turn: int = 0,
+        inner_turn: int = 0,
+        turn_tool_calls: int = 0,
     ) -> None: ...
 
     async def finish(
@@ -214,6 +226,9 @@ class AgentLoop:
             )
             messages.insert(insert_at, reminder)
         usage = self._initial_usage(context.session)
+        if context.session.actor_type == "worker":
+            await self._run_worker(context, messages, usage)
+            return
         configured_tool_calls = context.session.budget.get("max_tool_calls")
         max_tool_calls = (
             configured_tool_calls
@@ -230,7 +245,7 @@ class AgentLoop:
         grace_turns = (
             configured_grace_turns
             if isinstance(configured_grace_turns, int) and configured_grace_turns >= 0
-            else DEFAULT_GRACE_TURNS[context.session.actor_type]
+            else DEFAULT_QUEEN_GRACE_TURNS
         )
         last_work_iteration = self._non_negative_int(context.session.cursor.get("iteration"))
         next_work_iteration = last_work_iteration + 1
@@ -280,14 +295,7 @@ class AgentLoop:
             iteration = last_work_iteration + grace_turn + 1 if in_grace else next_work_iteration
             definitions = self._tools.definitions(context)
             if in_grace:
-                allowed_names = (
-                    GRACE_TERMINAL_TOOL_NAMES
-                    if context.session.actor_type == "worker"
-                    else frozenset[str]()
-                )
-                definitions = [
-                    definition for definition in definitions if definition.name in allowed_names
-                ]
+                definitions = []
             if self._context_manager is not None:
                 messages = await self._context_manager.compact(
                     context, messages, definitions, self._provider, force=False
@@ -450,6 +458,344 @@ class AgentLoop:
                 budget_tool_calls,
                 budget_reason,
             )
+
+    async def _run_worker(
+        self,
+        context: LoopContext,
+        messages: list[LLMMessage],
+        usage: dict[str, int],
+    ) -> None:
+        """Run a Worker with Hive-style outer iterations and an inner tool loop."""
+
+        budget = context.session.budget
+        max_iterations = self._positive_int(
+            budget.get("max_iterations"), DEFAULT_WORKER_MAX_ITERATIONS
+        )
+        grace_iterations = self._non_negative_int_or_default(
+            budget.get("grace_iterations"), DEFAULT_WORKER_GRACE_ITERATIONS
+        )
+        tool_call_budget = self._non_negative_int_or_default(
+            budget.get("tool_call_budget"), DEFAULT_WORKER_TOOL_CALL_BUDGET
+        )
+        hard_multiple = self._positive_int(
+            budget.get("tool_call_hard_multiple"), WORKER_TOOL_CALL_HARD_MULTIPLE
+        )
+        lifetime_budget = self._non_negative_int_or_default(
+            budget.get("tool_call_lifetime_budget"),
+            DEFAULT_WORKER_TOOL_CALL_LIFETIME_BUDGET,
+        )
+        hard_limit = tool_call_budget * hard_multiple if tool_call_budget else 0
+        cursor = context.session.cursor
+        phase = cursor.get("phase")
+        budget_tool_calls = self._initial_budget_tool_calls(context.session, usage)
+        budget_reason = self._restored_budget_reason(context.session)
+        grace_turn = (
+            self._non_negative_int(cursor.get("grace_turn")) if budget_reason is not None else 0
+        )
+        if phase == "nested_after_tools":
+            iteration = max(1, self._non_negative_int(cursor.get("iteration")))
+            inner_turn = self._non_negative_int(cursor.get("inner_turn"))
+            turn_tool_calls = self._non_negative_int(cursor.get("turn_tool_calls"))
+        else:
+            iteration = self._non_negative_int(cursor.get("iteration")) + 1
+            inner_turn = 0
+            turn_tool_calls = 0
+
+        if phase == "nested_after_tools" and hard_limit and turn_tool_calls >= hard_limit:
+            iteration += 1
+            inner_turn = 0
+            turn_tool_calls = 0
+        elif (
+            phase == "nested_after_tools"
+            and tool_call_budget
+            and turn_tool_calls >= tool_call_budget
+            and turn_tool_calls < hard_limit
+        ):
+            messages.append(
+                LLMMessage(
+                    role="system",
+                    content=self._worker_tool_budget_reminder(turn_tool_calls, hard_limit),
+                )
+            )
+
+        if budget_reason is not None:
+            messages.append(
+                LLMMessage(role="system", content=self._budget_reminder(context, budget_reason))
+            )
+
+        while True:
+            await self._drain_injected_messages(context, messages)
+            if budget_reason is None:
+                if iteration > max_iterations:
+                    budget_reason = "model_turns"
+                elif lifetime_budget and budget_tool_calls >= lifetime_budget:
+                    budget_reason = "tool_calls"
+                if budget_reason is not None:
+                    await self._enter_budget_grace(
+                        context,
+                        messages,
+                        max(0, iteration - 1),
+                        usage,
+                        budget_tool_calls,
+                        budget_reason,
+                    )
+
+            if budget_reason is not None and grace_turn >= grace_iterations:
+                await self._finish_budget_exhausted(
+                    context,
+                    budget_reason,
+                    usage,
+                    budget_tool_calls,
+                    grace_turn,
+                )
+                return
+
+            in_grace = budget_reason is not None
+            definitions = self._tools.definitions(context)
+            if in_grace:
+                definitions = [
+                    definition
+                    for definition in definitions
+                    if definition.name in GRACE_TERMINAL_TOOL_NAMES
+                ]
+            if self._context_manager is not None:
+                messages = await self._context_manager.compact(
+                    context, messages, definitions, self._provider, force=False
+                )
+            try:
+                response, message_id = await self._complete_turn_with_retry(
+                    context,
+                    messages,
+                    definitions,
+                    usage,
+                    iteration,
+                )
+            except LLMContextLengthError:
+                if self._context_manager is None:
+                    raise
+                messages = await self._context_manager.compact(
+                    context, messages, definitions, self._provider, force=True
+                )
+                response, message_id = await self._complete_turn_with_retry(
+                    context,
+                    messages,
+                    definitions,
+                    usage,
+                    iteration,
+                )
+
+            inner_turn += 1
+            content = response.content or self._json_content(response.structured_output)
+            assistant = LLMMessage(
+                role="assistant",
+                content=content,
+                reasoning_content=response.reasoning_content,
+                tool_calls=response.tool_calls,
+            )
+            messages.append(assistant)
+            await self._store.append_message(
+                context,
+                assistant,
+                "message.completed",
+                message_id,
+            )
+            if self._observer is not None:
+                await self._observer.on_turn_completed(context, response, self._provider)
+
+            if not response.tool_calls:
+                if in_grace:
+                    if budget_reason is None:
+                        raise RuntimeError("Budget grace is missing its trigger reason")
+                    grace_turn += 1
+                    if content.strip():
+                        await self._tools.finalize_budget_exhausted(
+                            context,
+                            content,
+                            budget_reason,
+                        )
+                        await self._store.finish(context, content, usage)
+                        self._log_budget_completion(
+                            context,
+                            budget_reason,
+                            budget_tool_calls,
+                            grace_turn,
+                            fallback=False,
+                        )
+                        return
+                    await self._store.checkpoint(
+                        context,
+                        max(0, iteration - 1),
+                        "budget_grace",
+                        usage,
+                        budget_tool_calls=budget_tool_calls,
+                        budget_reason=budget_reason,
+                        grace_turn=grace_turn,
+                        inner_turn=inner_turn,
+                        turn_tool_calls=turn_tool_calls,
+                    )
+                    inner_turn = 0
+                    turn_tool_calls = 0
+                    continue
+
+                judgment = self._judge.review(
+                    content,
+                    iteration=iteration,
+                    max_turns=max_iterations,
+                )
+                if judgment.decision == "accept":
+                    await self._tools.finalize_text(context, content)
+                    await self._store.finish(context, content, usage)
+                    return
+                if judgment.decision == "retry":
+                    feedback = LLMMessage(role="reviewer", content=judgment.model_dump_json())
+                    messages.append(feedback)
+                    await self._store.append_message(context, feedback, "judge.reviewed")
+                    await self._store.checkpoint(
+                        context,
+                        iteration,
+                        "nested_iteration_complete",
+                        usage,
+                        budget_tool_calls=budget_tool_calls,
+                    )
+                    iteration += 1
+                    inner_turn = 0
+                    turn_tool_calls = 0
+                    continue
+                if "turn_budget_exhausted" not in judgment.issues:
+                    raise RuntimeError(judgment.feedback)
+                budget_reason = "model_turns"
+                await self._enter_budget_grace(
+                    context,
+                    messages,
+                    iteration,
+                    usage,
+                    budget_tool_calls,
+                    budget_reason,
+                )
+                iteration += 1
+                inner_turn = 0
+                turn_tool_calls = 0
+                continue
+
+            remaining_hard = (
+                max(0, hard_limit - turn_tool_calls) if hard_limit else len(response.tool_calls)
+            )
+            remaining_lifetime = (
+                max(0, lifetime_budget - budget_tool_calls)
+                if lifetime_budget and not in_grace
+                else len(response.tool_calls)
+            )
+            remaining_budget = min(remaining_hard, remaining_lifetime)
+            results, executed_count, hard_exhausted = await self._execute_tool_calls(
+                context,
+                response.tool_calls,
+                definitions,
+                in_grace=in_grace,
+                remaining_budget=remaining_budget,
+                enforce_budget_in_grace=True,
+                exhaustion_code="TOOL_CALL_DEFERRED",
+                exhaustion_message=(
+                    "当前 Worker 可用的工具调用额度已达到上限；本次调用未执行，"
+                    "请基于已有结果收敛或在下一工作迭代继续。"
+                ),
+            )
+            usage["tool_calls"] += executed_count
+            previous_turn_tool_calls = turn_tool_calls
+            turn_tool_calls += executed_count
+            if not in_grace:
+                budget_tool_calls += executed_count
+            for call, result in zip(response.tool_calls, results, strict=True):
+                tool_message = LLMMessage(
+                    role="tool",
+                    content=self._json_content(result.value),
+                    tool_call_id=call.id,
+                )
+                messages.append(tool_message)
+                await self._store.append_message(context, tool_message, "tool.completed")
+
+            self._logger.info(
+                "agent_tool_usage",
+                session_id=str(context.session.id),
+                actor_type=context.session.actor_type,
+                iteration=iteration,
+                inner_turn=inner_turn,
+                in_grace=in_grace,
+                requested_tool_calls=len(response.tool_calls),
+                executed_tool_calls=executed_count,
+                skipped_tool_calls=len(response.tool_calls) - executed_count,
+                turn_tool_calls=turn_tool_calls,
+                work_budget_tool_calls=budget_tool_calls,
+                total_tool_calls=usage["tool_calls"],
+            )
+            if any(result.terminate for result in results):
+                await self._store.finish(context, content, usage)
+                return
+
+            if (
+                tool_call_budget
+                and turn_tool_calls < hard_limit
+                and turn_tool_calls // tool_call_budget
+                > previous_turn_tool_calls // tool_call_budget
+            ):
+                messages.append(
+                    LLMMessage(
+                        role="system",
+                        content=self._worker_tool_budget_reminder(
+                            turn_tool_calls,
+                            hard_limit,
+                        ),
+                    )
+                )
+
+            await self._store.checkpoint(
+                context,
+                iteration,
+                "nested_after_tools",
+                usage,
+                budget_tool_calls=budget_tool_calls,
+                budget_reason=budget_reason,
+                grace_turn=grace_turn,
+                inner_turn=inner_turn,
+                turn_tool_calls=turn_tool_calls,
+            )
+
+            lifetime_exhausted = (
+                not in_grace and lifetime_budget > 0 and budget_tool_calls >= lifetime_budget
+            )
+            iteration_hard_exhausted = hard_limit > 0 and (
+                hard_exhausted or turn_tool_calls >= hard_limit
+            )
+            if lifetime_exhausted:
+                budget_reason = "tool_calls"
+                await self._enter_budget_grace(
+                    context,
+                    messages,
+                    iteration,
+                    usage,
+                    budget_tool_calls,
+                    budget_reason,
+                )
+                iteration += 1
+                inner_turn = 0
+                turn_tool_calls = 0
+                continue
+            if iteration_hard_exhausted:
+                if in_grace:
+                    grace_turn += 1
+                await self._store.checkpoint(
+                    context,
+                    iteration,
+                    "budget_grace" if in_grace else "nested_iteration_complete",
+                    usage,
+                    budget_tool_calls=budget_tool_calls,
+                    budget_reason=budget_reason,
+                    grace_turn=grace_turn,
+                )
+                if not in_grace:
+                    iteration += 1
+                inner_turn = 0
+                turn_tool_calls = 0
+                continue
 
     async def _drain_injected_messages(
         self,
@@ -629,6 +975,9 @@ class AgentLoop:
         *,
         in_grace: bool,
         remaining_budget: int,
+        enforce_budget_in_grace: bool = False,
+        exhaustion_code: str = "TOOL_BUDGET_EXHAUSTED",
+        exhaustion_message: str = "工具调用预算已耗尽，本次调用未执行。",
     ) -> tuple[list[ToolExecutionResult], int, bool]:
         allowed_names = {definition.name for definition in definitions}
         executable_indices: list[int] = []
@@ -646,13 +995,13 @@ class AgentLoop:
                         }
                     }
                 )
-            elif not in_grace and len(executable_indices) >= remaining:
+            elif (not in_grace or enforce_budget_in_grace) and len(executable_indices) >= remaining:
                 budget_exhausted = True
                 results[index] = ToolExecutionResult(
                     {
                         "error": {
-                            "code": "TOOL_BUDGET_EXHAUSTED",
-                            "message": "工具调用预算已耗尽，本次调用未执行。",
+                            "code": exhaustion_code,
+                            "message": exhaustion_message,
                         }
                     }
                 )
@@ -785,6 +1134,21 @@ class AgentLoop:
         if isinstance(restored, int) and restored >= 0:
             return restored
         return usage["tool_calls"] if session.actor_type == "worker" else 0
+
+    @staticmethod
+    def _positive_int(value: JsonValue | None, default: int) -> int:
+        return value if isinstance(value, int) and value > 0 else default
+
+    @staticmethod
+    def _non_negative_int_or_default(value: JsonValue | None, default: int) -> int:
+        return value if isinstance(value, int) and value >= 0 else default
+
+    @staticmethod
+    def _worker_tool_budget_reminder(tool_calls: int, hard_limit: int) -> str:
+        return (
+            f"本工作迭代已调用 {tool_calls} 次工具，硬上限为 {hard_limit} 次。"
+            "请复用已有结果、减少重复调用，并尽快写入 Tracker 后向 Queen 汇报。"
+        )
 
     @staticmethod
     def _non_negative_int(value: JsonValue | None) -> int:

@@ -16,6 +16,7 @@ from agentloom.colony.runtime import (
     ColonyRuntime,
     FileAgentLoopStore,
     FileContextManager,
+    RunWorkersInput,
     conversation_name_from_message,
     normalize_message_history,
     worker_hard_timeout_seconds,
@@ -616,6 +617,26 @@ def test_worker_hard_timeout_uses_hive_grace_policy() -> None:
     assert worker_hard_timeout_seconds(60) == 660
     assert worker_hard_timeout_seconds(600) == 2_400
     assert worker_hard_timeout_seconds(3_600) == 3_660
+
+
+def test_run_worker_accepts_bounded_loop_overrides() -> None:
+    payload = RunWorkersInput.model_validate(
+        {
+            "tasks": [{"task": "Research", "data": {}}],
+            "max_iterations": 12,
+            "grace_iterations": 2,
+            "tool_call_budget": 50,
+            "tool_call_lifetime_budget": 400,
+        }
+    )
+
+    assert payload.budget_overrides() == {
+        "max_iterations": 12,
+        "grace_iterations": 2,
+        "tool_call_budget": 50,
+        "tool_call_lifetime_budget": 400,
+    }
+    assert "tool_call_hard_multiple" not in RunWorkersInput.model_json_schema()["properties"]
 
 
 async def test_worker_hard_timeout_includes_concurrency_queue_time(

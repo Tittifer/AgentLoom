@@ -14,6 +14,11 @@ from pydantic import JsonValue, TypeAdapter
 
 from agentloom.colony.message_safety import redact_json, sanitize_json, sanitize_text
 from agentloom.colony.schemas import (
+    DEFAULT_WORKER_GRACE_ITERATIONS,
+    DEFAULT_WORKER_MAX_ITERATIONS,
+    DEFAULT_WORKER_TOOL_CALL_BUDGET,
+    DEFAULT_WORKER_TOOL_CALL_LIFETIME_BUDGET,
+    WORKER_TOOL_CALL_HARD_MULTIPLE,
     AgentExecutionRead,
     ColonyEventRead,
     ColonyForkCreate,
@@ -72,7 +77,10 @@ def default_colony_settings() -> dict[str, JsonValue]:
 
     return {
         "max_concurrent_workers": 4,
-        "worker_max_turns": 8,
+        "worker_max_iterations": DEFAULT_WORKER_MAX_ITERATIONS,
+        "worker_grace_iterations": DEFAULT_WORKER_GRACE_ITERATIONS,
+        "worker_tool_call_budget": DEFAULT_WORKER_TOOL_CALL_BUDGET,
+        "worker_tool_call_lifetime_budget": DEFAULT_WORKER_TOOL_CALL_LIFETIME_BUDGET,
         "worker_timeout_seconds": 600,
         "max_tool_calls": 100,
         "grace_turns": 1,
@@ -556,6 +564,7 @@ class LocalColonyStore:
         owner_session_id: UUID,
         tasks: Sequence[WorkerTask],
         timeout_seconds: int,
+        budget_overrides: Mapping[str, int] | None = None,
     ) -> list[WorkerRead]:
         located = await asyncio.to_thread(self._find_session_sync, owner_session_id)
         if located is None or located.session.colony_id is None:
@@ -568,6 +577,7 @@ class LocalColonyStore:
                 owner_session_id,
                 tasks,
                 timeout_seconds,
+                budget_overrides,
             )
 
     async def list_workers(self, colony_id: UUID) -> list[WorkerRead]:
@@ -1173,11 +1183,31 @@ class LocalColonyStore:
         owner_session_id: UUID,
         tasks: Sequence[WorkerTask],
         timeout_seconds: int,
+        budget_overrides: Mapping[str, int] | None = None,
     ) -> list[WorkerRead]:
         now = utc_now()
         parent = self._read_session_sync(colony_id, owner_session_id)
         if parent is None:
             raise RuntimeError(f"Owner session {owner_session_id} does not exist")
+        override_bounds = {
+            "max_iterations": (1, 1000),
+            "grace_iterations": (0, 3),
+            "tool_call_budget": (0, 200),
+            "tool_call_lifetime_budget": (0, 2000),
+        }
+        normalized_overrides: dict[str, int] = {}
+        for key, value in (budget_overrides or {}).items():
+            bounds = override_bounds.get(key)
+            if bounds is None:
+                raise ValueError(f"Unsupported Worker budget override: {key}")
+            if isinstance(value, bool):
+                raise ValueError(f"Worker budget override {key} must be an integer")
+            minimum, maximum = bounds
+            if value < minimum or value > maximum:
+                raise ValueError(
+                    f"Worker budget override {key} must be between {minimum} and {maximum}"
+                )
+            normalized_overrides[key] = value
         workers: list[WorkerRead] = []
         for task in tasks:
             worker_id = uuid4()
@@ -1192,9 +1222,12 @@ class LocalColonyStore:
                 input=task.data,
                 cursor={"iteration": 0, "phase": "queued"},
                 budget={
-                    "max_turns": 8,
-                    "max_tool_calls": 30,
-                    "grace_turns": 2,
+                    "max_iterations": DEFAULT_WORKER_MAX_ITERATIONS,
+                    "grace_iterations": DEFAULT_WORKER_GRACE_ITERATIONS,
+                    "tool_call_budget": DEFAULT_WORKER_TOOL_CALL_BUDGET,
+                    "tool_call_hard_multiple": WORKER_TOOL_CALL_HARD_MULTIPLE,
+                    "tool_call_lifetime_budget": (DEFAULT_WORKER_TOOL_CALL_LIFETIME_BUDGET),
+                    **normalized_overrides,
                     **{
                         key: value
                         for key, value in parent.budget.items()
