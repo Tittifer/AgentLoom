@@ -1,6 +1,7 @@
 """Secret redaction and storage limits for persistent Colony messages."""
 
 import re
+from collections.abc import Callable
 
 from pydantic import JsonValue
 
@@ -32,32 +33,30 @@ def sanitize_text(value: str, maximum: int = DEFAULT_MAX_CONTENT_CHARS) -> str:
     return redacted[:retained] + TRUNCATION_MARKER
 
 
-def sanitize_json(value: JsonValue) -> JsonValue:
+def _transform_json(value: JsonValue, transform_text: Callable[[str], str]) -> JsonValue:
     if isinstance(value, dict):
         result: dict[str, JsonValue] = {}
         for key, item in value.items():
             normalized_key = key.lower().replace("-", "_")
-            result[key] = "[REDACTED]" if normalized_key in SENSITIVE_KEYS else sanitize_json(item)
+            result[key] = (
+                "[REDACTED]"
+                if normalized_key in SENSITIVE_KEYS
+                else _transform_json(item, transform_text)
+            )
         return result
     if isinstance(value, list):
-        return [sanitize_json(item) for item in value]
+        return [_transform_json(item, transform_text) for item in value]
     if isinstance(value, str):
-        return sanitize_text(value)
+        return transform_text(value)
     return value
+
+
+def sanitize_json(value: JsonValue) -> JsonValue:
+    return _transform_json(value, sanitize_text)
 
 
 def redact_json(value: JsonValue) -> JsonValue:
-    if isinstance(value, dict):
-        result: dict[str, JsonValue] = {}
-        for key, item in value.items():
-            normalized_key = key.lower().replace("-", "_")
-            result[key] = "[REDACTED]" if normalized_key in SENSITIVE_KEYS else redact_json(item)
-        return result
-    if isinstance(value, list):
-        return [redact_json(item) for item in value]
-    if isinstance(value, str):
-        return redact_text(value)
-    return value
+    return _transform_json(value, redact_text)
 
 
 __all__ = [

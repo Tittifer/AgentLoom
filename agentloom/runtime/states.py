@@ -34,6 +34,24 @@ class WorkerStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
+ACTIVE_WORKER_STATUSES = frozenset(
+    {
+        WorkerStatus.QUEUED,
+        WorkerStatus.RUNNING,
+        WorkerStatus.REPORTING,
+    }
+)
+TERMINAL_WORKER_STATUSES = frozenset(
+    {
+        WorkerStatus.COMPLETED,
+        WorkerStatus.PARTIAL,
+        WorkerStatus.FAILED,
+        WorkerStatus.TIMED_OUT,
+        WorkerStatus.CANCELLED,
+    }
+)
+
+
 class TaskItemStatus(StrEnum):
     PENDING = "pending"
     IN_PROGRESS = "in_progress"
@@ -42,4 +60,11 @@ class TaskItemStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
-__all__ = ["ColonyStatus", "SessionStatus", "TaskItemStatus", "WorkerStatus"]
+__all__ = [
+    "ACTIVE_WORKER_STATUSES",
+    "ColonyStatus",
+    "SessionStatus",
+    "TERMINAL_WORKER_STATUSES",
+    "TaskItemStatus",
+    "WorkerStatus",
+]

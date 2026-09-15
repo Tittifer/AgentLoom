@@ -48,7 +48,7 @@ class LLMMessage(LLMModel):
     content: str
     reasoning_content: ReasoningContent | None = None
     tool_call_id: str | None = None
-    tool_calls: list[ToolCall] = Field(default_factory=lambda: list[ToolCall]())
+    tool_calls: list[ToolCall] = Field(default_factory=list[ToolCall])
 
 
 class LLMRequest(LLMModel):
@@ -56,7 +56,7 @@ class LLMRequest(LLMModel):
 
     model: str = Field(min_length=1)
     messages: list[LLMMessage] = Field(min_length=1)
-    tools: list[ToolDefinition] = Field(default_factory=lambda: list[ToolDefinition]())
+    tools: list[ToolDefinition] = Field(default_factory=list[ToolDefinition])
     response_schema: JsonObject | None = None
     response_format: Literal["json_schema", "json_object"] | None = None
     timeout_seconds: float = Field(default=60, gt=0, le=600)
@@ -70,7 +70,7 @@ class LLMResponse(LLMModel):
     content: str | None = None
     reasoning_content: ReasoningContent | None = None
     structured_output: JsonObject | None = None
-    tool_calls: list[ToolCall] = Field(default_factory=lambda: list[ToolCall]())
+    tool_calls: list[ToolCall] = Field(default_factory=list[ToolCall])
     input_tokens: int = Field(default=0, ge=0)
     output_tokens: int = Field(default=0, ge=0)
     model: str = Field(min_length=1)

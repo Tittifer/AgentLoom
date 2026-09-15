@@ -274,10 +274,6 @@ class TaskItemCreate(ColonyModel):
     metadata: JsonObject = Field(default_factory=dict)
 
 
-class TaskItemUpdate(ColonyModel):
-    status: TaskItemStatus
-
-
 class TaskItemRead(ColonyModel):
     id: UUID
     colony_id: UUID
@@ -338,7 +334,6 @@ __all__ = [
     "SessionRead",
     "TaskItemCreate",
     "TaskItemRead",
-    "TaskItemUpdate",
     "TrackerColumnRead",
     "TrackerChangeRead",
     "TrackerChangesRead",

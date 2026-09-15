@@ -62,7 +62,13 @@ from agentloom.llm.base import (
 from agentloom.llm.factory import create_llm_provider
 from agentloom.memory.coordinator import MemoryCoordinator
 from agentloom.memory.store import LocalMemoryStore
-from agentloom.runtime.states import SessionStatus, TaskItemStatus, WorkerStatus
+from agentloom.runtime.states import (
+    ACTIVE_WORKER_STATUSES,
+    TERMINAL_WORKER_STATUSES,
+    SessionStatus,
+    TaskItemStatus,
+    WorkerStatus,
+)
 from agentloom.sessions import SessionManager
 from agentloom.storage import LocalColonyStore, TrackerPermissionError
 from agentloom.storage.base import utc_now
@@ -98,11 +104,6 @@ WORKER_HARD_TIMEOUT_CAP_SECONDS = 3600
 WORKER_HARD_TIMEOUT_EXTRA_SECONDS = 600
 WORKER_MIN_TIMEOUT_GRACE_SECONDS = 60
 WORKER_STOP_TIMEOUT_SECONDS = 10
-ACTIVE_WORKER_STATUSES = {
-    WorkerStatus.QUEUED,
-    WorkerStatus.RUNNING,
-    WorkerStatus.REPORTING,
-}
 
 
 def worker_hard_timeout_seconds(soft_timeout_seconds: float) -> float:
@@ -177,14 +178,17 @@ class ReportInput(ToolInput):
     data: dict[str, JsonValue] = Field(default_factory=dict)
 
 
-class TrackerQueryInput(ToolInput):
+class _TrackerStatementInput(ToolInput):
     sql: str = Field(min_length=1, max_length=100_000)
     row_cap: int = Field(default=1_000, ge=1, le=10_000)
 
 
-class TrackerSQLInput(ToolInput):
-    sql: str = Field(min_length=1, max_length=100_000)
-    row_cap: int = Field(default=1_000, ge=1, le=10_000)
+class TrackerQueryInput(_TrackerStatementInput):
+    pass
+
+
+class TrackerSQLInput(_TrackerStatementInput):
+    pass
 
 
 class TrackerRegisterWritableInput(ToolInput):
@@ -312,14 +316,7 @@ def _worker_status_context(
         if isinstance((worker_id := message.metadata.get("worker_run_id")), str)
     }
     pending = [worker for worker in workers if str(worker.id) not in reported_ids]
-    terminal_statuses = {
-        WorkerStatus.COMPLETED,
-        WorkerStatus.PARTIAL,
-        WorkerStatus.FAILED,
-        WorkerStatus.TIMED_OUT,
-        WorkerStatus.CANCELLED,
-    }
-    all_workers_terminal = all(worker.status in terminal_statuses for worker in workers)
+    all_workers_terminal = all(worker.status in TERMINAL_WORKER_STATUSES for worker in workers)
     if not pending:
         instruction = "所有 Worker 报告均已收到。立即综合全部报告完成最终答复，不得声称仍在等待。"
     elif all_workers_terminal:
@@ -889,8 +886,6 @@ class FileContextManager(AgentContextManager):
                 groups += 1
         while index > 0 and messages[index].role == "tool":
             index -= 1
-        if index > 0 and messages[index].role == "assistant" and messages[index].tool_calls:
-            return index
         return index
 
 
@@ -2335,14 +2330,7 @@ class ColonyRuntime:
 
     async def _ensure_worker_terminal_report(self, worker_id: UUID) -> None:
         worker = await self._storage.get_worker(worker_id)
-        terminal_statuses = {
-            WorkerStatus.COMPLETED,
-            WorkerStatus.PARTIAL,
-            WorkerStatus.FAILED,
-            WorkerStatus.TIMED_OUT,
-            WorkerStatus.CANCELLED,
-        }
-        if worker is None or worker.status not in terminal_statuses:
+        if worker is None or worker.status not in TERMINAL_WORKER_STATUSES:
             return
 
         if worker.report is not None:
@@ -2569,8 +2557,6 @@ class ColonyRuntime:
         return item
 
     async def _task_update(self, context: LoopContext, payload: TaskUpdateInput) -> TaskItemRead:
-        from agentloom.runtime.states import TaskItemStatus
-
         colony_id = self._require_colony_id(context)
         item = await self._storage.update_task_status(
             payload.task_id, TaskItemStatus(payload.status)

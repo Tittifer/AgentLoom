@@ -37,7 +37,7 @@ class CompactionCheckpoint(ContextModel):
     schema_version: int = Field(default=1, ge=1)
     summary: str = Field(min_length=1)
     through_sequence: int = Field(ge=1)
-    preserved_sequences: list[int] = Field(default_factory=lambda: list[int]())
+    preserved_sequences: list[int] = Field(default_factory=list[int])
     tokens_before: int = Field(ge=0)
     tokens_after: int = Field(ge=0)
     compacted_at: AwareDatetime

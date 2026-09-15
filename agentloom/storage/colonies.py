@@ -42,7 +42,13 @@ from agentloom.colony.schemas import (
 )
 from agentloom.context.schemas import CompactionCheckpoint
 from agentloom.llm.base import LLMMessage
-from agentloom.runtime.states import ColonyStatus, SessionStatus, TaskItemStatus, WorkerStatus
+from agentloom.runtime.states import (
+    ACTIVE_WORKER_STATUSES,
+    ColonyStatus,
+    SessionStatus,
+    TaskItemStatus,
+    WorkerStatus,
+)
 from agentloom.storage.base import (
     append_json_line,
     atomic_write_json,
@@ -1507,11 +1513,7 @@ class LocalColonyStore:
         if not path.is_file():
             return None
         worker = WorkerRead.model_validate(read_json(path))
-        if worker.status not in {
-            WorkerStatus.QUEUED,
-            WorkerStatus.RUNNING,
-            WorkerStatus.REPORTING,
-        }:
+        if worker.status not in ACTIVE_WORKER_STATUSES:
             return None
         return self._finish_worker_sync(colony_id, worker_id, status, report, error)
 
@@ -1525,11 +1527,7 @@ class LocalColonyStore:
         if not path.is_file():
             return None
         worker = WorkerRead.model_validate(read_json(path))
-        if worker.report is not None or worker.status in {
-            WorkerStatus.QUEUED,
-            WorkerStatus.RUNNING,
-            WorkerStatus.REPORTING,
-        }:
+        if worker.report is not None or worker.status in ACTIVE_WORKER_STATUSES:
             return None
         updated = worker.model_copy(update={"report": JSON_OBJECT.validate_python(dict(report))})
         self._write_model(path, updated)
@@ -1688,11 +1686,10 @@ class LocalColonyStore:
         worker_ids: list[UUID] = []
         for worker in self._list_workers_sync(colony_id):
             current = worker
-            if isinstance(worker.input.get("playbook_run_id"), str) and worker.status in {
-                WorkerStatus.QUEUED,
-                WorkerStatus.RUNNING,
-                WorkerStatus.REPORTING,
-            }:
+            if (
+                isinstance(worker.input.get("playbook_run_id"), str)
+                and worker.status in ACTIVE_WORKER_STATUSES
+            ):
                 self._finish_worker_sync(
                     colony_id,
                     worker.id,

@@ -28,7 +28,7 @@ class MCPServerConfig:
     command: str
     args: tuple[str, ...] = ()
     cwd: Path | None = None
-    env: dict[str, str] = field(default_factory=lambda: {})
+    env: dict[str, str] = field(default_factory=dict[str, str])
     timeout_seconds: float = 30
 
 

@@ -122,7 +122,7 @@ class LiteStreamResponse(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     model: str | None = None
-    choices: list[LiteStreamChoice] = Field(default_factory=lambda: list[LiteStreamChoice]())
+    choices: list[LiteStreamChoice] = Field(default_factory=list[LiteStreamChoice])
     usage: LiteUsage | None = None
 
 

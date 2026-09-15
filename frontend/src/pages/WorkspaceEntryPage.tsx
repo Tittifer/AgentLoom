@@ -17,15 +17,17 @@ export function WorkspaceEntryPage() {
     queryFn: () => listSessions(queenId),
     enabled: Boolean(queenId),
   });
+  const latestSession = sessionsQuery.isSuccess
+    ? latestDirectSession(sessionsQuery.data)
+    : undefined;
   useEffect(() => {
-    if (!queenId || !sessionsQuery.isSuccess) return;
-    const latest = latestDirectSession(sessionsQuery.data);
-    if (latest) navigate(`/sessions/${latest.id}`, { replace: true });
-  }, [navigate, queenId, sessionsQuery.data, sessionsQuery.isSuccess]);
+    if (!queenId || !latestSession) return;
+    navigate(`/sessions/${latestSession.id}`, { replace: true });
+  }, [latestSession, navigate, queenId]);
 
   const error = queensQuery.error ?? sessionsQuery.error;
   const openingExistingSession = Boolean(
-    queenId && (!sessionsQuery.isSuccess || latestDirectSession(sessionsQuery.data)),
+    queenId && (!sessionsQuery.isSuccess || latestSession),
   );
 
   return (

@@ -165,10 +165,6 @@ export function listColonies(): Promise<ColonyRead[]> {
   return apiClient.get("/api/colonies");
 }
 
-export function createColony(payload: ColonyCreate): Promise<ColonyRead> {
-  return apiClient.post("/api/colonies", payload);
-}
-
 export function deleteColony(colonyId: string): Promise<void> {
   return apiClient.delete(`/api/colonies/${colonyId}`);
 }

@@ -19,9 +19,7 @@ class ApiErrorDetail(ApiModel):
 class ApiError(ApiModel):
     code: str = Field(min_length=1)
     message: str = Field(min_length=1)
-    details: list[ApiErrorDetail] = Field(
-        default_factory=lambda: list[ApiErrorDetail](),
-    )
+    details: list[ApiErrorDetail] = Field(default_factory=list[ApiErrorDetail])
 
 
 __all__ = ["ApiError", "ApiErrorDetail", "HealthResponse"]

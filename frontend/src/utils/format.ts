@@ -32,11 +32,3 @@ export function statusText(status: string): string {
 export function formatError(error: unknown): string {
   return error instanceof Error ? error.message : "发生未知错误";
 }
-
-export function formatDate(value: string | null | undefined): string {
-  return formatDateTime(value);
-}
-
-export function humanize(value: string): string {
-  return statusText(value);
-}
