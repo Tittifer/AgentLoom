@@ -10,7 +10,7 @@ AgentLoom 是一个基于 Hive Colony 思路实现的持久化多智能体协作
 - 会话隔离：同一 Queen 下的不同会话不共享消息、预算、Worker、Task 或 Tracker。
 - 动态 Worker：Queen 通过 `run_worker` 即时创建一个或多个并行 Worker。
 - 独立 AgentLoop：每个 Queen 会话保持自己的长期循环，每个 Worker 创建自己的循环实例；两类智能体共用相同的模型调用、工具、质量检查、用量统计和持久化协议。
-- 共享状态：任务计划保存在会话文件中，每个 Colony 使用独立的 SQLite Tracker。
+- 共享状态：任务计划保存在会话文件中；每个 Colony 使用独立 SQLite Tracker，Data 是 Queen 定义的真实业务表，Worker 只能更新 Queen 登记过的列。
 - 可恢复执行：消息、会话游标、Worker 状态和事件均持久化；进程重启会重新排队被中断的执行。
 - 预算安全收尾：工作预算耗尽后进入受限 Grace 阶段；Worker 保证向 Queen 汇报，Queen 保持可继续对话。
 - 终态报告兜底：Worker 异常或超时仍会生成结构化失败报告并唤醒 Queen，避免批量任务永久等待。
@@ -90,7 +90,7 @@ uv run --locked python dev.py
 1. 点击“新建会话”后进入独立 Queen DM，此时不创建 Tracker 或 Worker。
 2. Queen 先直接处理目标；当任务适合并行、周期性或长期运行时，在右侧提交 Colony 建议。
 3. 用户可以修改名称和目标后确认，也可暂不创建。确认后会话全链路复制到新 Colony，源 DM 转为只读并保留跳转关系。
-4. Colony Queen 可创建任务、写入共享 Tracker，并按需要派生多个并行 Worker。
+4. Colony Queen 先创建业务表、写入初始行并登记 Worker 可写列，再创建任务并按需要派生多个并行 Worker；Worker 逐行更新 Data，完整报告单独回传。
 5. Worker 独立执行并向 Queen 汇报，Queen 综合结果后回复用户。
 
 ## 主要 API
@@ -108,7 +108,9 @@ GET  /api/sessions/{session_id}/messages
 POST /api/sessions/{session_id}/messages
 GET  /api/colonies/{colony_id}/workers
 GET  /api/colonies/{colony_id}/tasks
-GET  /api/colonies/{colony_id}/tracker
+GET  /api/colonies/{colony_id}/data/tables
+GET  /api/colonies/{colony_id}/data/tables/{table}/rows
+GET  /api/colonies/{colony_id}/data/changes
 POST /api/queens
 GET  /api/queens
 GET  /api/queens/{queen_id}

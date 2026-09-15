@@ -27,10 +27,15 @@ async def test_concurrent_colony_writes_have_unique_events(tmp_path: Path) -> No
     colony, queen = await store.create("Concurrent", "", "queen_general", {})
 
     async def update_tracker() -> None:
+        await store.execute_tracker_sql(
+            colony.id,
+            "CREATE TABLE trip (id TEXT PRIMARY KEY, count INTEGER)",
+            100,
+        )
+        await store.register_tracker_writable(colony.id, "trip", ["count"], ["id"])
         await store.upsert_tracker(
             colony.id,
-            queen.id,
-            TrackerUpsert(namespace="trip", entry_key="cities", data={"count": 2}),
+            TrackerUpsert(table="trip", row={"id": "cities", "count": 2}),
         )
         await store.append_event(colony.id, "tracker.updated", session_id=queen.id)
 
@@ -56,7 +61,7 @@ async def test_concurrent_colony_writes_have_unique_events(tmp_path: Path) -> No
     events = await store.list_events_after(colony.id, 0)
     assert events is not None
     assert [event.sequence for event in events] == [1, 2, 3]
-    assert len(await store.list_tracker(colony.id)) == 1
+    assert (await store.list_tracker_tables(colony.id))[0].row_count == 1
     assert len(await store.list_tasks(colony.id)) == 1
     assert len(await store.list_workers(colony.id)) == 1
 

@@ -70,6 +70,11 @@ async def test_colony_api_creates_chats_and_lists(colony_client: tuple[AsyncClie
         (await client.get(f"/api/colonies/{colony.id}")).json()
     )
     session_id = initial_snapshot.session.id
+    data_tables = await client.get(f"/api/colonies/{colony.id}/data/tables")
+    data_changes = await client.get(f"/api/colonies/{colony.id}/data/changes")
+    assert data_tables.status_code == 200 and data_tables.json() == []
+    assert data_changes.status_code == 200
+    assert data_changes.json() == {"changes": [], "cursor": 0}
 
     message_response = await client.post(
         f"/api/sessions/{session_id}/messages",

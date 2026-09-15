@@ -30,7 +30,9 @@ from agentloom.colony.schemas import (
     SessionCreate,
     SessionRead,
     TaskItemRead,
-    TrackerEntryRead,
+    TrackerChangesRead,
+    TrackerRowsRead,
+    TrackerTableRead,
     WorkerRead,
 )
 
@@ -320,14 +322,59 @@ async def list_workers(
         return error_response(404, "COLONY_NOT_FOUND", "Colony 不存在")
 
 
-@router.get("/colonies/{colony_id}/tracker", response_model=list[TrackerEntryRead])
-async def list_tracker(
+@router.get(
+    "/colonies/{colony_id}/data/tables", response_model=list[TrackerTableRead]
+)
+async def list_tracker_tables(
     colony_id: UUID,
     runtime: RuntimeDependency,
-    namespace: str | None = None,
-) -> list[TrackerEntryRead] | JSONResponse:
+) -> list[TrackerTableRead] | JSONResponse:
     try:
-        return await runtime.list_tracker(colony_id, namespace)
+        return await runtime.list_tracker_tables(colony_id)
+    except ColonyNotFoundError:
+        return error_response(404, "COLONY_NOT_FOUND", "Colony 不存在")
+
+
+@router.get(
+    "/colonies/{colony_id}/data/tables/{table}/rows",
+    response_model=TrackerRowsRead,
+)
+async def list_tracker_rows(
+    colony_id: UUID,
+    table: str,
+    runtime: RuntimeDependency,
+    limit: Annotated[int, Query(ge=1, le=500)] = 100,
+    offset: Annotated[int, Query(ge=0)] = 0,
+    order_by: str | None = None,
+    order_dir: Annotated[str, Query(pattern="^(asc|desc)$")] = "asc",
+) -> TrackerRowsRead | JSONResponse:
+    try:
+        return await runtime.list_tracker_rows(
+            colony_id,
+            table,
+            limit=limit,
+            offset=offset,
+            order_by=order_by,
+            order_dir=order_dir,
+        )
+    except ColonyNotFoundError:
+        return error_response(404, "COLONY_NOT_FOUND", "Colony 不存在")
+    except ValueError as error:
+        code = "TRACKER_TABLE_NOT_FOUND" if "不存在" in str(error) else "TRACKER_QUERY_INVALID"
+        status_code = 404 if code == "TRACKER_TABLE_NOT_FOUND" else 400
+        return error_response(status_code, code, str(error))
+
+
+@router.get(
+    "/colonies/{colony_id}/data/changes", response_model=TrackerChangesRead
+)
+async def list_tracker_changes(
+    colony_id: UUID,
+    runtime: RuntimeDependency,
+    since: Annotated[int, Query(ge=0)] = 0,
+) -> TrackerChangesRead | JSONResponse:
+    try:
+        return await runtime.list_tracker_changes(colony_id, since)
     except ColonyNotFoundError:
         return error_response(404, "COLONY_NOT_FOUND", "Colony 不存在")
 

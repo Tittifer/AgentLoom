@@ -30,7 +30,9 @@ from agentloom.colony.schemas import (
     SessionRead,
     TaskItemCreate,
     TaskItemRead,
-    TrackerEntryRead,
+    TrackerChangesRead,
+    TrackerRowsRead,
+    TrackerTableRead,
     TrackerUpsert,
     WorkerRead,
     WorkerTask,
@@ -658,24 +660,74 @@ class LocalColonyStore:
     async def upsert_tracker(
         self,
         colony_id: UUID,
-        session_id: UUID,
         payload: TrackerUpsert,
-    ) -> TrackerEntryRead:
+    ) -> dict[str, JsonValue]:
         async with self._lock(colony_id):
             if await self.get(colony_id) is None:
                 raise KeyError(str(colony_id))
-            return await self._tracker.upsert(
-                self._tracker_path(colony_id), colony_id, session_id, payload
-            )
+            return await self._tracker.upsert(self._tracker_path(colony_id), payload)
 
-    async def list_tracker(
+    async def execute_tracker_sql(
+        self, colony_id: UUID, sql: str, row_cap: int
+    ) -> dict[str, JsonValue]:
+        async with self._lock(colony_id):
+            if await self.get(colony_id) is None:
+                raise KeyError(str(colony_id))
+            return await self._tracker.execute_sql(self._tracker_path(colony_id), sql, row_cap)
+
+    async def register_tracker_writable(
         self,
         colony_id: UUID,
-        namespace: str | None = None,
-    ) -> list[TrackerEntryRead]:
+        table: str,
+        write_columns: list[str],
+        key_columns: list[str],
+    ) -> dict[str, JsonValue]:
+        async with self._lock(colony_id):
+            if await self.get(colony_id) is None:
+                raise KeyError(str(colony_id))
+            return await self._tracker.register_writable(
+                self._tracker_path(colony_id), table, write_columns, key_columns
+            )
+
+    async def query_tracker(
+        self, colony_id: UUID, sql: str, row_cap: int
+    ) -> dict[str, JsonValue]:
+        if await self.get(colony_id) is None:
+            raise KeyError(str(colony_id))
+        return await self._tracker.query(self._tracker_path(colony_id), sql, row_cap)
+
+    async def list_tracker_tables(self, colony_id: UUID) -> list[TrackerTableRead]:
         if await self.get(colony_id) is None:
             return []
-        return await self._tracker.list(self._tracker_path(colony_id), colony_id, namespace)
+        return await self._tracker.list_tables(self._tracker_path(colony_id))
+
+    async def list_tracker_rows(
+        self,
+        colony_id: UUID,
+        table: str,
+        *,
+        limit: int,
+        offset: int,
+        order_by: str | None,
+        order_dir: str,
+    ) -> TrackerRowsRead:
+        if await self.get(colony_id) is None:
+            raise KeyError(str(colony_id))
+        return await self._tracker.list_rows(
+            self._tracker_path(colony_id),
+            table,
+            limit=limit,
+            offset=offset,
+            order_by=order_by,
+            order_dir=order_dir,
+        )
+
+    async def list_tracker_changes(
+        self, colony_id: UUID, since: int
+    ) -> TrackerChangesRead:
+        if await self.get(colony_id) is None:
+            raise KeyError(str(colony_id))
+        return await self._tracker.list_changes(self._tracker_path(colony_id), since)
 
     async def create_task_item(
         self,

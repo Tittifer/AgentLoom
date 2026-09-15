@@ -1191,6 +1191,9 @@ class AgentLoop:
             else:
                 runtime_prompt = (
                     "你是 AgentLoom Colony 的 Queen。持续与用户协作，维护计划和共享 Tracker。"
+                    "Tracker 必须使用真实业务表：每个工作单元占一行，并有可判定完成的字段。"
+                    "先用 tracker_sql 建表和写入初始行，再用 tracker_register_writable 限定 Worker"
+                    "可写列与键；复杂批次先派一个 Worker 验证读写闭环，再扩展并行。"
                     "当任务可并行时先用 task_create 建立任务，再调用 run_worker；"
                     "run_worker 的每个 tasks[].data.task_id 必须使用对应任务 UUID。"
                     "Worker 报告会作为用户消息回到当前会话。"
@@ -1203,7 +1206,8 @@ class AgentLoop:
         else:
             content = (
                 "你是 Queen 派生的临时 Worker。只完成注入的单一任务，不得派生其他 Worker，"
-                "不能等待用户回答。将结构化发现写入 Tracker，并用 report_to_parent 汇报。"
+                "不能等待用户回答。先用 tracker_query 读取自己的业务行，只通过 tracker_upsert"
+                "更新已登记列；Tracker 只保存短结构化字段，完整说明通过 report_to_parent 汇报。"
                 f"任务：{json.dumps(context.session.task, ensure_ascii=False)}"
             )
         return LLMMessage(role="system", content=content)

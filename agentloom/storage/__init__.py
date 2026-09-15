@@ -2,6 +2,6 @@
 
 from agentloom.storage.colonies import LocalColonyStore
 from agentloom.storage.queens import LocalQueenStore
-from agentloom.storage.tracker import TrackerVersionConflictError
+from agentloom.storage.tracker import TrackerPermissionError
 
-__all__ = ["LocalColonyStore", "LocalQueenStore", "TrackerVersionConflictError"]
+__all__ = ["LocalColonyStore", "LocalQueenStore", "TrackerPermissionError"]

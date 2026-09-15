@@ -39,4 +39,4 @@ def test_colony_payloads_reject_empty_or_stale_values() -> None:
     with pytest.raises(ValidationError):
         WorkerTask(task="")
     with pytest.raises(ValidationError):
-        TrackerUpsert(namespace="n", entry_key="k", expected_version=0)
+        TrackerUpsert(table="work", row={})

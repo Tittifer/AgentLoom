@@ -123,25 +123,11 @@ export interface TaskItemRead {
   updated_at: string;
 }
 
-export interface TrackerEntryRead {
-  id: string;
-  colony_id: string;
-  namespace: string;
-  entry_key: string;
-  status: string;
-  data: Record<string, unknown>;
-  version: number;
-  updated_by_session_id: string | null;
-  created_at: string;
-  updated_at: string;
-}
-
 export interface ColonySnapshot {
   colony: ColonyRead;
   session: SessionRead;
   workers: WorkerRead[];
   tasks: TaskItemRead[];
-  tracker: TrackerEntryRead[];
 }
 
 export interface SessionCreate {

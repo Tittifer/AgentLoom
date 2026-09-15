@@ -179,24 +179,46 @@ class WorkerReport(ColonyModel):
 
 
 class TrackerUpsert(ColonyModel):
-    namespace: str = Field(min_length=1, max_length=100)
-    entry_key: str = Field(min_length=1, max_length=200)
-    status: str = Field(default="pending", min_length=1, max_length=50)
-    data: JsonObject = Field(default_factory=dict)
-    expected_version: int | None = Field(default=None, ge=1)
+    table: str = Field(min_length=1, max_length=100)
+    row: JsonObject = Field(min_length=1)
 
 
-class TrackerEntryRead(ColonyModel):
-    id: UUID
-    colony_id: UUID
-    namespace: str
-    entry_key: str
-    status: str
-    data: JsonObject
-    version: int
-    updated_by_session_id: UUID | None
-    created_at: AwareDatetime
-    updated_at: AwareDatetime
+class TrackerColumnRead(ColonyModel):
+    name: str
+    type: str
+    notnull: bool
+    primary_key_position: int = Field(ge=0)
+    default: JsonValue | None = None
+
+
+class TrackerTableRead(ColonyModel):
+    name: str
+    columns: list[TrackerColumnRead]
+    row_count: int = Field(ge=0)
+    primary_key: list[str]
+
+
+class TrackerRowsRead(ColonyModel):
+    table: str
+    columns: list[TrackerColumnRead]
+    primary_key: list[str]
+    rows: list[JsonObject]
+    total: int = Field(ge=0)
+    limit: int = Field(gt=0)
+    offset: int = Field(ge=0)
+
+
+class TrackerChangeRead(ColonyModel):
+    id: int = Field(gt=0)
+    table: str
+    primary_key: JsonObject
+    operation: Literal["insert", "update", "delete"]
+    changed_at: str
+
+
+class TrackerChangesRead(ColonyModel):
+    changes: list[TrackerChangeRead]
+    cursor: int = Field(ge=0)
 
 
 class TaskItemCreate(ColonyModel):
@@ -242,7 +264,6 @@ class ColonySnapshot(ColonyModel):
     session: SessionRead
     workers: list[WorkerRead]
     tasks: list[TaskItemRead]
-    tracker: list[TrackerEntryRead]
 
 
 __all__ = [
@@ -270,7 +291,11 @@ __all__ = [
     "TaskItemCreate",
     "TaskItemRead",
     "TaskItemUpdate",
-    "TrackerEntryRead",
+    "TrackerColumnRead",
+    "TrackerChangeRead",
+    "TrackerChangesRead",
+    "TrackerRowsRead",
+    "TrackerTableRead",
     "TrackerUpsert",
     "WorkerRead",
     "WorkerReport",

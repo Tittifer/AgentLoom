@@ -48,7 +48,7 @@ export function WorkspaceEntryPage() {
             {error ? <div className="form-error" role="alert">{formatError(error)}</div> : null}
           </div>
         </div>
-        <ColonySidebar onSelectWorker={() => undefined} tasks={[]} tracker={[]} workers={[]} />
+        <ColonySidebar onSelectWorker={() => undefined} tasks={[]} workers={[]} />
       </div>
     </section>
   );

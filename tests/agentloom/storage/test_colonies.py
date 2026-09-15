@@ -71,12 +71,18 @@ async def test_colony_state_uses_files_and_one_tracker_database(tmp_path: Path) 
     assert event is not None and event.sequence == 1
     assert await store.list_events_after(colony.id, 0) == [event]
 
+    await store.execute_tracker_sql(
+        colony.id,
+        "CREATE TABLE research (id TEXT PRIMARY KEY, done INTEGER NOT NULL)",
+        100,
+    )
+    await store.register_tracker_writable(colony.id, "research", ["done"], ["id"])
     tracker = await store.upsert_tracker(
         colony.id,
-        queen.id,
-        TrackerUpsert(namespace="research", entry_key="A", data={"done": False}),
+        TrackerUpsert(table="research", row={"id": "A", "done": False}),
     )
-    assert await store.list_tracker(colony.id) == [tracker]
+    assert tracker["row"] == {"id": "A", "done": 0}
+    assert (await store.list_tracker_tables(colony.id))[0].name == "research"
 
 
 async def test_dm_session_is_stored_under_queen_without_colony(tmp_path: Path) -> None:

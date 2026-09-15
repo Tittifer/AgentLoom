@@ -22,6 +22,7 @@ const EVENT_TYPES = [
   "tool.completed",
   "judge.reviewed",
   "tracker.updated",
+  "tracker.schema_updated",
   "task.created",
   "task.updated",
 ] as const;
@@ -87,6 +88,9 @@ export function useSessionEvents(
       const listener = (event: Event) => {
         void queryClient.invalidateQueries({ queryKey: ["session", sessionId] });
         void queryClient.invalidateQueries({ queryKey: ["colony"] });
+        if (type === "tracker.updated" || type === "tracker.schema_updated") {
+          void queryClient.invalidateQueries({ queryKey: ["colony-data"] });
+        }
         void queryClient.invalidateQueries({ queryKey: ["messages", sessionId] });
         if (type === "llm.retrying") {
           const data = parseRetryEvent(event);

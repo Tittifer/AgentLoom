@@ -689,6 +689,7 @@ h1, h2, h3 { color: #292722; }
   color: #504b44; text-align: left; text-overflow: ellipsis; white-space: nowrap;
 }
 .tracker-table thead th { color: #47423c; background: #fbfaf8; font-weight: 750; }
+.data-sort { padding: 0; color: inherit; background: transparent; font: inherit; font-weight: inherit; }
 .tracker-table tbody th { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-weight: 650; }
 .tracker-table tbody tr:nth-child(even) { background: #f7f4ef; }
 .tracker-table tbody tr:hover { background: #f3eadf; }
@@ -698,6 +699,12 @@ h1, h2, h3 { color: #292722; }
 .table-status.status-completed::before, .table-status.status-done::before { background: #35a267; }
 .table-status.status-running::before, .table-status.status-in_progress::before { background: #e58b22; }
 .tracker-table-wrap footer { display: flex; justify-content: space-between; padding: .55rem .65rem; color: #9a938a; font-size: .6rem; }
+.data-pagination { display: inline-flex; gap: .35rem; }
+.data-pagination button {
+  padding: .12rem .35rem; border: 1px solid #ded7ce; border-radius: 4px;
+  color: #756d64; background: #faf8f4; font-size: .58rem;
+}
+.data-pagination button:disabled { opacity: .4; }
 
 .task-plan-list li { padding: .65rem; border-bottom: 1px solid #e9e4dc; }
 .task-check { border-color: #ae9f8d; }

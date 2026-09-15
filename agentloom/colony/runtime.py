@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import sqlite3
 from collections.abc import Coroutine
 from typing import Literal
 from uuid import UUID, uuid4
@@ -36,7 +37,9 @@ from agentloom.colony.schemas import (
     SessionRead,
     TaskItemCreate,
     TaskItemRead,
-    TrackerEntryRead,
+    TrackerChangesRead,
+    TrackerRowsRead,
+    TrackerTableRead,
     TrackerUpsert,
     WorkerRead,
     WorkerReport,
@@ -58,7 +61,7 @@ from agentloom.memory.coordinator import MemoryCoordinator
 from agentloom.memory.store import LocalMemoryStore
 from agentloom.runtime.states import SessionStatus, TaskItemStatus, WorkerStatus
 from agentloom.sessions import SessionManager
-from agentloom.storage import LocalColonyStore, TrackerVersionConflictError
+from agentloom.storage import LocalColonyStore, TrackerPermissionError
 from agentloom.storage.base import utc_now
 from agentloom.tools.base import ToolContext, ToolError
 from agentloom.tools.mcp.manager import MCPManager
@@ -172,7 +175,19 @@ class ReportInput(ToolInput):
 
 
 class TrackerQueryInput(ToolInput):
-    namespace: str | None = None
+    sql: str = Field(min_length=1, max_length=100_000)
+    row_cap: int = Field(default=1_000, ge=1, le=10_000)
+
+
+class TrackerSQLInput(ToolInput):
+    sql: str = Field(min_length=1, max_length=100_000)
+    row_cap: int = Field(default=1_000, ge=1, le=10_000)
+
+
+class TrackerRegisterWritableInput(ToolInput):
+    table: str = Field(min_length=1, max_length=100)
+    write_columns: list[str] = Field(min_length=1, max_length=200)
+    key_columns: list[str] = Field(min_length=1, max_length=20)
 
 
 class TaskUpdateInput(ToolInput):
@@ -1120,7 +1135,6 @@ class ColonyRuntime:
             session=queen,
             workers=await self._storage.list_workers(colony_id),
             tasks=await self._storage.list_tasks(colony_id),
-            tracker=await self._storage.list_tracker(colony_id),
         )
 
     async def get_session(self, session_id: UUID) -> SessionRead:
@@ -1187,12 +1201,41 @@ class ColonyRuntime:
             raise ColonyNotFoundError(str(colony_id))
         return await self._storage.list_workers(colony_id)
 
-    async def list_tracker(
-        self, colony_id: UUID, namespace: str | None = None
-    ) -> list[TrackerEntryRead]:
+    async def list_tracker_tables(self, colony_id: UUID) -> list[TrackerTableRead]:
         if await self._storage.get(colony_id) is None:
             raise ColonyNotFoundError(str(colony_id))
-        return await self._storage.list_tracker(colony_id, namespace)
+        return await self._storage.list_tracker_tables(colony_id)
+
+    async def list_tracker_rows(
+        self,
+        colony_id: UUID,
+        table: str,
+        *,
+        limit: int,
+        offset: int,
+        order_by: str | None,
+        order_dir: str,
+    ) -> TrackerRowsRead:
+        if await self._storage.get(colony_id) is None:
+            raise ColonyNotFoundError(str(colony_id))
+        try:
+            return await self._storage.list_tracker_rows(
+                colony_id,
+                table,
+                limit=limit,
+                offset=offset,
+                order_by=order_by,
+                order_dir=order_dir,
+            )
+        except KeyError as error:
+            raise ValueError(f"Tracker 表不存在：{table}") from error
+
+    async def list_tracker_changes(
+        self, colony_id: UUID, since: int
+    ) -> TrackerChangesRead:
+        if await self._storage.get(colony_id) is None:
+            raise ColonyNotFoundError(str(colony_id))
+        return await self._storage.list_tracker_changes(colony_id, since)
 
     async def list_tasks(self, colony_id: UUID) -> list[TaskItemRead]:
         if await self._storage.get(colony_id) is None:
@@ -1215,12 +1258,15 @@ class ColonyRuntime:
         common = [
             ToolDefinition(
                 name="tracker_upsert",
-                description="在 Colony 共享 Tracker 中新增或更新一条结构化记录。",
+                description=(
+                    "向 Queen 已登记的业务表写入一行。必须包含全部 key_columns；"
+                    "对象和数组会编码为 JSON。只写结构化短字段，不把 Markdown 报告塞进表格。"
+                ),
                 parameters=TrackerUpsert.model_json_schema(),
             ),
             ToolDefinition(
                 name="tracker_query",
-                description="查询 Colony 共享 Tracker，可按 namespace 过滤。",
+                description="用只读 SQL 查询 Colony 业务表；仅允许 SELECT/WITH/EXPLAIN。",
                 parameters=TrackerQueryInput.model_json_schema(),
             ),
             ToolDefinition(
@@ -1255,6 +1301,23 @@ class ColonyRuntime:
                     ),
                 ]
             return [
+                ToolDefinition(
+                    name="tracker_sql",
+                    description=(
+                        "创建和维护 Colony 的真实 SQLite 业务表。先将目标建模为一张表，"
+                        "每个工作单元一行，并定义可判定完成的字段；禁止访问下划线开头的内部表。"
+                    ),
+                    parameters=TrackerSQLInput.model_json_schema(),
+                ),
+                ToolDefinition(
+                    name="tracker_register_writable",
+                    description=(
+                        "登记 Worker 可写的业务表、列和冲突键。"
+                        "派发 Worker 前先建表、写入初始行并登记；"
+                        "复杂批次先派一个 Worker 验证闭环，再扩展并行。"
+                    ),
+                    parameters=TrackerRegisterWritableInput.model_json_schema(),
+                ),
                 *common,
                 *builtins,
                 ToolDefinition(
@@ -1316,22 +1379,41 @@ class ColonyRuntime:
                     WorkerReport.model_validate(payload.model_dump()),
                 )
                 return ToolExecutionResult({"status": "reported"}, terminate=True)
+            if tool_call.name == "tracker_sql":
+                if context.session.actor_type != "queen" or context.session.mode != "colony":
+                    return self._tool_error(
+                        "TOOL_NOT_ALLOWED", "只有 Colony Queen 可以执行 Tracker SQL"
+                    )
+                payload = TrackerSQLInput.model_validate(tool_call.arguments)
+                result = await self._tracker_sql(context, payload)
+                return ToolExecutionResult(
+                    await self._spill_tool_result(context, tool_call.name, result)
+                )
+            if tool_call.name == "tracker_register_writable":
+                if context.session.actor_type != "queen" or context.session.mode != "colony":
+                    return self._tool_error(
+                        "TOOL_NOT_ALLOWED", "只有 Colony Queen 可以登记 Tracker 写权限"
+                    )
+                payload = TrackerRegisterWritableInput.model_validate(tool_call.arguments)
+                result = await self._tracker_register_writable(context, payload)
+                return ToolExecutionResult(result)
             if tool_call.name == "tracker_upsert":
                 if context.session.colony_id is None:
                     return self._tool_error("TOOL_NOT_ALLOWED", "独立会话没有 Tracker")
                 payload = TrackerUpsert.model_validate(tool_call.arguments)
-                entry = await self._tracker_upsert(context, payload)
-                return ToolExecutionResult(entry.model_dump(mode="json"))
+                return ToolExecutionResult(await self._tracker_upsert(context, payload))
             if tool_call.name == "tracker_query":
                 if context.session.colony_id is None:
                     return self._tool_error("TOOL_NOT_ALLOWED", "独立会话没有 Tracker")
                 payload = TrackerQueryInput.model_validate(tool_call.arguments)
-                entries = await self.list_tracker(context.session.colony_id, payload.namespace)
+                result = await self._storage.query_tracker(
+                    context.session.colony_id, payload.sql, payload.row_cap
+                )
                 return ToolExecutionResult(
                     await self._spill_tool_result(
                         context,
                         tool_call.name,
-                        [entry.model_dump(mode="json") for entry in entries],
+                        result,
                     )
                 )
             if tool_call.name == "task_create":
@@ -1394,7 +1476,7 @@ class ColonyRuntime:
             return ToolExecutionResult(error.as_payload())
         except FileNotFoundError as error:
             return self._tool_error("TOOL_RESULT_NOT_FOUND", str(error))
-        except (ValidationError, TrackerVersionConflictError, ValueError) as error:
+        except (ValidationError, TrackerPermissionError, ValueError, sqlite3.Error) as error:
             return self._tool_error("TOOL_ARGUMENTS_INVALID", str(error))
 
     async def _spill_tool_result(
@@ -1923,23 +2005,52 @@ class ColonyRuntime:
 
         self._schedule(resume(), session_id)
 
+    async def _tracker_sql(
+        self, context: LoopContext, payload: TrackerSQLInput
+    ) -> dict[str, JsonValue]:
+        colony_id = self._require_colony_id(context)
+        result = await self._storage.execute_tracker_sql(
+            colony_id, payload.sql, payload.row_cap
+        )
+        await self._tracker_changed(context, "tracker.schema_updated", {"operation": "sql"})
+        return result
+
+    async def _tracker_register_writable(
+        self, context: LoopContext, payload: TrackerRegisterWritableInput
+    ) -> dict[str, JsonValue]:
+        colony_id = self._require_colony_id(context)
+        result = await self._storage.register_tracker_writable(
+            colony_id,
+            payload.table,
+            payload.write_columns,
+            payload.key_columns,
+        )
+        await self._tracker_changed(
+            context, "tracker.schema_updated", {"table": payload.table, "operation": "register"}
+        )
+        return result
+
     async def _tracker_upsert(
         self, context: LoopContext, payload: TrackerUpsert
-    ) -> TrackerEntryRead:
+    ) -> dict[str, JsonValue]:
         colony_id = self._require_colony_id(context)
-        entry = await self._storage.upsert_tracker(colony_id, context.session.id, payload)
+        result = await self._storage.upsert_tracker(colony_id, payload)
+        await self._tracker_changed(
+            context, "tracker.updated", {"table": payload.table, "row": payload.row}
+        )
+        return result
+
+    async def _tracker_changed(
+        self, context: LoopContext, event_type: str, payload: dict[str, JsonValue]
+    ) -> None:
+        colony_id = self._require_colony_id(context)
         await self._storage.append_event(
             colony_id,
-            "tracker.updated",
+            event_type,
             session_id=context.session.owner_session_id,
-            payload={
-                "namespace": entry.namespace,
-                "entry_key": entry.entry_key,
-                "version": entry.version,
-            },
+            payload=payload,
         )
         await self._notifier.notify(context.session.owner_session_id)
-        return entry
 
     async def _task_create(self, context: LoopContext, payload: TaskItemCreate) -> TaskItemRead:
         colony_id = self._require_colony_id(context)

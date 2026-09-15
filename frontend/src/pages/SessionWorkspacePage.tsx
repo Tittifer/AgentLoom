@@ -164,6 +164,7 @@ export function SessionWorkspacePage() {
           />
         </div>
         <ColonySidebar
+          colonyId={colonyId}
           defaultTab={suggestion?.status === "pending" ? "plan" : "data"}
           key={suggestion?.status === "pending" ? suggestion.id : session.id}
           onSelectWorker={setSelectedWorker}
@@ -177,7 +178,6 @@ export function SessionWorkspacePage() {
             />
           ) : undefined}
           tasks={snapshot?.tasks ?? []}
-          tracker={snapshot?.tracker ?? []}
           workers={workers}
         />
       </div>

@@ -699,10 +699,20 @@ async def test_runtime_exposes_actor_tools_and_executes_builtin(tmp_path: Path) 
     )
     queen_names = {item.name for item in runtime.definitions("queen")}
     worker_names = {item.name for item in runtime.definitions("worker")}
-    assert {"run_worker", "read_task_context"} <= queen_names
+    assert {
+        "run_worker",
+        "read_task_context",
+        "tracker_sql",
+        "tracker_register_writable",
+        "tracker_query",
+        "tracker_upsert",
+    } <= queen_names
     assert "web_search" not in queen_names
     assert "report_to_parent" in worker_names
     assert "run_worker" not in worker_names
+    assert {"tracker_query", "tracker_upsert"} <= worker_names
+    assert "tracker_sql" not in worker_names
+    assert "tracker_register_writable" not in worker_names
 
     context = make_context()
     result = await runtime.execute(
