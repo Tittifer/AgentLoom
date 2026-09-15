@@ -145,7 +145,7 @@ export function SessionNavigation({ queenId = "", currentSessionId }: SessionNav
                 className="sidebar-delete-button"
                 disabled={deleteSessionMutation.isPending || ["queued", "running"].includes(session.status)}
                 onClick={() => {
-                  if (window.confirm("确定删除这条独立会话吗？会话将移动到本地回收目录。")) {
+                  if (window.confirm("确定永久删除这条独立会话吗？全部会话记录将被删除且无法恢复。")) {
                     deleteSessionMutation.mutate(session.id);
                   }
                 }}

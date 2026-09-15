@@ -101,15 +101,16 @@ async def test_dm_session_is_stored_under_queen_without_colony(tmp_path: Path) -
     assert await store.list_queen_sessions("queen_general") == [session]
 
 
-async def test_idle_dm_session_can_be_moved_to_trash(tmp_path: Path) -> None:
+async def test_idle_dm_session_can_be_deleted_permanently(tmp_path: Path) -> None:
     store = await create_store(tmp_path)
     session = await store.create_dm_session("queen_general")
     source = tmp_path / "queens" / "queen_general" / "sessions" / str(session.id)
+    await store.append_message(session.id, LLMMessage(role="user", content="delete me"))
 
     assert await store.delete_session(session.id) is True
     assert not source.exists()
     assert await store.get_session(session.id) is None
-    assert len(list((tmp_path / "trash").glob(f"session-{session.id}-*"))) == 1
+    assert list((tmp_path / "trash").glob(f"session-{session.id}-*")) == []
 
 
 async def test_running_or_colony_session_cannot_be_deleted_as_dm(tmp_path: Path) -> None:

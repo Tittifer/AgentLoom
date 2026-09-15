@@ -390,7 +390,6 @@ class LocalColonyStore:
             return await asyncio.to_thread(
                 self._delete_session_sync,
                 located.base,
-                session_id,
             )
 
     async def get(self, colony_id: UUID) -> ColonyRead | None:
@@ -1032,12 +1031,11 @@ class LocalColonyStore:
         metadata.replace(destination)
         return True
 
-    def _delete_session_sync(self, source: Path, session_id: UUID) -> bool:
+    @staticmethod
+    def _delete_session_sync(source: Path) -> bool:
         if not (source / "meta.json").is_file():
             return False
-        self._trash.mkdir(parents=True, exist_ok=True)
-        destination = self._trash / f"session-{session_id}-{uuid4().hex}"
-        source.replace(destination)
+        shutil.rmtree(source)
         return True
 
     async def _require_llm_settings(self) -> UserLLMRuntimeConfig:
