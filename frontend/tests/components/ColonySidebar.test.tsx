@@ -80,4 +80,16 @@ describe("ColonySidebar", () => {
     expect(screen.getByText("PK")).toBeInTheDocument();
     expect(screen.getByText("ready：是；tags：西湖、龙井")).toBeInTheDocument();
   });
+
+  it("Data 标签统计表数而不是所有行数", async () => {
+    vi.mocked(listDataTables).mockResolvedValue([
+      { name: "fruit_cells", columns: [], row_count: 81, primary_key: [] },
+      { name: "fruit_tasks", columns: [], row_count: 5, primary_key: [] },
+    ]);
+
+    renderSidebar("colony-1");
+
+    expect(await screen.findByRole("tab", { name: "数据 Data 2" })).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "数据 Data 86" })).not.toBeInTheDocument();
+  });
 });

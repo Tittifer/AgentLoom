@@ -10,6 +10,7 @@ import pytest
 from agentloom.colony.schemas import (
     ColonyForkCreate,
     ColonySuggestion,
+    PlaybookDefinition,
     QueenCreate,
     TaskItemCreate,
     TrackerUpsert,
@@ -413,3 +414,48 @@ async def test_recovery_requeues_running_workers_and_queens(tmp_path: Path) -> N
     resumed_execution = await store.get_execution(worker.id)
     assert resumed_execution is not None
     assert resumed_execution.cursor == worker_cursor
+
+
+async def test_colony_persists_worker_skills_and_playbook_runs(tmp_path: Path) -> None:
+    store = await create_store(tmp_path)
+    colony, queen = await store.create("Playbook", "", "queen_general", {})
+    task = await store.create_task_item(
+        colony.id,
+        queen.id,
+        TaskItemCreate(title="调查水果"),
+    )
+    skill = await store.write_worker_skill(
+        colony.id,
+        "fruit-research",
+        "# 协议\n\n完成一种水果。",
+    )
+    definition = PlaybookDefinition(
+        name="fruit-research",
+        task_id=task.id,
+        table="fruits",
+        pending_sql="SELECT fruit_key FROM fruits WHERE completed_at IS NULL",
+        key_columns=["fruit_key"],
+        skill_name=skill.name,
+        task_template="调查 {fruit_key}",
+    )
+
+    await store.save_playbook_definition(colony.id, definition)
+    run = await store.create_playbook_run(colony.id, queen.id, definition)
+    updated = await store.update_playbook_run(
+        colony.id,
+        run.id,
+        status="running",
+        total_rows=3,
+        remaining_rows=2,
+    )
+
+    colony_dir = tmp_path / "colonies" / str(colony.id)
+    assert (
+        (colony_dir / "skills" / skill.name / "SKILL.md")
+        .read_text(encoding="utf-8")
+        .startswith("# 协议")
+    )
+    assert await store.get_worker_skill(colony.id, skill.name) == skill
+    assert await store.get_playbook_definition(colony.id, definition.name) == definition
+    assert updated is not None and updated.status == "running"
+    assert await store.list_playbook_runs(colony.id) == [updated]

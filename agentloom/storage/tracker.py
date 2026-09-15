@@ -42,8 +42,13 @@ CREATE TABLE IF NOT EXISTS _tracker_changes (
     operation TEXT NOT NULL CHECK (operation IN ('insert', 'update', 'delete')),
     changed_at TEXT NOT NULL
 );
-INSERT OR REPLACE INTO _tracker_meta(key, value) VALUES ('schema_version', '2');
+CREATE INDEX IF NOT EXISTS _tracker_changes_table_id
+    ON _tracker_changes(table_name, id);
+INSERT OR REPLACE INTO _tracker_meta(key, value) VALUES ('schema_version', '3');
 """
+
+MAX_STATEMENTS_PER_CALL = 20
+CHANGE_LOG_MAX = 10_000
 
 _IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _FORBIDDEN_SQL = re.compile(
@@ -108,6 +113,9 @@ class SQLiteTrackerStore:
     async def list_changes(self, path: Path, since: int = 0) -> TrackerChangesRead:
         return await asyncio.to_thread(self._list_changes, path, since)
 
+    async def get_registration(self, path: Path, table: str) -> JsonObject | None:
+        return await asyncio.to_thread(self._get_registration, path, table)
+
     @staticmethod
     def _connect(path: Path) -> sqlite3.Connection:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -133,8 +141,12 @@ class SQLiteTrackerStore:
         statements = cls._split_statements(sql)
         if not statements:
             raise ValueError("SQL 不能为空")
+        if len(statements) > MAX_STATEMENTS_PER_CALL:
+            raise TrackerPermissionError(
+                f"单次 tracker_sql 最多允许 {MAX_STATEMENTS_PER_CALL} 条语句"
+            )
         for statement in statements:
-            cls._validate_sql(statement, read_only=False)
+            cls._validate_sql(statement, read_only=False, allow_internal_read=True)
         cls._initialize(path)
         connection = cls._connect(path)
         try:
@@ -143,6 +155,7 @@ class SQLiteTrackerStore:
                 cls._statement_result(connection.execute(statement), row_cap)
                 for statement in statements
             ]
+            cls._prune_change_log(connection)
             connection.commit()
             if len(results) == 1:
                 return results[0]
@@ -162,7 +175,7 @@ class SQLiteTrackerStore:
 
     @classmethod
     def _query(cls, path: Path, sql: str, row_cap: int) -> JsonObject:
-        cls._validate_sql(sql, read_only=True)
+        cls._validate_sql(sql, read_only=True, allow_internal_read=False)
         cls._initialize(path)
         connection = cls._connect(path)
         try:
@@ -196,13 +209,11 @@ class SQLiteTrackerStore:
             unknown = (set(write_columns) | set(key_columns)) - names
             if unknown:
                 raise ValueError(f"Tracker 列不存在：{', '.join(sorted(unknown))}")
+            if not cls._has_unique_key(connection, table, columns, key_columns):
+                raise ValueError(
+                    f"Tracker 表 {table} 的 key_columns 必须由 PRIMARY KEY 或 UNIQUE 索引覆盖"
+                )
             allowed = list(dict.fromkeys([*key_columns, *write_columns]))
-            index_name = f"_tracker_key_{hashlib.sha1(table.encode()).hexdigest()[:12]}"
-            quoted_keys = ", ".join(cls._quote(name) for name in key_columns)
-            connection.execute(
-                f"CREATE UNIQUE INDEX IF NOT EXISTS {cls._quote(index_name)} "
-                f"ON {cls._quote(table)} ({quoted_keys})"
-            )
             connection.execute(
                 """
                 INSERT INTO _tracker_registry(
@@ -221,12 +232,16 @@ class SQLiteTrackerStore:
                 ),
             )
             cls._install_change_triggers(connection, table, key_columns)
+            cls._prune_change_log(connection)
             connection.commit()
-            return cast(JsonObject, {
-                "table": table,
-                "write_columns": allowed,
-                "key_columns": key_columns,
-            })
+            return cast(
+                JsonObject,
+                {
+                    "table": table,
+                    "write_columns": allowed,
+                    "key_columns": key_columns,
+                },
+            )
         except Exception:
             connection.rollback()
             raise
@@ -255,9 +270,7 @@ class SQLiteTrackerStore:
                 raise ValueError("row 不能为空")
             unknown = set(row) - allowed
             if unknown:
-                raise TrackerPermissionError(
-                    f"不允许写入列：{', '.join(sorted(unknown))}"
-                )
+                raise TrackerPermissionError(f"不允许写入列：{', '.join(sorted(unknown))}")
             missing = set(keys) - set(row)
             if missing:
                 raise ValueError(f"缺少键列：{', '.join(sorted(missing))}")
@@ -269,8 +282,7 @@ class SQLiteTrackerStore:
             action = (
                 "DO UPDATE SET "
                 + ", ".join(
-                    f"{cls._quote(name)} = excluded.{cls._quote(name)}"
-                    for name in update_columns
+                    f"{cls._quote(name)} = excluded.{cls._quote(name)}" for name in update_columns
                 )
                 if update_columns
                 else "DO NOTHING"
@@ -285,6 +297,7 @@ class SQLiteTrackerStore:
                 f"SELECT * FROM {cls._quote(table)} WHERE {where}",
                 tuple(cls._sqlite_value(row[name]) for name in keys),
             ).fetchone()
+            cls._prune_change_log(connection)
             connection.commit()
             if saved is None:
                 raise RuntimeError("Tracker upsert 未返回目标行")
@@ -345,14 +358,10 @@ class SQLiteTrackerStore:
             ]
             sort_column = order_by or (primary_key[0] if primary_key else None)
             order_clause = (
-                f" ORDER BY {cls._quote(sort_column)} {direction.upper()}"
-                if sort_column
-                else ""
+                f" ORDER BY {cls._quote(sort_column)} {direction.upper()}" if sort_column else ""
             )
             total = int(
-                connection.execute(
-                    f"SELECT COUNT(*) FROM {cls._quote(table)}"
-                ).fetchone()[0]
+                connection.execute(f"SELECT COUNT(*) FROM {cls._quote(table)}").fetchone()[0]
             )
             rows = connection.execute(
                 f"SELECT * FROM {cls._quote(table)}{order_clause} LIMIT ? OFFSET ?",
@@ -401,18 +410,35 @@ class SQLiteTrackerStore:
             connection.close()
 
     @classmethod
-    def _table_overview(
-        cls, connection: sqlite3.Connection, table: str
-    ) -> TrackerTableRead:
+    def _get_registration(cls, path: Path, table: str) -> JsonObject | None:
+        table = cls._user_table_name(table)
+        cls._initialize(path)
+        connection = cls._connect(path)
+        try:
+            row = connection.execute(
+                "SELECT write_columns_json, key_columns_json FROM _tracker_registry "
+                "WHERE table_name = ?",
+                (table,),
+            ).fetchone()
+            if row is None:
+                return None
+            return {
+                "table": table,
+                "write_columns": json.loads(row["write_columns_json"]),
+                "key_columns": json.loads(row["key_columns_json"]),
+            }
+        finally:
+            connection.close()
+
+    @classmethod
+    def _table_overview(cls, connection: sqlite3.Connection, table: str) -> TrackerTableRead:
         columns = cls._table_columns(connection, table)
         primary_key = [
             column.name
             for column in sorted(columns, key=lambda item: item.primary_key_position)
             if column.primary_key_position > 0
         ]
-        count = int(
-            connection.execute(f"SELECT COUNT(*) FROM {cls._quote(table)}").fetchone()[0]
-        )
+        count = int(connection.execute(f"SELECT COUNT(*) FROM {cls._quote(table)}").fetchone()[0])
         return TrackerTableRead(
             name=table,
             columns=columns,
@@ -421,9 +447,7 @@ class SQLiteTrackerStore:
         )
 
     @classmethod
-    def _table_columns(
-        cls, connection: sqlite3.Connection, table: str
-    ) -> list[TrackerColumnRead]:
+    def _table_columns(cls, connection: sqlite3.Connection, table: str) -> list[TrackerColumnRead]:
         cls._validate_identifier(table)
         exists = connection.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)
@@ -438,9 +462,7 @@ class SQLiteTrackerStore:
                 primary_key_position=int(row["pk"]),
                 default=row["dflt_value"],
             )
-            for row in connection.execute(
-                f"PRAGMA table_info({cls._quote(table)})"
-            ).fetchall()
+            for row in connection.execute(f"PRAGMA table_info({cls._quote(table)})").fetchall()
         ]
 
     @classmethod
@@ -449,9 +471,7 @@ class SQLiteTrackerStore:
     ) -> None:
         digest = hashlib.sha1(table.encode()).hexdigest()[:12]
         for operation, prefix in (("insert", "NEW"), ("update", "NEW"), ("delete", "OLD")):
-            pairs = ", ".join(
-                f"'{name}', {prefix}.{cls._quote(name)}" for name in keys
-            )
+            pairs = ", ".join(f"'{name}', {prefix}.{cls._quote(name)}" for name in keys)
             trigger = cls._quote(f"_tracker_change_{digest}_{operation}")
             connection.execute(f"DROP TRIGGER IF EXISTS {trigger}")
             connection.execute(
@@ -463,7 +483,13 @@ class SQLiteTrackerStore:
             )
 
     @classmethod
-    def _validate_sql(cls, sql: str, *, read_only: bool) -> None:
+    def _validate_sql(
+        cls,
+        sql: str,
+        *,
+        read_only: bool,
+        allow_internal_read: bool = False,
+    ) -> None:
         if not sql.strip():
             raise ValueError("SQL 不能为空")
         normalized = cls._without_literals_and_comments(sql)
@@ -471,10 +497,48 @@ class SQLiteTrackerStore:
             raise TrackerPermissionError("SQL 包含不允许的操作")
         if read_only and not _READ_SQL.match(normalized):
             raise TrackerPermissionError("tracker_query 只允许只读 SQL")
-        if re.search(r"\b_tracker_[A-Za-z0-9_]*\b", normalized, re.IGNORECASE):
-            raise TrackerPermissionError("不能访问 Tracker 内部表")
-        if _PROTECTED_REFERENCE.search(normalized):
+        internal_reference = bool(
+            re.search(r"\b_tracker_[A-Za-z0-9_]*\b", normalized, re.IGNORECASE)
+            or _PROTECTED_REFERENCE.search(normalized)
+        )
+        internal_select = bool(
+            allow_internal_read and re.match(r"^\s*(?:SELECT|EXPLAIN)\b", normalized, re.IGNORECASE)
+        )
+        if internal_reference and not internal_select:
             raise TrackerPermissionError("不能访问下划线开头的内部表")
+
+    @classmethod
+    def _has_unique_key(
+        cls,
+        connection: sqlite3.Connection,
+        table: str,
+        columns: Sequence[TrackerColumnRead],
+        keys: Sequence[str],
+    ) -> bool:
+        expected = set(keys)
+        primary_key = {column.name for column in columns if column.primary_key_position > 0}
+        if primary_key == expected:
+            return True
+        for index in connection.execute(f"PRAGMA index_list({cls._quote(table)})").fetchall():
+            if not bool(index["unique"]):
+                continue
+            index_columns = {
+                str(row["name"])
+                for row in connection.execute(
+                    f"PRAGMA index_info({cls._quote(str(index['name']))})"
+                ).fetchall()
+            }
+            if index_columns == expected:
+                return True
+        return False
+
+    @staticmethod
+    def _prune_change_log(connection: sqlite3.Connection) -> None:
+        connection.execute(
+            "DELETE FROM _tracker_changes "
+            "WHERE id <= (SELECT COALESCE(MAX(id), 0) FROM _tracker_changes) - ?",
+            (CHANGE_LOG_MAX,),
+        )
 
     @staticmethod
     def _without_literals_and_comments(sql: str) -> str:
@@ -601,4 +665,9 @@ class SQLiteTrackerStore:
         return {str(key): row[key] for key in row.keys()}
 
 
-__all__ = ["SQLiteTrackerStore", "TrackerPermissionError"]
+__all__ = [
+    "CHANGE_LOG_MAX",
+    "MAX_STATEMENTS_PER_CALL",
+    "SQLiteTrackerStore",
+    "TrackerPermissionError",
+]

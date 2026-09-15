@@ -25,6 +25,8 @@ from agentloom.colony.schemas import (
     ColonyRead,
     ColonySuggestion,
     MessageRead,
+    PlaybookDefinition,
+    PlaybookRunRead,
     QueenCreate,
     QueenRead,
     SessionRead,
@@ -35,6 +37,7 @@ from agentloom.colony.schemas import (
     TrackerTableRead,
     TrackerUpsert,
     WorkerRead,
+    WorkerSkillRead,
     WorkerTask,
 )
 from agentloom.context.schemas import CompactionCheckpoint
@@ -43,6 +46,7 @@ from agentloom.runtime.states import ColonyStatus, SessionStatus, TaskItemStatus
 from agentloom.storage.base import (
     append_json_line,
     atomic_write_json,
+    atomic_write_text,
     read_json,
     read_json_lines,
     utc_now,
@@ -689,9 +693,7 @@ class LocalColonyStore:
                 self._tracker_path(colony_id), table, write_columns, key_columns
             )
 
-    async def query_tracker(
-        self, colony_id: UUID, sql: str, row_cap: int
-    ) -> dict[str, JsonValue]:
+    async def query_tracker(self, colony_id: UUID, sql: str, row_cap: int) -> dict[str, JsonValue]:
         if await self.get(colony_id) is None:
             raise KeyError(str(colony_id))
         return await self._tracker.query(self._tracker_path(colony_id), sql, row_cap)
@@ -722,12 +724,129 @@ class LocalColonyStore:
             order_dir=order_dir,
         )
 
-    async def list_tracker_changes(
-        self, colony_id: UUID, since: int
-    ) -> TrackerChangesRead:
+    async def list_tracker_changes(self, colony_id: UUID, since: int) -> TrackerChangesRead:
         if await self.get(colony_id) is None:
             raise KeyError(str(colony_id))
         return await self._tracker.list_changes(self._tracker_path(colony_id), since)
+
+    async def get_tracker_registration(
+        self,
+        colony_id: UUID,
+        table: str,
+    ) -> dict[str, JsonValue] | None:
+        if await self.get(colony_id) is None:
+            raise KeyError(str(colony_id))
+        return await self._tracker.get_registration(self._tracker_path(colony_id), table)
+
+    async def write_worker_skill(
+        self,
+        colony_id: UUID,
+        name: str,
+        body: str,
+    ) -> WorkerSkillRead:
+        async with self._lock(colony_id):
+            if await self.get(colony_id) is None:
+                raise KeyError(str(colony_id))
+            return await asyncio.to_thread(
+                self._write_worker_skill_sync,
+                colony_id,
+                name,
+                body,
+            )
+
+    async def get_worker_skill(
+        self,
+        colony_id: UUID,
+        name: str,
+    ) -> WorkerSkillRead | None:
+        if await self.get(colony_id) is None:
+            return None
+        return await asyncio.to_thread(self._get_worker_skill_sync, colony_id, name)
+
+    async def save_playbook_definition(
+        self,
+        colony_id: UUID,
+        definition: PlaybookDefinition,
+    ) -> PlaybookDefinition:
+        async with self._lock(colony_id):
+            if await self.get(colony_id) is None:
+                raise KeyError(str(colony_id))
+            await asyncio.to_thread(
+                atomic_write_json,
+                self._playbook_definition_path(colony_id, definition.name),
+                definition.model_dump(mode="json"),
+            )
+        return definition
+
+    async def get_playbook_definition(
+        self,
+        colony_id: UUID,
+        name: str,
+    ) -> PlaybookDefinition | None:
+        path = self._playbook_definition_path(colony_id, name)
+        if not path.is_file():
+            return None
+        return await asyncio.to_thread(lambda: PlaybookDefinition.model_validate(read_json(path)))
+
+    async def create_playbook_run(
+        self,
+        colony_id: UUID,
+        session_id: UUID,
+        definition: PlaybookDefinition,
+    ) -> PlaybookRunRead:
+        async with self._lock(colony_id):
+            if await self.get(colony_id) is None:
+                raise KeyError(str(colony_id))
+            now = utc_now()
+            run = PlaybookRunRead(
+                id=uuid4(),
+                colony_id=colony_id,
+                session_id=session_id,
+                definition=definition,
+                status="queued",
+                created_at=now,
+                updated_at=now,
+            )
+            await asyncio.to_thread(
+                atomic_write_json,
+                self._playbook_run_path(colony_id, run.id),
+                run.model_dump(mode="json"),
+            )
+            return run
+
+    async def get_playbook_run(
+        self,
+        colony_id: UUID,
+        run_id: UUID,
+    ) -> PlaybookRunRead | None:
+        path = self._playbook_run_path(colony_id, run_id)
+        if not path.is_file():
+            return None
+        return await asyncio.to_thread(lambda: PlaybookRunRead.model_validate(read_json(path)))
+
+    async def update_playbook_run(
+        self,
+        colony_id: UUID,
+        run_id: UUID,
+        **updates: object,
+    ) -> PlaybookRunRead | None:
+        async with self._lock(colony_id):
+            current = await self.get_playbook_run(colony_id, run_id)
+            if current is None:
+                return None
+            updated = current.model_copy(update={**updates, "updated_at": utc_now()})
+            await asyncio.to_thread(
+                atomic_write_json,
+                self._playbook_run_path(colony_id, run_id),
+                updated.model_dump(mode="json"),
+            )
+            return updated
+
+    async def list_playbook_runs(
+        self,
+        colony_id: UUID | None = None,
+    ) -> list[PlaybookRunRead]:
+        return await asyncio.to_thread(self._list_playbook_runs_sync, colony_id)
 
     async def create_task_item(
         self,
@@ -880,6 +999,9 @@ class LocalColonyStore:
         (colony_dir / "workers").mkdir()
         (colony_dir / "tracker").mkdir()
         (colony_dir / "artifacts").mkdir()
+        (colony_dir / "skills").mkdir()
+        (colony_dir / "playbooks" / "definitions").mkdir(parents=True)
+        (colony_dir / "playbooks" / "runs").mkdir(parents=True)
         self._write_model(self._metadata_path(colony.id), colony)
         self._write_session_sync(queen)
 
@@ -1566,6 +1688,22 @@ class LocalColonyStore:
         worker_ids: list[UUID] = []
         for worker in self._list_workers_sync(colony_id):
             current = worker
+            if isinstance(worker.input.get("playbook_run_id"), str) and worker.status in {
+                WorkerStatus.QUEUED,
+                WorkerStatus.RUNNING,
+                WorkerStatus.REPORTING,
+            }:
+                self._finish_worker_sync(
+                    colony_id,
+                    worker.id,
+                    WorkerStatus.CANCELLED,
+                    None,
+                    {
+                        "code": "PLAYBOOK_INTERRUPTED",
+                        "message": "应用重启后由 Playbook 从未完成 Tracker 行继续",
+                    },
+                )
+                continue
             if worker.status is WorkerStatus.RUNNING:
                 current = worker.model_copy(
                     update={
@@ -1648,13 +1786,73 @@ class LocalColonyStore:
     def _tracker_path(self, colony_id: UUID) -> Path:
         return self._colony_dir(colony_id) / "tracker" / "tracker.db"
 
+    def _skill_dir(self, colony_id: UUID, name: str) -> Path:
+        return self._colony_dir(colony_id) / "skills" / name
+
+    def _playbook_definition_path(self, colony_id: UUID, name: str) -> Path:
+        return self._colony_dir(colony_id) / "playbooks" / "definitions" / f"{name}.json"
+
+    def _playbook_run_path(self, colony_id: UUID, run_id: UUID) -> Path:
+        return self._colony_dir(colony_id) / "playbooks" / "runs" / f"{run_id}.json"
+
+    def _write_worker_skill_sync(
+        self,
+        colony_id: UUID,
+        name: str,
+        body: str,
+    ) -> WorkerSkillRead:
+        updated_at = utc_now()
+        skill = WorkerSkillRead(name=name, body=body, updated_at=updated_at)
+        directory = self._skill_dir(colony_id, skill.name)
+        atomic_write_text(directory / "SKILL.md", skill.body.rstrip() + "\n")
+        atomic_write_json(
+            directory / "metadata.json",
+            {"name": skill.name, "updated_at": updated_at.isoformat()},
+        )
+        return skill
+
+    def _get_worker_skill_sync(
+        self,
+        colony_id: UUID,
+        name: str,
+    ) -> WorkerSkillRead | None:
+        directory = self._skill_dir(colony_id, name)
+        body_path = directory / "SKILL.md"
+        metadata_path = directory / "metadata.json"
+        if not body_path.is_file() or not metadata_path.is_file():
+            return None
+        metadata = read_json(metadata_path)
+        return WorkerSkillRead.model_validate(
+            {
+                "name": metadata.get("name", name),
+                "body": body_path.read_text(encoding="utf-8"),
+                "updated_at": metadata["updated_at"],
+            }
+        )
+
+    def _list_playbook_runs_sync(
+        self,
+        colony_id: UUID | None,
+    ) -> list[PlaybookRunRead]:
+        colony_ids = (
+            [colony_id]
+            if colony_id is not None
+            else [colony.id for colony in self._list_colonies_sync()]
+        )
+        runs: list[PlaybookRunRead] = []
+        for current_colony_id in colony_ids:
+            directory = self._colony_dir(current_colony_id) / "playbooks" / "runs"
+            for path in directory.glob("*.json") if directory.exists() else ():
+                runs.append(PlaybookRunRead.model_validate(read_json(path)))
+        return sorted(runs, key=lambda item: item.created_at, reverse=True)
+
     def _events_path(self, colony_id: UUID) -> Path:
         return self._colony_dir(colony_id) / "events.jsonl"
 
     @staticmethod
     def _write_model(
         path: Path,
-        model: ColonyRead | SessionRead | MessageRead | WorkerRead,
+        model: ColonyRead | SessionRead | MessageRead | WorkerRead | PlaybookRunRead,
     ) -> None:
         atomic_write_json(path, model.model_dump(mode="json"))
 

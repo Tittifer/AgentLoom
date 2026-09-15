@@ -8,12 +8,12 @@ AgentLoom 是一个基于 Hive Colony 思路实现的持久化多智能体协作
 - Colony 显式分叉：独立 Queen 只能提交建议；用户确认后系统复制完整对话、初始化任务和 Tracker，并锁定源 DM。
 - Queen 身份管理：身份和系统提示词保存在独立 YAML Profile 中，会话只引用稳定的 `queen_id`；模型连接由全局用户设置统一管理。
 - 会话隔离：同一 Queen 下的不同会话不共享消息、预算、Worker、Task 或 Tracker。
-- 动态 Worker：Queen 通过 `run_worker` 即时创建一个或多个并行 Worker。
+- 动态 Worker：异构一次性工作可通过 `run_worker` 派发；同构批量工作由 Tracker 驱动的 Playbook 分批创建 Worker。
 - 独立 AgentLoop：每个 Queen 会话保持自己的长期循环，每个 Worker 创建自己的循环实例；两类智能体共用相同的模型调用、工具、质量检查、用量统计和持久化协议。
 - 共享状态：任务计划保存在会话文件中；每个 Colony 使用独立 SQLite Tracker，Data 是 Queen 定义的真实业务表，Worker 只能更新 Queen 登记过的列。
 - 可恢复执行：消息、会话游标、Worker 状态和事件均持久化；进程重启会重新排队被中断的执行。
 - 预算安全收尾：工作预算耗尽后进入受限 Grace 阶段；Worker 保证向 Queen 汇报，Queen 保持可继续对话。
-- 终态报告兜底：Worker 异常或超时仍会生成结构化失败报告并唤醒 Queen，避免批量任务永久等待。
+- 批次收敛：Queen 先亲自完成一行 Pilot，再保存 Worker Skill 并启动 Playbook；失败行按未完成查询重试，整批终态时只唤醒 Queen 一次。
 - 实时工作台：React 界面通过 SSE 展示 Queen、Worker、任务和 Tracker 的变化。
 - 模型兼容：根据全局用户设置中的模型名称自动选择 OpenAI、Claude 或 Gemini 协议，并通过 LiteLLM 调用。
 - 长期记忆：后台 Reflection 从 Queen 对话提炼 global/Queen 两级 Markdown 记忆，并在后续请求中按相关性召回。
@@ -90,8 +90,9 @@ uv run --locked python dev.py
 1. 点击“新建会话”后进入独立 Queen DM，此时不创建 Tracker 或 Worker。
 2. Queen 先直接处理目标；当任务适合并行、周期性或长期运行时，在右侧提交 Colony 建议。
 3. 用户可以修改名称和目标后确认，也可暂不创建。确认后会话全链路复制到新 Colony，源 DM 转为只读并保留跳转关系。
-4. Colony Queen 先创建业务表、写入初始行并登记 Worker 可写列，再创建任务并按需要派生多个并行 Worker；Worker 逐行更新 Data，完整报告单独回传。
-5. Worker 独立执行并向 Queen 汇报，Queen 综合结果后回复用户。
+4. Colony Queen 为自然的多行工作创建一张业务表，每行是可独立完成的对象；主键必须在建表时声明，系统 Task 不再复制成 Data 表。
+5. 同构批次由 Queen 亲自完成第一行 Pilot、保存复用 Skill，再启动 Playbook；Worker 只处理各自一行，失败或未写完成字段的行会在有限轮次内重试。
+6. Worker 报告保留在各自执行记录中，不逐份注入 Queen 上下文；Playbook 收敛或阻塞后只唤醒 Queen 一次，由 Queen 查询 Tracker 汇总回复。
 
 ## 主要 API
 

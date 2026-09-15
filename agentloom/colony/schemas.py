@@ -12,11 +12,20 @@ JsonObject = dict[str, JsonValue]
 ActorType = Literal["queen", "worker"]
 SessionMode = Literal["dm", "colony"]
 ReportStatus = Literal["success", "partial", "failed"]
+PlaybookRunStatus = Literal["queued", "running", "completed", "blocked", "cancelled"]
 DEFAULT_WORKER_MAX_ITERATIONS = 3
 DEFAULT_WORKER_GRACE_ITERATIONS = 1
 DEFAULT_WORKER_TOOL_CALL_BUDGET = 30
 WORKER_TOOL_CALL_HARD_MULTIPLE = 3
 DEFAULT_WORKER_TOOL_CALL_LIFETIME_BUDGET = 200
+
+
+def _empty_uuid_list() -> list[UUID]:
+    return []
+
+
+def _empty_json_object_list() -> list[JsonObject]:
+    return []
 
 
 class ColonyModel(BaseModel):
@@ -221,6 +230,42 @@ class TrackerChangesRead(ColonyModel):
     cursor: int = Field(ge=0)
 
 
+class WorkerSkillRead(ColonyModel):
+    name: str = Field(pattern=r"^[a-z0-9][a-z0-9_-]{0,99}$")
+    body: str = Field(min_length=1, max_length=50_000)
+    updated_at: AwareDatetime
+
+
+class PlaybookDefinition(ColonyModel):
+    name: str = Field(pattern=r"^[a-z0-9][a-z0-9_-]{0,99}$")
+    task_id: UUID
+    table: str = Field(pattern=r"^[A-Za-z][A-Za-z0-9_]{0,99}$")
+    pending_sql: str = Field(min_length=1, max_length=20_000)
+    key_columns: list[str] = Field(min_length=1, max_length=20)
+    skill_name: str = Field(pattern=r"^[a-z0-9][a-z0-9_-]{0,99}$")
+    task_template: str = Field(min_length=1, max_length=4_000)
+    concurrency: int = Field(default=4, ge=1, le=16)
+    max_rounds: int = Field(default=3, ge=1, le=10)
+    worker_timeout_seconds: int = Field(default=600, ge=1, le=3_600)
+
+
+class PlaybookRunRead(ColonyModel):
+    id: UUID
+    colony_id: UUID
+    session_id: UUID
+    definition: PlaybookDefinition
+    status: PlaybookRunStatus
+    round: int = Field(default=0, ge=0)
+    worker_ids: list[UUID] = Field(default_factory=_empty_uuid_list)
+    total_rows: int = Field(default=0, ge=0)
+    completed_rows: int = Field(default=0, ge=0)
+    remaining_rows: int = Field(default=0, ge=0)
+    dead_letter: list[JsonObject] = Field(default_factory=_empty_json_object_list)
+    error: str | None = None
+    created_at: AwareDatetime
+    updated_at: AwareDatetime
+
+
 class TaskItemCreate(ColonyModel):
     title: str = Field(min_length=1, max_length=200)
     description: str = ""
@@ -282,6 +327,9 @@ __all__ = [
     "JsonObject",
     "MessageCreate",
     "MessageRead",
+    "PlaybookDefinition",
+    "PlaybookRunRead",
+    "PlaybookRunStatus",
     "QueenCreate",
     "QueenRead",
     "ReportStatus",
@@ -299,6 +347,7 @@ __all__ = [
     "TrackerUpsert",
     "WorkerRead",
     "WorkerReport",
+    "WorkerSkillRead",
     "WorkerTask",
     "WORKER_TOOL_CALL_HARD_MULTIPLE",
 ]

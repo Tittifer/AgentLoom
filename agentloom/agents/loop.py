@@ -11,6 +11,10 @@ import structlog
 from pydantic import JsonValue
 
 from agentloom.agents.judge import JudgePipeline
+from agentloom.agents.worker_delegation import (
+    COLONY_DELEGATION_PROMPT,
+    WORKER_DELEGATION_PROMPT,
+)
 from agentloom.colony.schemas import (
     DEFAULT_WORKER_GRACE_ITERATIONS,
     DEFAULT_WORKER_MAX_ITERATIONS,
@@ -54,6 +58,7 @@ class LoopContext:
     model: str = ""
     queen: QueenRead | None = None
     recalled_memory: str = ""
+    worker_skill: str = ""
 
 
 @dataclass(frozen=True)
@@ -1189,25 +1194,15 @@ class AgentLoop:
                     "该工具只请求用户确认，不会直接创建 Colony。最终回复必须使用中文。"
                 )
             else:
-                runtime_prompt = (
-                    "你是 AgentLoom Colony 的 Queen。持续与用户协作，维护计划和共享 Tracker。"
-                    "Tracker 必须使用真实业务表：每个工作单元占一行，并有可判定完成的字段。"
-                    "先用 tracker_sql 建表和写入初始行，再用 tracker_register_writable 限定 Worker"
-                    "可写列与键；复杂批次先派一个 Worker 验证读写闭环，再扩展并行。"
-                    "当任务可并行时先用 task_create 建立任务，再调用 run_worker；"
-                    "run_worker 的每个 tasks[].data.task_id 必须使用对应任务 UUID。"
-                    "Worker 报告会作为用户消息回到当前会话。"
-                    "不要虚构工具结果，最终回复必须使用中文。"
-                )
+                runtime_prompt = COLONY_DELEGATION_PROMPT
             identity_prompt = context.queen.system_prompt if context.queen is not None else ""
             content = (
                 f"{identity_prompt}\n\n{runtime_prompt}" if identity_prompt else runtime_prompt
             )
         else:
+            skill = f"\n\n[WORKER_SKILL]\n{context.worker_skill}" if context.worker_skill else ""
             content = (
-                "你是 Queen 派生的临时 Worker。只完成注入的单一任务，不得派生其他 Worker，"
-                "不能等待用户回答。先用 tracker_query 读取自己的业务行，只通过 tracker_upsert"
-                "更新已登记列；Tracker 只保存短结构化字段，完整说明通过 report_to_parent 汇报。"
+                f"{WORKER_DELEGATION_PROMPT}{skill}\n\n"
                 f"任务：{json.dumps(context.session.task, ensure_ascii=False)}"
             )
         return LLMMessage(role="system", content=content)

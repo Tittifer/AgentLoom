@@ -52,7 +52,7 @@ export function ColonySidebar({
     enabled: Boolean(colonyId && activeTable),
   });
   const rowPage = rowsQuery.data;
-  const dataCount = tables.reduce((sum, table) => sum + table.row_count, 0);
+  const dataCount = tables.length;
 
   function chooseTable(name: string) {
     setSelectedTable(name);

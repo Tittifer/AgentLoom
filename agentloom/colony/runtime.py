@@ -21,6 +21,7 @@ from agentloom.agents.loop import (
 )
 from agentloom.colony.message_safety import sanitize_text
 from agentloom.colony.notifier import ColonyEventNotifier
+from agentloom.colony.playbooks import pending_rows, render_task, row_identity
 from agentloom.colony.schemas import (
     DEFAULT_WORKER_MAX_ITERATIONS,
     ActorType,
@@ -31,6 +32,8 @@ from agentloom.colony.schemas import (
     ColonySnapshot,
     ColonySuggestion,
     MessageRead,
+    PlaybookDefinition,
+    PlaybookRunRead,
     QueenCreate,
     QueenRead,
     SessionCreate,
@@ -188,6 +191,27 @@ class TrackerRegisterWritableInput(ToolInput):
     table: str = Field(min_length=1, max_length=100)
     write_columns: list[str] = Field(min_length=1, max_length=200)
     key_columns: list[str] = Field(min_length=1, max_length=20)
+
+
+class WriteSkillInput(ToolInput):
+    name: str = Field(pattern=r"^[a-z0-9][a-z0-9_-]{0,99}$")
+    body: str = Field(min_length=1, max_length=50_000)
+
+
+class RunPlaybookInput(ToolInput):
+    definition: PlaybookDefinition | None = None
+    playbook_name: str | None = Field(
+        default=None,
+        pattern=r"^[a-z0-9][a-z0-9_-]{0,99}$",
+    )
+
+
+class PlaybookRunInput(ToolInput):
+    run_id: UUID
+
+
+class ListPlaybookRunsInput(ToolInput):
+    pass
 
 
 class TaskUpdateInput(ToolInput):
@@ -348,6 +372,17 @@ class FileAgentLoopStore(AgentLoopStore):
             return None
         if execution.mode == "colony" and colony is None:
             return None
+        worker_skill = ""
+        task_data = execution.task.get("data")
+        if (
+            execution.actor_type == "worker"
+            and execution.colony_id is not None
+            and isinstance(task_data, dict)
+            and isinstance((skill_name := task_data.get("skill_name")), str)
+        ):
+            skill = await self._store.get_worker_skill(execution.colony_id, skill_name)
+            if skill is not None:
+                worker_skill = skill.body
         compaction = await self._store.get_compaction_checkpoint(session_id)
         model_messages = [
             message for message in messages if not bool(message.metadata.get("exclude_from_model"))
@@ -395,6 +430,7 @@ class FileAgentLoopStore(AgentLoopStore):
             recalled_memory=(
                 self._memory.recalled_memory(session_id) if self._memory is not None else ""
             ),
+            worker_skill=worker_skill,
         )
 
     async def mark_running(self, context: LoopContext) -> bool:
@@ -883,6 +919,7 @@ class ColonyRuntime:
         self._sessions = SessionManager[AgentLoop]()
         self._worker_semaphore = asyncio.Semaphore(settings.max_concurrent_workers)
         self._background_tasks: set[asyncio.Task[None]] = set()
+        self._playbook_tasks: dict[UUID, asyncio.Task[None]] = {}
         self._pending_queen_resumes: set[UUID] = set()
         self._stopping = False
         self._logger = structlog.get_logger(__name__)
@@ -914,7 +951,10 @@ class ColonyRuntime:
                 self._run_worker(worker_id),
                 worker.owner_session_id if worker is not None else None,
             )
+        playbook_sessions = await self._recover_playbooks()
         for session_id in queen_ids:
+            if session_id in playbook_sessions:
+                continue
             self._schedule(self._run_queen(session_id), session_id)
 
     async def stop(self) -> None:
@@ -930,6 +970,7 @@ class ColonyRuntime:
             await self._mcp_manager.close()
         self._sessions.clear()
         self._pending_queen_resumes.clear()
+        self._playbook_tasks.clear()
 
     async def create_colony(self, payload: ColonyCreate) -> ColonyRead:
         queen = await self._storage.get_queen(payload.queen_id)
@@ -977,7 +1018,10 @@ class ColonyRuntime:
                     self._run_worker(worker_id),
                     worker.owner_session_id if worker is not None else None,
                 )
+            playbook_sessions = await self._recover_playbooks()
             for session_id in queen_ids:
+                if session_id in playbook_sessions:
+                    continue
                 self._schedule(self._run_queen(session_id), session_id)
         return result
 
@@ -1230,9 +1274,7 @@ class ColonyRuntime:
         except KeyError as error:
             raise ValueError(f"Tracker 表不存在：{table}") from error
 
-    async def list_tracker_changes(
-        self, colony_id: UUID, since: int
-    ) -> TrackerChangesRead:
+    async def list_tracker_changes(self, colony_id: UUID, since: int) -> TrackerChangesRead:
         if await self._storage.get(colony_id) is None:
             raise ColonyNotFoundError(str(colony_id))
         return await self._storage.list_tracker_changes(colony_id, since)
@@ -1313,16 +1355,50 @@ class ColonyRuntime:
                     name="tracker_register_writable",
                     description=(
                         "登记 Worker 可写的业务表、列和冲突键。"
-                        "派发 Worker 前先建表、写入初始行并登记；"
-                        "复杂批次先派一个 Worker 验证闭环，再扩展并行。"
+                        "key_columns 必须已由 CREATE TABLE 中的 PRIMARY KEY 或 UNIQUE 约束覆盖。"
+                        "登记后由 Queen 亲自完成第一行 Pilot。"
                     ),
                     parameters=TrackerRegisterWritableInput.model_json_schema(),
+                ),
+                ToolDefinition(
+                    name="write_skill",
+                    description=(
+                        "将 Queen 已亲自验证的通用 Worker 协议保存到当前 Colony。"
+                        "协议只描述通用步骤，不包含某一行的具体对象。"
+                    ),
+                    parameters=WriteSkillInput.model_json_schema(),
+                ),
+                ToolDefinition(
+                    name="run_playbook",
+                    description=(
+                        "使用声明式 Playbook 收敛 Tracker 中的未完成行。"
+                        "首次传 definition 并持久化；恢复时只传 playbook_name。"
+                        "pending_sql 必须返回独立工作行及全部 key_columns；"
+                        "启动后不要轮询，批次终态会只唤醒 Queen 一次。"
+                    ),
+                    parameters=RunPlaybookInput.model_json_schema(),
+                ),
+                ToolDefinition(
+                    name="get_playbook_status",
+                    description="查询当前 Colony 一次 Playbook 运行状态。",
+                    parameters=PlaybookRunInput.model_json_schema(),
+                ),
+                ToolDefinition(
+                    name="stop_playbook",
+                    description="停止一次 Playbook 及其正在执行的 Worker。",
+                    parameters=PlaybookRunInput.model_json_schema(),
+                ),
+                ToolDefinition(
+                    name="list_playbook_runs",
+                    description="列出当前 Colony 的 Playbook 运行记录。",
+                    parameters=ListPlaybookRunsInput.model_json_schema(),
                 ),
                 *common,
                 *builtins,
                 ToolDefinition(
                     name="run_worker",
                     description=(
+                        "仅用于少量异构的一次性任务。同构 Tracker 行批次必须使用 run_playbook。"
                         "动态创建一个或多个并行 Worker，调用立即返回。"
                         "每个 tasks[].data.task_id 必须填写对应 task_create 返回的任务 UUID；"
                         "Worker 终态会自动同步该任务状态。"
@@ -1416,6 +1492,39 @@ class ColonyRuntime:
                         result,
                     )
                 )
+            if tool_call.name == "write_skill":
+                self._require_colony_queen(context, tool_call.name)
+                payload = WriteSkillInput.model_validate(tool_call.arguments)
+                skill = await self._storage.write_worker_skill(
+                    self._require_colony_id(context),
+                    payload.name,
+                    payload.body,
+                )
+                return ToolExecutionResult(skill.model_dump(mode="json"))
+            if tool_call.name == "run_playbook":
+                self._require_colony_queen(context, tool_call.name)
+                payload = RunPlaybookInput.model_validate(tool_call.arguments)
+                run = await self._start_playbook(context, payload)
+                return ToolExecutionResult(run.model_dump(mode="json"))
+            if tool_call.name == "get_playbook_status":
+                self._require_colony_queen(context, tool_call.name)
+                payload = PlaybookRunInput.model_validate(tool_call.arguments)
+                run = await self._storage.get_playbook_run(
+                    self._require_colony_id(context), payload.run_id
+                )
+                if run is None:
+                    raise ValueError("Playbook 运行不存在")
+                return ToolExecutionResult(run.model_dump(mode="json"))
+            if tool_call.name == "list_playbook_runs":
+                self._require_colony_queen(context, tool_call.name)
+                ListPlaybookRunsInput.model_validate(tool_call.arguments)
+                runs = await self._storage.list_playbook_runs(self._require_colony_id(context))
+                return ToolExecutionResult({"runs": [run.model_dump(mode="json") for run in runs]})
+            if tool_call.name == "stop_playbook":
+                self._require_colony_queen(context, tool_call.name)
+                payload = PlaybookRunInput.model_validate(tool_call.arguments)
+                run = await self._stop_playbook(self._require_colony_id(context), payload.run_id)
+                return ToolExecutionResult(run.model_dump(mode="json"))
             if tool_call.name == "task_create":
                 if context.session.colony_id is None:
                     return self._tool_error("TOOL_NOT_ALLOWED", "独立会话没有 Colony 任务计划")
@@ -1555,6 +1664,386 @@ class ColonyRuntime:
                     data={"budget_reason": reason},
                 ),
             )
+
+    async def _start_playbook(
+        self,
+        context: LoopContext,
+        payload: RunPlaybookInput,
+    ) -> PlaybookRunRead:
+        colony_id = self._require_colony_id(context)
+        if (payload.definition is None) == (payload.playbook_name is None):
+            raise ValueError("run_playbook 必须且只能传 definition 或 playbook_name")
+        if payload.definition is not None:
+            definition = payload.definition
+        else:
+            definition = await self._storage.get_playbook_definition(
+                colony_id, payload.playbook_name or ""
+            )
+            if definition is None:
+                raise ValueError(f"Playbook 定义不存在：{payload.playbook_name}")
+
+        task = next(
+            (
+                item
+                for item in await self._storage.list_tasks(colony_id)
+                if item.id == definition.task_id
+            ),
+            None,
+        )
+        if task is None or task.session_id != context.session.owner_session_id:
+            raise ValueError(f"Playbook 绑定的高层任务不存在：{definition.task_id}")
+        if task.status in {TaskItemStatus.COMPLETED, TaskItemStatus.CANCELLED}:
+            raise ValueError("Playbook 不能绑定已结束的高层任务")
+        if await self._storage.get_worker_skill(colony_id, definition.skill_name) is None:
+            raise ValueError(f"Worker Skill 不存在：{definition.skill_name}")
+
+        registration = await self._storage.get_tracker_registration(colony_id, definition.table)
+        if registration is None:
+            raise ValueError(f"Tracker 表未登记 Worker 写权：{definition.table}")
+        registered_keys = registration.get("key_columns")
+        if not isinstance(registered_keys, list) or set(registered_keys) != set(
+            definition.key_columns
+        ):
+            raise ValueError("Playbook key_columns 必须与 Tracker 登记的冲突键一致")
+
+        existing = await self._storage.list_playbook_runs(colony_id)
+        if any(
+            run.session_id == context.session.owner_session_id
+            and run.definition.name == definition.name
+            and run.status in {"queued", "running"}
+            for run in existing
+        ):
+            raise ValueError(f"Playbook 已在运行：{definition.name}")
+
+        table_rows = await self._storage.list_tracker_rows(
+            colony_id,
+            definition.table,
+            limit=1,
+            offset=0,
+            order_by=None,
+            order_dir="asc",
+        )
+        query_result = await self._storage.query_tracker(colony_id, definition.pending_sql, 1_000)
+        rows = pending_rows(query_result, definition.key_columns)
+        if table_rows.total < 2:
+            raise ValueError("同构 Playbook 至少需要两个工作单位")
+        if len(rows) >= table_rows.total:
+            raise ValueError("运行 Playbook 前 Queen 必须亲自完成至少一行 Pilot")
+        if not rows:
+            raise ValueError("Playbook 没有未完成行")
+
+        definition = await self._storage.save_playbook_definition(colony_id, definition)
+        run = await self._storage.create_playbook_run(
+            colony_id,
+            context.session.owner_session_id,
+            definition,
+        )
+        run = (
+            await self._storage.update_playbook_run(
+                colony_id,
+                run.id,
+                total_rows=table_rows.total,
+                completed_rows=table_rows.total - len(rows),
+                remaining_rows=len(rows),
+            )
+            or run
+        )
+        await self._update_playbook_task(run, TaskItemStatus.IN_PROGRESS)
+        await self._storage.append_event(
+            colony_id,
+            "playbook.queued",
+            session_id=run.session_id,
+            payload={
+                "run_id": str(run.id),
+                "name": definition.name,
+                "remaining_rows": len(rows),
+            },
+        )
+        await self._notifier.notify(run.session_id)
+        self._schedule_playbook(run)
+        return run
+
+    async def _execute_playbook(self, colony_id: UUID, run_id: UUID) -> None:
+        run = await self._storage.get_playbook_run(colony_id, run_id)
+        if run is None or run.status not in {"queued", "running"}:
+            return
+        run = (
+            await self._storage.update_playbook_run(colony_id, run_id, status="running", error=None)
+            or run
+        )
+        try:
+            for round_number in range(run.round + 1, run.definition.max_rounds + 1):
+                result = await self._storage.query_tracker(
+                    colony_id, run.definition.pending_sql, 1_000
+                )
+                rows = pending_rows(result, run.definition.key_columns)
+                if not rows:
+                    break
+                run = (
+                    await self._storage.update_playbook_run(
+                        colony_id,
+                        run_id,
+                        status="running",
+                        round=round_number,
+                        remaining_rows=len(rows),
+                        completed_rows=max(0, run.total_rows - len(rows)),
+                    )
+                    or run
+                )
+                await self._storage.append_event(
+                    colony_id,
+                    "playbook.round_started",
+                    session_id=run.session_id,
+                    payload={
+                        "run_id": str(run.id),
+                        "round": round_number,
+                        "rows": len(rows),
+                    },
+                )
+                for offset in range(0, len(rows), run.definition.concurrency):
+                    batch = rows[offset : offset + run.definition.concurrency]
+                    workers = await self._create_playbook_workers(run, batch)
+                    worker_ids = [*run.worker_ids, *(worker.id for worker in workers)]
+                    run = (
+                        await self._storage.update_playbook_run(
+                            colony_id, run_id, worker_ids=worker_ids
+                        )
+                        or run
+                    )
+                    await asyncio.gather(*(self._run_worker(worker.id) for worker in workers))
+                await self._storage.append_event(
+                    colony_id,
+                    "playbook.round_completed",
+                    session_id=run.session_id,
+                    payload={"run_id": str(run.id), "round": round_number},
+                )
+
+            final_result = await self._storage.query_tracker(
+                colony_id, run.definition.pending_sql, 1_000
+            )
+            remaining = pending_rows(final_result, run.definition.key_columns)
+            status = "completed" if not remaining else "blocked"
+            dead_letter = [
+                {
+                    "key": row_identity(row, run.definition.key_columns),
+                    "row": row,
+                    "reason": "max_rounds_exhausted",
+                }
+                for row in remaining
+            ]
+            run = (
+                await self._storage.update_playbook_run(
+                    colony_id,
+                    run_id,
+                    status=status,
+                    remaining_rows=len(remaining),
+                    completed_rows=max(0, run.total_rows - len(remaining)),
+                    dead_letter=dead_letter,
+                )
+                or run
+            )
+            await self._complete_playbook(run)
+        except asyncio.CancelledError:
+            if self._stopping:
+                await self._storage.update_playbook_run(colony_id, run_id, status="queued")
+                raise
+            await self._cancel_playbook_workers(run)
+            cancelled = await self._storage.update_playbook_run(
+                colony_id, run_id, status="cancelled"
+            )
+            if cancelled is not None:
+                await self._update_playbook_task(cancelled, TaskItemStatus.CANCELLED)
+                await self._storage.append_event(
+                    colony_id,
+                    "playbook.cancelled",
+                    session_id=cancelled.session_id,
+                    payload={"run_id": str(cancelled.id)},
+                )
+                await self._notifier.notify(cancelled.session_id)
+            raise
+        except Exception as error:
+            safe_error = sanitize_text(str(error))
+            self._logger.error(
+                "playbook_failed",
+                colony_id=str(colony_id),
+                run_id=str(run_id),
+                error_type=type(error).__name__,
+                error=safe_error,
+            )
+            failed = await self._storage.update_playbook_run(
+                colony_id,
+                run_id,
+                status="blocked",
+                error=safe_error,
+            )
+            if failed is not None:
+                await self._complete_playbook(failed)
+
+    async def _create_playbook_workers(
+        self,
+        run: PlaybookRunRead,
+        rows: list[dict[str, JsonValue]],
+    ) -> list[WorkerRead]:
+        tasks = [
+            WorkerTask(
+                task=render_task(run.definition.task_template, row),
+                data={
+                    "playbook_run_id": str(run.id),
+                    "playbook_name": run.definition.name,
+                    "skill_name": run.definition.skill_name,
+                    "task_id": str(run.definition.task_id),
+                    "row": row,
+                    "row_key": row_identity(row, run.definition.key_columns),
+                },
+            )
+            for row in rows
+        ]
+        workers = await self._storage.create_workers(
+            run.session_id,
+            tasks,
+            run.definition.worker_timeout_seconds,
+        )
+        for worker in workers:
+            await self._storage.append_event(
+                run.colony_id,
+                "worker.queued",
+                session_id=run.session_id,
+                worker_run_id=worker.id,
+                payload={
+                    "task": worker.task,
+                    "playbook_run_id": str(run.id),
+                    "row_key": worker.input.get("row_key"),
+                },
+            )
+        await self._notifier.notify(run.session_id)
+        return workers
+
+    async def _complete_playbook(self, run: PlaybookRunRead) -> None:
+        task_status = (
+            TaskItemStatus.COMPLETED if run.status == "completed" else TaskItemStatus.BLOCKED
+        )
+        await self._update_playbook_task(run, task_status)
+        dead_letter: list[JsonValue] = [item for item in run.dead_letter]
+        payload: dict[str, JsonValue] = {
+            "run_id": str(run.id),
+            "name": run.definition.name,
+            "status": run.status,
+            "completed_rows": run.completed_rows,
+            "remaining_rows": run.remaining_rows,
+            "dead_letter": dead_letter,
+        }
+        if run.error is not None:
+            payload["error"] = run.error
+        await self._storage.append_message(
+            run.session_id,
+            LLMMessage(
+                role="user",
+                content="[PLAYBOOK_COMPLETE]\n"
+                + json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+            ),
+            metadata={
+                "kind": "playbook_complete",
+                "system_generated": True,
+                "visibility": "internal",
+                "playbook_run_id": str(run.id),
+            },
+        )
+        await self._storage.append_event(
+            run.colony_id,
+            "playbook.completed" if run.status == "completed" else "playbook.blocked",
+            session_id=run.session_id,
+            payload=payload,
+        )
+        await self._notifier.notify(run.session_id)
+        await self._storage.set_session_status(run.session_id, SessionStatus.QUEUED)
+        self._schedule_queen_resume(run.session_id)
+
+    async def _update_playbook_task(
+        self,
+        run: PlaybookRunRead,
+        status: TaskItemStatus,
+    ) -> None:
+        task = await self._storage.update_task_status(run.definition.task_id, status)
+        if task is None:
+            raise RuntimeError(f"Playbook 高层任务不存在：{run.definition.task_id}")
+        await self._storage.append_event(
+            run.colony_id,
+            "task.updated",
+            session_id=run.session_id,
+            payload={
+                "task_id": str(task.id),
+                "status": task.status,
+                "playbook_run_id": str(run.id),
+                "automatic": True,
+            },
+        )
+
+    async def _stop_playbook(
+        self,
+        colony_id: UUID,
+        run_id: UUID,
+    ) -> PlaybookRunRead:
+        run = await self._storage.get_playbook_run(colony_id, run_id)
+        if run is None:
+            raise ValueError("Playbook 运行不存在")
+        if run.status not in {"queued", "running"}:
+            return run
+        task = self._playbook_tasks.get(run_id)
+        if task is not None:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        current = await self._storage.get_playbook_run(colony_id, run_id)
+        if current is None:
+            raise RuntimeError("Playbook 运行在停止期间丢失")
+        if current.status in {"queued", "running"}:
+            current = (
+                await self._storage.update_playbook_run(colony_id, run_id, status="cancelled")
+                or current
+            )
+            await self._update_playbook_task(current, TaskItemStatus.CANCELLED)
+        return current
+
+    async def _cancel_playbook_workers(self, run: PlaybookRunRead) -> None:
+        for worker_id in run.worker_ids:
+            await self._storage.finish_worker_if_active(
+                worker_id,
+                WorkerStatus.CANCELLED,
+                error={
+                    "code": "PLAYBOOK_CANCELLED",
+                    "message": "Playbook 已停止",
+                },
+            )
+
+    async def _recover_playbooks(self) -> set[UUID]:
+        session_ids: set[UUID] = set()
+        for run in await self._storage.list_playbook_runs():
+            if run.status not in {"queued", "running"}:
+                continue
+            session_ids.add(run.session_id)
+            if run.status == "running":
+                run = (
+                    await self._storage.update_playbook_run(run.colony_id, run.id, status="queued")
+                    or run
+                )
+            self._schedule_playbook(run)
+        return session_ids
+
+    def _schedule_playbook(self, run: PlaybookRunRead) -> None:
+        if self._stopping or run.id in self._playbook_tasks:
+            return
+        task = asyncio.create_task(
+            self._execute_playbook(run.colony_id, run.id),
+            name=f"agentloom-playbook-{run.id}",
+        )
+        self._playbook_tasks[run.id] = task
+        self._background_tasks.add(task)
+        self._sessions.track_task(run.session_id, task)
+
+        def completed(done: asyncio.Task[None]) -> None:
+            self._playbook_tasks.pop(run.id, None)
+            self._background_task_done(done)
+
+        task.add_done_callback(completed)
 
     async def _spawn_workers(
         self,
@@ -1857,6 +2346,8 @@ class ColonyRuntime:
             return
 
         if worker.report is not None:
+            if isinstance(worker.input.get("playbook_run_id"), str):
+                return
             queen_messages = await self._storage.list_messages(worker.owner_session_id)
             already_published = queen_messages is not None and any(
                 message.metadata.get("worker_run_id") == str(worker.id)
@@ -1921,6 +2412,21 @@ class ColonyRuntime:
         worker: WorkerRead,
         report: dict[str, JsonValue],
     ) -> None:
+        playbook_run_id = worker.input.get("playbook_run_id")
+        if isinstance(playbook_run_id, str):
+            await self._storage.append_event(
+                worker.colony_id,
+                "worker.reported",
+                session_id=worker.owner_session_id,
+                worker_run_id=worker.id,
+                payload={
+                    "status": report.get("status", "failed"),
+                    "summary": report.get("summary", "Worker 未生成报告。"),
+                    "playbook_run_id": playbook_run_id,
+                },
+            )
+            await self._notifier.notify(worker.owner_session_id)
+            return
         await self._sync_bound_task(worker)
         queen_message = LLMMessage(
             role="user",
@@ -2009,9 +2515,7 @@ class ColonyRuntime:
         self, context: LoopContext, payload: TrackerSQLInput
     ) -> dict[str, JsonValue]:
         colony_id = self._require_colony_id(context)
-        result = await self._storage.execute_tracker_sql(
-            colony_id, payload.sql, payload.row_cap
-        )
+        result = await self._storage.execute_tracker_sql(colony_id, payload.sql, payload.row_cap)
         await self._tracker_changed(context, "tracker.schema_updated", {"operation": "sql"})
         return result
 
@@ -2088,6 +2592,11 @@ class ColonyRuntime:
         if colony_id is None:
             raise ValueError("当前会话尚未创建 Colony")
         return colony_id
+
+    @staticmethod
+    def _require_colony_queen(context: LoopContext, tool_name: str) -> None:
+        if context.session.actor_type != "queen" or context.session.mode != "colony":
+            raise ValueError(f"只有 Colony Queen 可以调用 {tool_name}")
 
     def _build_queen_loop(self, provider: LLMProvider | None = None) -> AgentLoop:
         selected_provider = provider or self._provider_override

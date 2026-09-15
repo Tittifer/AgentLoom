@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID, uuid4
 
+import pytest
 from pydantic import JsonValue
 from pytest import MonkeyPatch
 
@@ -16,6 +17,7 @@ from agentloom.colony.runtime import (
     ColonyRuntime,
     FileAgentLoopStore,
     FileContextManager,
+    RunPlaybookInput,
     RunWorkersInput,
     conversation_name_from_message,
     normalize_message_history,
@@ -27,9 +29,13 @@ from agentloom.colony.schemas import (
     ColonyRead,
     JsonObject,
     MessageRead,
+    PlaybookDefinition,
+    PlaybookRunRead,
     QueenCreate,
     TaskItemCreate,
+    TrackerUpsert,
     WorkerRead,
+    WorkerReport,
     WorkerTask,
 )
 from agentloom.config import Settings
@@ -706,6 +712,11 @@ async def test_runtime_exposes_actor_tools_and_executes_builtin(tmp_path: Path) 
         "tracker_register_writable",
         "tracker_query",
         "tracker_upsert",
+        "write_skill",
+        "run_playbook",
+        "get_playbook_status",
+        "stop_playbook",
+        "list_playbook_runs",
     } <= queen_names
     assert "web_search" not in queen_names
     assert "report_to_parent" in worker_names
@@ -737,6 +748,202 @@ async def test_runtime_exposes_actor_tools_and_executes_builtin(tmp_path: Path) 
             "message": "工具 task_create 的参数不是合法 JSON，请重新生成。",
         }
     }
+
+
+async def test_playbook_converges_pending_rows_and_wakes_queen_once(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    store = await create_store(tmp_path)
+    colony, queen = await store.create("Fruit", "", "queen_general", {})
+    task = await store.create_task_item(
+        colony.id,
+        queen.id,
+        TaskItemCreate(title="完成水果调查"),
+    )
+    await store.execute_tracker_sql(
+        colony.id,
+        """
+        CREATE TABLE fruits (
+            fruit_key TEXT PRIMARY KEY,
+            summary TEXT,
+            completed_at TEXT
+        );
+        INSERT INTO fruits(fruit_key) VALUES ('apple'), ('banana'), ('pear');
+        """,
+        100,
+    )
+    await store.register_tracker_writable(
+        colony.id,
+        "fruits",
+        ["summary", "completed_at"],
+        ["fruit_key"],
+    )
+    await store.write_worker_skill(
+        colony.id,
+        "fruit-research",
+        "查询分配的 fruit_key，写入 summary，最后写 completed_at。",
+    )
+    notifier = ColonyEventNotifier()
+    runtime = ColonyRuntime(
+        store,
+        SchemaMockLLMProvider(),
+        notifier,
+        Settings(environment="test", storage_root=tmp_path),
+        create_builtin_tool_registry(),
+    )
+    context = await FileAgentLoopStore(store, notifier).load(queen.id)
+    assert context is not None
+
+    def discard_playbook(run: PlaybookRunRead) -> None:
+        del run
+
+    def discard_queen_resume(session_id: UUID) -> None:
+        del session_id
+
+    monkeypatch.setattr(runtime, "_schedule_playbook", discard_playbook)
+    monkeypatch.setattr(runtime, "_schedule_queen_resume", discard_queen_resume)
+    definition = PlaybookDefinition(
+        name="fruit-research",
+        task_id=task.id,
+        table="fruits",
+        pending_sql=("SELECT fruit_key FROM fruits WHERE completed_at IS NULL ORDER BY fruit_key"),
+        key_columns=["fruit_key"],
+        skill_name="fruit-research",
+        task_template="调查 {fruit_key}",
+        concurrency=2,
+        max_rounds=3,
+    )
+
+    with pytest.raises(ValueError, match="Queen 必须亲自完成至少一行 Pilot"):
+        await runtime._start_playbook(  # pyright: ignore[reportPrivateUsage]
+            context,
+            RunPlaybookInput(definition=definition),
+        )
+    assert await store.get_playbook_definition(colony.id, definition.name) is None
+
+    await store.upsert_tracker(
+        colony.id,
+        TrackerUpsert(
+            table="fruits",
+            row={
+                "fruit_key": "apple",
+                "summary": "Queen pilot",
+                "completed_at": "2026-09-15T00:00:00Z",
+            },
+        ),
+    )
+
+    async def complete_worker(worker_id: UUID) -> None:
+        worker = await store.get_worker(worker_id)
+        assert worker is not None
+        worker_context = await FileAgentLoopStore(store, notifier).load(worker_id)
+        assert worker_context is not None
+        assert worker_context.worker_skill == (
+            "查询分配的 fruit_key，写入 summary，最后写 completed_at。"
+        )
+        row = worker.input["row"]
+        assert isinstance(row, dict)
+        fruit_key = row["fruit_key"]
+        assert isinstance(fruit_key, str)
+        await store.upsert_tracker(
+            colony.id,
+            TrackerUpsert(
+                table="fruits",
+                row={
+                    "fruit_key": fruit_key,
+                    "summary": f"{fruit_key} done",
+                    "completed_at": "2026-09-15T00:00:01Z",
+                },
+            ),
+        )
+        await runtime._report_worker(  # pyright: ignore[reportPrivateUsage]
+            worker_context,
+            WorkerReport(
+                status="success",
+                summary=f"{fruit_key} done",
+                data={},
+            ),
+        )
+        await runtime._ensure_worker_terminal_report(worker_id)  # pyright: ignore[reportPrivateUsage]
+
+    monkeypatch.setattr(runtime, "_run_worker", complete_worker)
+    run = await runtime._start_playbook(  # pyright: ignore[reportPrivateUsage]
+        context,
+        RunPlaybookInput(definition=definition),
+    )
+
+    await runtime._execute_playbook(colony.id, run.id)  # pyright: ignore[reportPrivateUsage]
+
+    completed = await store.get_playbook_run(colony.id, run.id)
+    assert completed is not None
+    assert completed.status == "completed"
+    assert completed.completed_rows == 3
+    assert completed.remaining_rows == 0
+    assert len(completed.worker_ids) == 2
+    updated_task = next(item for item in await store.list_tasks(colony.id) if item.id == task.id)
+    assert updated_task.status is TaskItemStatus.COMPLETED
+    messages = await store.list_messages(queen.id)
+    assert messages is not None
+    assert not any(message.content.startswith("[WORKER_REPORT]") for message in messages)
+    assert sum(message.content.startswith("[PLAYBOOK_COMPLETE]") for message in messages) == 1
+    assert all(
+        message.metadata.get("visibility") == "internal"
+        for message in messages
+        if message.content.startswith("[")
+    )
+    events = await store.list_session_events_after(queen.id, 0)
+    assert events is not None
+    assert sum(event.type == "worker.reported" for event in events) == 2
+
+
+async def test_runtime_recovers_playbook_before_its_queen(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    store = await create_store(tmp_path)
+    colony, queen = await store.create("Recovery", "", "queen_general", {})
+    definition = PlaybookDefinition(
+        name="recover-items",
+        task_id=uuid4(),
+        table="items",
+        pending_sql="SELECT id FROM items WHERE done = 0",
+        key_columns=["id"],
+        skill_name="recover-items",
+        task_template="处理 {id}",
+    )
+    run = await store.create_playbook_run(colony.id, queen.id, definition)
+    await store.update_playbook_run(colony.id, run.id, status="running")
+    await store.set_session_status(queen.id, SessionStatus.QUEUED)
+    runtime = ColonyRuntime(
+        store,
+        SchemaMockLLMProvider(),
+        ColonyEventNotifier(),
+        Settings(environment="test", storage_root=tmp_path),
+        create_builtin_tool_registry(),
+    )
+    scheduled_sessions: list[UUID | None] = []
+    scheduled_playbooks: list[UUID] = []
+
+    def discard(
+        coroutine: Coroutine[object, object, object],
+        owner_session_id: UUID | None = None,
+    ) -> None:
+        scheduled_sessions.append(owner_session_id)
+        coroutine.close()
+
+    def capture_playbook(current: PlaybookRunRead) -> None:
+        scheduled_playbooks.append(current.id)
+
+    monkeypatch.setattr(runtime, "_schedule", discard)
+    monkeypatch.setattr(runtime, "_schedule_playbook", capture_playbook)
+
+    await runtime.start()
+
+    recovered = await store.get_playbook_run(colony.id, run.id)
+    assert recovered is not None and recovered.status == "queued"
+    assert scheduled_playbooks == [run.id]
+    assert queen.id not in scheduled_sessions
 
 
 async def test_runtime_spills_and_pages_large_tool_results(tmp_path: Path) -> None:
